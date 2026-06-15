@@ -70,7 +70,7 @@ export default function Footer() {
       </div>
 
       <div className="mx-auto mt-10 flex max-w-[1080px] flex-wrap items-center justify-between gap-3 border-t border-[rgba(0,100,180,.1)] pt-6">
-        <p className="text-xs text-[#5A6F8A]">© 2025 TIKI Inc. All rights reserved.</p>
+        <p className="text-xs text-[#5A6F8A]">© 2026 TIKI Inc. All rights reserved.</p>
         <div className="flex items-center gap-4">
           {[
             { icon: "shieldCheck", text: "SOC 2 Type II" },
