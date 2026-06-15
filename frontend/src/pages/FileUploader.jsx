@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
@@ -34,11 +35,12 @@ const icons = {
   shieldCheck: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z", "M9 12l2 2 4-4"],
   globe: ["M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z", "M2 12h20", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"],
   arrowRight: ["M5 12h14", "M12 5l7 7-7 7"],
+  chevronDown: ["M6 9l6 6 6-6"],
 };
 
 const cn = (...classes) => classes.filter(Boolean).join(" ");
 
-function IIcon({ name, size = 16, color = "currentColor", sw = 2 }) {
+function IIcon({ name, size = 16, color = "currentColor", sw = 2, style }) {
   const paths = icons[name];
   if (!paths) return null;
 
@@ -53,6 +55,7 @@ function IIcon({ name, size = 16, color = "currentColor", sw = 2 }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       className="block shrink-0"
+      style={style}
     >
       {paths.map((d, index) => (
         <path key={index} d={d} />
@@ -101,6 +104,13 @@ function useIsMobile() {
 
   return mobile;
 }
+
+const PROJECTS = [
+  { id: "proj-1", key: "TIKI", name: "TIKI 앱 개발", color: "#0099CC" },
+  { id: "proj-2", key: "MKT",  name: "마케팅 캠페인 Q3", color: "#7C3AED" },
+  { id: "proj-3", key: "DS",   name: "데이터 인프라 구축", color: "#10B981" },
+  { id: "proj-4", key: "OPS",  name: "운영 자동화", color: "#F59E0B" },
+];
 
 const STEPS = [
   { label: "파일 업로드 중...", pct: 25, duration: 1800, icon: "uploadCloud", sub: "서버로 파일을 전송하고 있습니다..." },
@@ -176,12 +186,29 @@ function StepItem({ step, status, isLast }) {
   );
 }
 
+// 프로젝트 배지
+function ProjectBadge({ project, size = "sm" }) {
+  const isSmall = size === "sm";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center justify-center rounded font-bold text-white shrink-0",
+        isSmall ? "h-5 min-w-[36px] px-1.5 text-[10px]" : "h-6 min-w-[44px] px-2 text-[11px]",
+      )}
+      style={{ backgroundColor: project.color }}
+    >
+      {project.key}
+    </span>
+  );
+}
+
 export default function TikiApp() {
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
 
   const [activeTab, setActiveTab] = useState("home");
   const [phase, setPhase] = useState("IDLE");
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [hover, setHover] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState("— KB/s");
@@ -189,9 +216,12 @@ export default function TikiApp() {
   const [stepIdx, setStepIdx] = useState(-1);
   const [progressPct, setProgressPct] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
-  const [toast, setToast] = useState({ show: false, msg: "" });
   const [elapsedTime, setElapsedTime] = useState("—");
   const [error, setError] = useState({ title: "", msg: "", cancelStyle: false });
+
+  // 프로젝트 선택 상태
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
 
   const uploadNum = useAnimatedNumber(Math.round(uploadPct));
   const progressNum = useAnimatedNumber(Math.round(progressPct));
@@ -200,6 +230,20 @@ export default function TikiApp() {
   const analyzingRef = useRef(false);
   const startTimeRef = useRef(null);
   const timerRef = useRef(null);
+  const dropdownRef = useRef(null);
+
+  const totalSize = files.reduce((sum, currentFile) => sum + currentFile.size, 0);
+
+  // 드롭다운 외부 클릭 시 닫기
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setProjectDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => {
     if (phase === "UPLOADING") {
@@ -207,35 +251,59 @@ export default function TikiApp() {
     }
   }, [phase]);
 
-  const showToast = (message) => {
-    setToast({ show: true, msg: message });
-    setTimeout(() => setToast((current) => ({ ...current, show: false })), 3500);
+  const handleFiles = (selectedFiles) => {
+    const allowed = ["mp3", "wav", "m4a", "aac", "ogg", "flac"];
+    const acceptedFiles = [];
+    let skippedCount = 0;
+    let skippedMessage = "";
+
+    Array.from(selectedFiles).forEach((selectedFile) => {
+      const extension = selectedFile.name.split(".").pop().toLowerCase();
+      if (!allowed.includes(extension)) {
+        skippedCount += 1;
+        skippedMessage ||= `허용되는 형식: MP3, WAV, M4A, AAC, OGG, FLAC (${extension.toUpperCase()})`;
+        return;
+      }
+      if (selectedFile.size > 1024 * 1024 * 1024) {
+        skippedCount += 1;
+        skippedMessage ||= `선택한 파일: ${formatBytes(selectedFile.size)}`;
+        return;
+      }
+      acceptedFiles.push(selectedFile);
+    });
+
+    if (acceptedFiles.length === 0) {
+      setError({
+        title: skippedCount > 0 ? "추가할 수 없는 파일입니다" : "파일을 찾을 수 없습니다",
+        msg: skippedMessage || "지원되는 오디오 파일을 선택해 주세요.",
+        cancelStyle: false,
+      });
+      return;
+    }
+
+    setFiles((currentFiles) => [...currentFiles, ...acceptedFiles]);
+    setPhase("IDLE");
+    setError(
+      skippedCount > 0
+        ? { title: `${skippedCount}개 파일은 건너뛰었습니다`, msg: skippedMessage, cancelStyle: false }
+        : { title: "", msg: "", cancelStyle: false },
+    );
   };
 
-  const handleFile = (selectedFile) => {
-    const allowed = ["mp3", "wav", "m4a", "aac", "ogg", "flac"];
-    const extension = selectedFile.name.split(".").pop().toLowerCase();
-    if (!allowed.includes(extension)) {
-      showToast(`지원하지 않는 파일 형식입니다 (${extension.toUpperCase()})`);
-      return;
-    }
-    if (selectedFile.size > 1024 * 1024 * 1024) {
-      showToast(`파일 크기가 1GB를 초과합니다 (${formatBytes(selectedFile.size)})`);
-      return;
-    }
-    setFile(selectedFile);
-    setPhase("IDLE");
+  const removeFile = (indexToRemove) => {
+    setFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
     setError({ title: "", msg: "", cancelStyle: false });
   };
 
-  const clearFile = () => {
-    setFile(null);
+  const clearFiles = () => {
+    setFiles([]);
     setPhase("IDLE");
     setError({ title: "", msg: "", cancelStyle: false });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const startUpload = () => {
+    if (files.length === 0 || !selectedProject) return;
     analyzingRef.current = true;
     setPhase("UPLOADING");
     setUploadPct(0);
@@ -299,13 +367,15 @@ export default function TikiApp() {
   const resetAll = () => {
     analyzingRef.current = false;
     clearInterval(timerRef.current);
-    setFile(null);
+    setFiles([]);
     setPhase("IDLE");
     setUploadPct(0);
     setStepIdx(-1);
     setProgressPct(0);
     setProgressLabel("");
     setError({ title: "", msg: "", cancelStyle: false });
+    setSelectedProject(null);
+    setProjectDropdownOpen(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -324,8 +394,10 @@ export default function TikiApp() {
     return "waiting";
   };
 
+  const canAnalyze = files.length > 0 && !!selectedProject;
+
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[#F8FAFF] text-[#0D1B2A] [font-family:'Space_Grotesk',-apple-system,sans-serif]">
+    <div className="relative min-h-screen overflow-x-hidden bg-[#F8FAFF] text-[#0D1B2A] [font-family:'Pretendard',-apple-system,sans-serif]">
       <div className="pointer-events-none fixed inset-0 z-0 bg-[linear-gradient(rgba(0,100,180,.05)_1px,transparent_1px),linear-gradient(90deg,rgba(0,100,180,.05)_1px,transparent_1px)] bg-[size:48px_48px]" />
 
       <Header isMobile={isMobile} phase={phase} stateLabels={stateLabels} />
@@ -340,12 +412,91 @@ export default function TikiApp() {
           회의 녹음을 올리면<br />
           <em className="not-italic bg-[linear-gradient(90deg,#0099CC,#7C3AED)] bg-clip-text text-transparent">완성되는 자동 회의록</em>
         </h1>
-        <p className={cn("mx-auto mb-8 max-w-[560px] leading-[1.6] text-[#5A6F8A]", isMobile ? "text-sm" : "text-[17px]")}>
-          음성을 업로드하면 화자 분리, AI 요약, Jira 티켓 생성까지 — 회의가 끝나는 순간 모든 게 정리됩니다.
+        <p className={cn("mx-auto mb-8 max-w-[42rem] text-balance leading-[1.45] text-[#5A6F8A] sm:leading-8", isMobile ? "text-[14px]" : "text-[17px]")}>
+          <span className="block">음성을 업로드하면 화자 분리, AI 요약, Jira 티켓 생성까지</span>
+          <span className="block">회의가 끝나는 순간 모든 게 정리됩니다.</span>
         </p>
       </section>
 
-      <main className={cn("relative z-[1] mx-auto max-w-[720px]", isMobile ? "px-3 pb-[100px]" : "px-6 pb-20")}>
+      <main className={cn("relative z-[1] mx-auto max-w-[720px]", isMobile ? "px-3 pb-[132px]" : "px-6 pb-20")}>
+
+        {/* ── 프로젝트 선택 ── */}
+        {phase !== "PROCESSING" && phase !== "COMPLETED" && (
+          <div className="mb-4 rounded-[14px] border border-[rgba(0,100,180,.12)] bg-white px-5 py-4 shadow-[0_2px_12px_rgba(0,60,150,.05)]">
+            <div className="mb-2.5 flex items-center gap-2">
+              <IIcon name="box" size={14} color="#0099CC" />
+              <span className="text-sm font-semibold text-[#0D1B2A]">Jira 프로젝트</span>
+              <span className="ml-0.5 rounded-full bg-[rgba(239,68,68,.1)] px-2 py-0.5 text-[10px] font-bold text-[#DC2626]">
+                필수
+              </span>
+            </div>
+
+            <div className="relative" ref={dropdownRef}>
+              <button
+                className={cn(
+                  "flex w-full items-center justify-between rounded-[10px] border px-4 py-3 text-sm transition-all duration-200",
+                  selectedProject
+                    ? "border-[#0099CC] bg-[rgba(0,153,204,.05)] text-[#0D1B2A]"
+                    : "border-[rgba(0,100,180,.15)] bg-[rgba(0,60,150,.03)] text-[#5A6F8A] hover:border-[rgba(0,100,180,.3)] hover:bg-[rgba(0,60,150,.05)]",
+                )}
+                onClick={() => setProjectDropdownOpen((prev) => !prev)}
+              >
+                {selectedProject ? (
+                  <span className="flex items-center gap-2.5">
+                    <ProjectBadge project={selectedProject} />
+                    <span className="font-medium text-[#0D1B2A]">{selectedProject.name}</span>
+                  </span>
+                ) : (
+                  <span>프로젝트를 선택하세요</span>
+                )}
+                <IIcon
+                  name="chevronDown"
+                  size={16}
+                  color={selectedProject ? "#0099CC" : "#5A6F8A"}
+                  style={{ transform: projectDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s" }}
+                />
+              </button>
+
+              {projectDropdownOpen && (
+                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-20 overflow-hidden rounded-[12px] border border-[rgba(0,100,180,.12)] bg-white shadow-[0_8px_32px_rgba(0,60,150,.12)]">
+                  {PROJECTS.map((project) => {
+                    const isSelected = selectedProject?.id === project.id;
+                    return (
+                      <button
+                        key={project.id}
+                        className={cn(
+                          "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors",
+                          isSelected
+                            ? "bg-[rgba(0,153,204,.06)]"
+                            : "hover:bg-[rgba(0,60,150,.04)]",
+                        )}
+                        onClick={() => {
+                          setSelectedProject(project);
+                          setProjectDropdownOpen(false);
+                        }}
+                      >
+                        <ProjectBadge project={project} />
+                        <span className={cn("flex-1 text-left", isSelected ? "font-semibold text-[#0D1B2A]" : "text-[#0D1B2A]")}>
+                          {project.name}
+                        </span>
+                        {isSelected && <IIcon name="check" size={14} color="#0099CC" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 프로젝트 미선택 안내 */}
+            {!selectedProject && (
+              <p className="mt-2 text-[12px] text-[#5A6F8A]">
+                Jira 티켓을 생성할 프로젝트를 먼저 선택해야 분석을 시작할 수 있습니다.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ── 파일 드롭존 ── */}
         {phase !== "PROCESSING" && phase !== "COMPLETED" && (
           <div
             className={cn(
@@ -364,10 +515,10 @@ export default function TikiApp() {
             onDrop={(event) => {
               event.preventDefault();
               setHover(false);
-              if (event.dataTransfer.files[0]) handleFile(event.dataTransfer.files[0]);
+              if (event.dataTransfer.files.length) handleFiles(event.dataTransfer.files);
             }}
             onClick={() => {
-              if (phase === "IDLE" && !file) fileInputRef.current?.click();
+              if (phase === "IDLE") fileInputRef.current?.click();
             }}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
@@ -412,36 +563,58 @@ export default function TikiApp() {
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               accept=".mp3,.wav,.m4a,.aac,.ogg,.flac"
               className="hidden"
               onChange={(event) => {
-                if (event.target.files[0]) handleFile(event.target.files[0]);
+                if (event.target.files.length) handleFiles(event.target.files);
+                event.target.value = "";
               }}
             />
           </div>
         )}
 
-        {file && (phase === "IDLE" || phase === "FAILED") && (
-          <div className="mt-4 flex items-center gap-3.5 rounded-[14px] border border-[rgba(0,100,180,.12)] bg-white px-5 py-4 shadow-[0_2px_12px_rgba(0,60,150,.05)]">
-            <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[10px] border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.08))]">
-              <IIcon name="music" size={22} color="#0099CC" sw={1.8} />
+        {/* ── 파일 목록 ── */}
+        {files.length > 0 && (phase === "IDLE" || phase === "FAILED") && (
+          <div className="mt-4 rounded-[14px] border border-[rgba(0,100,180,.12)] bg-white px-5 py-4 shadow-[0_2px_12px_rgba(0,60,150,.05)]">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">{files.length}개 파일이 선택됐어요</div>
+                <div className="mt-0.5 text-xs text-[#5A6F8A]">총 용량 {formatBytes(totalSize)}</div>
+              </div>
+              <button
+                className="rounded-[7px] border border-[rgba(0,0,0,.08)] bg-[rgba(0,0,0,.03)] px-3 py-1.5 text-xs font-semibold text-[#5A6F8A]"
+                onClick={clearFiles}
+              >
+                전체 삭제
+              </button>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold">{file.name}</div>
-              <div className="mt-0.5 text-xs text-[#5A6F8A]">{formatBytes(file.size)}</div>
+            <div className="grid gap-3">
+              {files.map((selectedFile, index) => (
+                <div key={`${selectedFile.name}-${selectedFile.size}-${index}`} className="flex items-center gap-3 rounded-[12px] border border-[rgba(0,100,180,.08)] bg-[rgba(0,60,150,.03)] px-3 py-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.08))]">
+                    <IIcon name="music" size={20} color="#0099CC" sw={1.8} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{selectedFile.name}</div>
+                    <div className="mt-0.5 text-xs text-[#5A6F8A]">{formatBytes(selectedFile.size)}</div>
+                  </div>
+                  <button className="flex h-7 w-7 items-center justify-center rounded-[6px] border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.08)]" onClick={() => removeFile(index)}>
+                    <IIcon name="x" size={14} color="#EF4444" sw={2.5} />
+                  </button>
+                </div>
+              ))}
             </div>
-            <button className="flex h-7 w-7 items-center justify-center rounded-[6px] border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.08)]" onClick={clearFile}>
-              <IIcon name="x" size={14} color="#EF4444" sw={2.5} />
-            </button>
           </div>
         )}
 
+        {/* ── 업로드 진행 ── */}
         {phase === "UPLOADING" && (
           <div className="mt-4 rounded-[14px] border border-[rgba(245,158,11,.25)] bg-white px-6 py-5">
             <div className="mb-3.5 flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-bold text-[#B45309]">
                 <IIcon name="uploadCloud" size={16} color="#B45309" />
-                서버로 전송 중...
+                {files.length > 1 ? `${files.length}개 파일 전송 중...` : "서버로 전송 중..."}
               </div>
               <div className="text-[22px] font-bold text-[#B45309]">{uploadNum}%</div>
             </div>
@@ -457,6 +630,7 @@ export default function TikiApp() {
           </div>
         )}
 
+        {/* ── 에러 메시지 ── */}
         {error.title && (
           <div
             className={cn(
@@ -476,7 +650,7 @@ export default function TikiApp() {
               )}
               onClick={() => {
                 setError({ title: "", msg: "", cancelStyle: false });
-                startUpload();
+                if (selectedProject) startUpload();
               }}
             >
               <IIcon name="refreshCw" size={13} color="currentColor" />
@@ -485,34 +659,64 @@ export default function TikiApp() {
           </div>
         )}
 
-        {file && phase === "IDLE" && (
-          <button
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border-0 bg-[linear-gradient(135deg,#0099CC_0%,#7C3AED_100%)] px-4 py-4 text-base font-bold text-white shadow-[0_4px_24px_rgba(0,153,204,.2)]"
-            onClick={startUpload}
-          >
-            <IIcon name="zap" size={18} color="#fff" />
-            AI 분석 시작
-          </button>
+        {/* ── AI 분석 시작 버튼 ── */}
+        {files.length > 0 && phase === "IDLE" && (
+          <div className="mt-4">
+            {/* 프로젝트 미선택 시 안내 배너 */}
+            {!selectedProject && (
+              <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-[rgba(245,158,11,.25)] bg-[rgba(245,158,11,.06)] px-4 py-2.5">
+                <IIcon name="alertTriangle" size={14} color="#D97706" />
+                <span className="text-[13px] text-[#D97706]">
+                  위에서 Jira 프로젝트를 선택해야 분석을 시작할 수 있습니다.
+                </span>
+              </div>
+            )}
+            <button
+              className={cn(
+                "flex w-full items-center justify-center gap-2 rounded-xl border-0 px-4 py-4 text-base font-bold text-white transition-all duration-200",
+                canAnalyze
+                  ? "bg-[linear-gradient(135deg,#0099CC_0%,#7C3AED_100%)] shadow-[0_4px_24px_rgba(0,153,204,.2)] hover:shadow-[0_6px_28px_rgba(0,153,204,.3)] hover:translate-y-[-1px] cursor-pointer"
+                  : "bg-[#C5CDD9] cursor-not-allowed shadow-none",
+              )}
+              onClick={canAnalyze ? startUpload : undefined}
+              disabled={!canAnalyze}
+            >
+              <IIcon name="zap" size={18} color="#fff" />
+              {!selectedProject
+                ? "프로젝트를 먼저 선택해주세요"
+                : files.length > 1
+                ? `${files.length}개 파일 · ${selectedProject.name} 분석 시작`
+                : `${selectedProject.name} 분석 시작`}
+            </button>
+          </div>
         )}
 
+        {/* ── 처리 중 ── */}
         {phase === "PROCESSING" && (
           <div className="mt-4 rounded-[20px] border border-[rgba(0,100,180,.12)] bg-white px-4 py-5 shadow-[0_2px_16px_rgba(0,60,150,.06)] sm:px-8 sm:py-8">
             <div className={cn("mb-7 flex items-center justify-between gap-2.5", isMobile ? "flex-wrap" : "flex-nowrap")}>
               <div className="flex items-center gap-2.5">
-                <div className="flex items-end gap-px">
+                <div className="flex items-end gap-[1px] shrink-0">
                   {["T", "I", "K", "I"].map((ch, index) => (
                     <span
                       key={ch}
-                      className="inline-block bg-[linear-gradient(135deg,#0099CC,#7C3AED)] bg-clip-text text-[20px] font-bold leading-none tracking-[-0.5px] text-transparent animate-tikiBounce"
+                      className="inline-block text-[20px] font-bold leading-none tracking-[-0.5px] text-[#0099CC] animate-tikiBounce drop-shadow-[0_1px_0_rgba(255,255,255,.45)]"
                       style={{ animationDelay: `${index * 0.15}s` }}
                     >
                       {ch}
                     </span>
                   ))}
                 </div>
-                <div className="text-[13px] font-medium text-[#5A6F8A]">
+                <div className="whitespace-nowrap text-[13px] font-medium text-[#5A6F8A]">
                   가 분석 중<AnimatedDots />
                 </div>
+                {/* 처리 중 프로젝트 표시 */}
+                {selectedProject && (
+                  <div className="flex items-center gap-1.5 rounded-full border border-[rgba(0,100,180,.15)] bg-[rgba(0,60,150,.05)] px-2.5 py-1">
+                    <ProjectBadge project={selectedProject} size="sm" />
+                    <span className="text-[12px] text-[#5A6F8A]">{selectedProject.name}</span>
+                  </div>
+                )}
               </div>
               <button className="inline-flex items-center gap-1.5 rounded-[7px] border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] px-[14px] py-1.5 text-xs font-semibold text-[#5A6F8A]" onClick={cancel}>
                 <IIcon name="square" size={11} color="currentColor" />
@@ -540,18 +744,29 @@ export default function TikiApp() {
           </div>
         )}
 
+        {/* ── 완료 ── */}
         {phase === "COMPLETED" && (
           <div className="mt-4 rounded-[20px] border border-[rgba(16,185,129,.2)] bg-white px-4 py-7 text-center shadow-[0_2px_16px_rgba(0,60,150,.06)] sm:px-10 sm:py-10">
             <div className="mx-auto mb-4 flex h-[72px] w-[72px] items-center justify-center rounded-full border border-[rgba(16,185,129,.2)] bg-[rgba(16,185,129,.1)] animate-successBounce">
               <IIcon name="checkCircle" size={36} color="#10B981" sw={1.8} />
             </div>
             <div className="mb-2 text-[22px] font-bold tracking-[-0.3px]">분석이 완료됐습니다!</div>
-            <div className="mb-2 text-sm text-[#5A6F8A]">회의록이 생성되고 Jira 티켓이 자동으로 등록됐습니다.</div>
+            <div className="mb-1 text-sm text-[#5A6F8A]">회의록이 생성되고 Jira 티켓이 자동으로 등록됐습니다.</div>
+
+            {/* 연결된 프로젝트 표시 */}
+            {selectedProject && (
+              <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[rgba(0,100,180,.12)] bg-[rgba(0,60,150,.04)] px-3 py-1.5">
+                <ProjectBadge project={selectedProject} />
+                <span className="text-[13px] font-medium text-[#0D1B2A]">{selectedProject.name}</span>
+                <span className="text-[13px] text-[#5A6F8A]">에 연결됨</span>
+              </div>
+            )}
+
             <div className="mb-6 inline-flex flex-wrap justify-center gap-4 rounded-[10px] border border-[rgba(16,185,129,.15)] bg-[rgba(16,185,129,.06)] px-5 py-[10px]">
               {[
                 { icon: "clock", text: "처리 시간", val: elapsedTime },
                 { icon: "mic", text: "화자", val: "3명 감지" },
-                { icon: "checkCircle", text: "Jira 티켓", val: "3개 생성" },
+                { icon: "checkCircle", text: "Jira 티켓", val: `${selectedProject?.key ?? ""} · 3개 생성` },
               ].map(({ icon, text, val }) => (
                 <div key={text} className="inline-flex items-center gap-1 text-[13px] text-[#5A6F8A]">
                   <IIcon name={icon} size={13} color="#10B981" />
@@ -560,7 +775,10 @@ export default function TikiApp() {
               ))}
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
-              <button className="inline-flex items-center gap-1.5 rounded-[9px] border-0 bg-[linear-gradient(135deg,#10B981,#0D9488)] px-[22px] py-[11px] text-sm font-bold text-white" onClick={resetAll}>
+              <button
+                className="inline-flex items-center gap-1.5 rounded-[9px] border-0 bg-[linear-gradient(135deg,#10B981,#0D9488)] px-[22px] py-[11px] text-sm font-bold text-white"
+                onClick={() => navigate("/meeting-detail")}
+              >
                 <IIcon name="fileText" size={15} color="#fff" />
                 회의록 보기
               </button>
@@ -594,17 +812,6 @@ export default function TikiApp() {
 
       {!isMobile && <Footer />}
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
-
-      <div
-        className={cn(
-          "fixed left-1/2 z-[200] flex max-w-[calc(100vw-32px)] items-center gap-2 rounded-[10px] bg-[rgba(220,38,38,.95)] px-5 py-3 text-sm font-semibold text-white shadow-[0_8px_32px_rgba(0,0,0,.15)] backdrop-blur-[12px] transition-transform duration-300",
-          isMobile ? "bottom-20" : "bottom-8",
-          toast.show ? "translate-x-[-50%] translate-y-0" : "translate-x-[-50%] translate-y-[100px]",
-        )}
-      >
-        <IIcon name="alertCircle" size={16} color="#fff" />
-        <span>{toast.msg}</span>
-      </div>
     </div>
   );
 }
