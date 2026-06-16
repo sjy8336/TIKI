@@ -7,12 +7,15 @@ import LoginPage from './pages/Login';
 import SignUpPage from './pages/SignUp';
 import CreateProject from './pages/CreateProject';
 import ProjectList from './pages/ProjectList';
+import ProjectMeetings from './pages/ProjectMeetings';
 
 function App() {
   return (
     <Routes>
       <Route path="/create-project" element={<CreateProject />} />
       <Route path="/project-list" element={<ProjectList />} />
+      <Route path="/project/:projectId" element={<ProjectMeetings />} />
+      <Route path="/project/:projectId/meetings" element={<ProjectMeetings />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/upload" element={<FileUploader />} />
       <Route path="/configuration" element={<Configuration />} />
