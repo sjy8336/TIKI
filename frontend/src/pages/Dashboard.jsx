@@ -60,14 +60,14 @@ const INITIAL_ACTION_ITEMS = [
     id: 2,
     title: "로그인 만료 세션 예외 처리 및 토큰 리프레시 로직 보완",
     priority: "낮음",
-    assignee: "김민수",
+    assignee: "김소현",
     avatar: "user",
     status: "연동 완료",
     dueDate: "2026-06-30",
     description: "회의록 11분 45초 영역 기인. 사용자가 장시간 자리를 비우거나 브라우저를 종료했을 때 세션 만료가 뜨지 않는 버그 방지. Redis 연동 세션 스펙을 검토하고 자동 갱신 API 연동 수행.",
     contextTime: "11:45",
     aiOriginalTitle: "로그인 세션 에러 고치기",
-    aiOriginalAssignee: "김민수",
+    aiOriginalAssignee: "김소현",
     aiOriginalDueDate: "2026-06-25",
     jiraLink: "https://jira.atlassian.com/browse/TIKI-102"
   },
@@ -75,14 +75,14 @@ const INITIAL_ACTION_ITEMS = [
     id: 3,
     title: "대시보드 UI MVP 디자인 최종 시안 Figma 업로드 및 검토 요청",
     priority: "낮음",
-    assignee: "박디자이너",
+    assignee: "채하율",
     avatar: "user",
     status: "연동 완료",
     dueDate: "2026-06-16",
     description: "회의록 24분 02초 영역 기인. 시제품 자재 및 컴포넌트 단위 디자인 가이드 Figma 업로드 완료 후 Jira 연계 에픽 생성.",
     contextTime: "24:02",
     aiOriginalTitle: "피그마 올리기",
-    aiOriginalAssignee: "박디자이너",
+    aiOriginalAssignee: "채하율",
     aiOriginalDueDate: "2026-06-16",
     jiraLink: "https://jira.atlassian.com/browse/TIKI-104"
   }
@@ -427,14 +427,19 @@ export default function App() {
 
               {/* 가상 대시보드 엿보기 일러스트 (움직임 효과 제거 완료) */}
               <div className="mt-16 border border-[rgba(0,100,180,0.12)] rounded-2xl bg-white shadow-2xl p-4 lg:p-6 max-w-5xl mx-auto transition-all">
-                <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4">
+                <div className="flex items-center justify-between gap-2 border-b border-gray-100 pb-3 mb-4 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="w-3 h-3 rounded-full bg-[#EF4444]"></span>
                     <span className="w-3 h-3 rounded-full bg-[#F59E0B]"></span>
                     <span className="w-3 h-3 rounded-full bg-[#10B981]"></span>
                   </div>
-                  <span className="text-xs text-[#5A6F8A] font-mono">https://tiki.neotech.io/dashboard</span>
-                  <span className="text-xs text-[#0099CC] font-bold">● LIVE DEMO PREVIEW</span>
+                  <span className="min-w-0 flex-1 text-[10px] sm:text-xs text-[#5A6F8A] font-mono truncate">
+                    https://tiki.neotech.io/dashboard
+                  </span>
+                  <span className="shrink-0 text-[10px] sm:text-xs text-[#0099CC] font-bold whitespace-nowrap">
+                    <span className="sm:hidden">● LIVE</span>
+                    <span className="hidden sm:inline">● LIVE DEMO PREVIEW</span>
+                  </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
                   {INITIAL_ACTION_ITEMS.slice(0, 3).map((item) => (
