@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     jira_token: str | None = Field(default=None, alias="JIRA_TOKEN")
     notion_token: str | None = Field(default=None, alias="NOTION_TOKEN")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
 
     @property
     def cors_origins(self) -> list[str]:
