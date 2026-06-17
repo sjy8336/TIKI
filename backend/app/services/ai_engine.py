@@ -1,39 +1,128 @@
-import logging
+"""Compatibility facade for the AI processing pipeline.
 
-# 로깅 설정 (운영/디버깅을 위해 필수)
-logging.basicConfig(level=logging.INFO)
+This module keeps a simple public surface for older imports while delegating
+actual work to the split services under app.services.ai and app.services.pipeline.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.services.ai.llm_analysis import HeuristicLLMAnalysisService, LLMAnalysisService
+from app.services.ai.stt import SpeechToTextService, WhisperSpeechToTextService
+from app.services.pipeline.security_masking import mask_personal_information
+
 logger = logging.getLogger(__name__)
 
+
+@dataclass(slots=True)
+class AIAnalysisPayload:
+    summary: str
+    action_items: list[dict[str, Any]]
+    model_name: str | None = None
+    prompt_version: str | None = None
+    extra_data: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "summary": self.summary,
+            "action_items": self.action_items,
+            "model_name": self.model_name,
+            "prompt_version": self.prompt_version,
+            "extra_data": self.extra_data,
+        }
+
+
+@dataclass(slots=True)
+class AIProcessingResult:
+    transcript: str
+    masked_transcript: str
+    analysis: AIAnalysisPayload
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "transcript": self.transcript,
+            "masked_transcript": self.masked_transcript,
+            "analysis": self.analysis.to_dict(),
+        }
+
+
+class AIEngine:
+    """Thin orchestration layer for STT, masking, and meeting analysis."""
+
+    def __init__(
+        self,
+        stt_service: SpeechToTextService | None = None,
+        llm_service: LLMAnalysisService | None = None,
+    ) -> None:
+        self.stt_service = stt_service or WhisperSpeechToTextService()
+        self.llm_service = llm_service or HeuristicLLMAnalysisService()
+
+    def transcribe_audio(self, file_path: str) -> str:
+        return self.stt_service.transcribe(file_path)
+
+    def summarize_meeting(self, text: str) -> str:
+        analysis = self.llm_service.summarize_and_extract_tickets(mask_personal_information(text))
+        return str(analysis.get("summary", ""))
+
+    def extract_tickets(self, summary: str) -> list[dict[str, Any]]:
+        analysis = self.llm_service.summarize_and_extract_tickets(mask_personal_information(summary))
+        return list(analysis.get("action_items", []))
+
+    def process_text(self, text: str) -> AIProcessingResult:
+        masked_text = mask_personal_information(text)
+        analysis_data = self.llm_service.summarize_and_extract_tickets(masked_text)
+        analysis = AIAnalysisPayload(
+            summary=str(analysis_data.get("summary", "")),
+            action_items=list(analysis_data.get("action_items", [])),
+            model_name=analysis_data.get("model_name"),
+            prompt_version=analysis_data.get("prompt_version"),
+            extra_data=dict(analysis_data.get("extra_data", {})),
+        )
+        return AIProcessingResult(
+            transcript=text,
+            masked_transcript=masked_text,
+            analysis=analysis,
+        )
+
+    def process_audio(self, file_path: str) -> AIProcessingResult:
+        transcript = self.transcribe_audio(file_path)
+        return self.process_text(transcript)
+
+
+_DEFAULT_AI_ENGINE: AIEngine | None = None
+
+
+def get_default_ai_engine() -> AIEngine:
+    global _DEFAULT_AI_ENGINE
+    if _DEFAULT_AI_ENGINE is None:
+        _DEFAULT_AI_ENGINE = AIEngine()
+    return _DEFAULT_AI_ENGINE
+
+
 def transcribe_audio(file_path: str) -> str:
-    """
-    [STT 엔진] 로컬 Whisper 모델을 사용해 오디오를 텍스트로 변환합니다.
-    """
-    logger.info(f"STT 시작: {file_path}")
-    
-    # [TODO] 여기서 whisper 모델 로드 및 변환 로직 구현
-    # 예: model = whisper.load_model("base") / result = model.transcribe(file_path)
-    
-    return "이것은 Whisper를 통해 변환된 테스트 텍스트입니다."
+    return get_default_ai_engine().transcribe_audio(file_path)
+
 
 def summarize_meeting(text: str) -> str:
-    """
-    [LLM 엔진] 프롬프트 엔지니어링을 통해 회의 내용을 요약하고 티켓을 추출합니다.
-    """
-    if not text:
-        return "요약할 텍스트가 없습니다."
+    return get_default_ai_engine().summarize_meeting(text)
 
-    logger.info("LLM 요약 및 티켓 추출 시작")
-    
-    # [TODO] 여기서 LangChain/OpenAI API 호출 로직 구현
-    # 예: prompt = f"다음 회의록을 요약하고 Action Item을 추출해줘: {text}"
-    
-    return f"AI 요약본: {text[:100]}... [Action Item: 티켓 추출 데이터]"
 
-def extract_tickets(summary: str) -> list:
-    """
-    [데이터 처리] 요약된 내용에서 Jira/Notion용 티켓 정보를 추출합니다.
-    """
-    logger.info("티켓 추출 로직 실행")
-    
-    # [TODO] 요약본에서 티켓 리스트 파싱 로직
-    return [{"title": "티켓 테스트", "status": "To Do"}]
+def extract_tickets(summary: str) -> list[dict[str, Any]]:
+    return get_default_ai_engine().extract_tickets(summary)
+
+
+def process_audio(file_path: str) -> dict[str, Any]:
+    """Convenience wrapper for callers that prefer dict payloads."""
+    result = get_default_ai_engine().process_audio(file_path)
+    logger.info("AI pipeline completed for %s", file_path)
+    return result.to_dict()
+
+
+def process_text(text: str) -> dict[str, Any]:
+    """Convenience wrapper for text-only inputs."""
+    result = get_default_ai_engine().process_text(text)
+    logger.info("AI text pipeline completed")
+    return result.to_dict()
