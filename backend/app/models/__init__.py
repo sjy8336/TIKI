@@ -1,14 +1,5 @@
-from app.models.analysis import AnalysisResult
-from app.models.file import ExtractedContent, UploadedFile
-from app.models.integration import ExternalSync
-from app.models.ticket import Ticket
-from app.models.user import User
+"""ORM models package.
 
-__all__ = [
-    "AnalysisResult",
-    "ExtractedContent",
-    "ExternalSync",
-    "Ticket",
-    "UploadedFile",
-    "User",
-]
+Avoid eager imports here so lightweight service modules can import enum
+definitions without initializing the database engine.
+"""
