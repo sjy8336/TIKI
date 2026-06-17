@@ -8,6 +8,8 @@ import SignUpPage from './pages/SignUp';
 import CreateProject from './pages/CreateProject';
 import ProjectList from './pages/ProjectList';
 import ProjectMeetings from './pages/ProjectMeetings';
+import MyPage from './pages/Mypage';
+import Landingpage from './pages/Landingpage';
 
 function App() {
   return (
@@ -20,6 +22,8 @@ function App() {
       <Route path="/upload" element={<FileUploader />} />
       <Route path="/configuration" element={<Configuration />} />
       <Route path="/meeting-detail" element={<MeetingMinutesDetail />} />
+      <Route path="/mypage" element={<MyPage />} />
+      <Route path="/landing" element={<Landingpage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignUpPage />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
