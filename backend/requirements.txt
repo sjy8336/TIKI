@@ -2,5 +2,9 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 psycopg2-binary
-openai-whisper
+python-dotenv
 pydantic-settings
+alembic
+python-multipart
+email-validator
+openai-whisper
