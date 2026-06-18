@@ -315,6 +315,7 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
     const effectiveLoggedIn = typeof isLoggedIn === 'boolean' ? isLoggedIn : authState;
     const effectiveUser = user ?? sessionUser;
     const subscribed = typeof isSubscribed === 'boolean' ? isSubscribed : Boolean(effectiveUser?.isSubscribed);
+    const logoDestination = effectiveLoggedIn ? '/upload' : '/dashboard';
     const handleLogout = () => {
         clearAuthSession();
         if (pathname !== '/dashboard') {
@@ -346,7 +347,7 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
             >
                 {/* ── Logo ── */}
                 <Link
-                    to="/upload"
+                    to={logoDestination}
                     className="flex items-center gap-2.5 text-[#0D1B2A] no-underline"
                 >
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[linear-gradient(135deg,#0099CC,#7C3AED)]">

@@ -27,7 +27,13 @@ function App() {
       <Route path="/meeting-detail" element={<MeetingMinutesDetail />} />
       <Route
         path="/mypage"
-        element={isAuthenticated ? <MyPage /> : <Navigate to="/login" replace />}
+        element={
+          isAuthenticated ? (
+            <MyPage />
+          ) : (
+            <Navigate to="/login" replace state={{ from: '/mypage' }} />
+          )
+        }
       />
       <Route path="/landing" element={<Landingpage />} />
       <Route path="/login" element={<LoginPage />} />
