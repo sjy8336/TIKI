@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { loginUser, saveAuthSession } from '../api/apiClient';
 import AuthHeader from '../components/AuthHeader';
 
@@ -121,6 +121,8 @@ function GoogleIcon({ size = 18 }) {
 
 export default function LoginPage() {
     const navigate = useNavigate();
+    const location = useLocation();
+    const redirectTo = location.state?.from ?? '/upload';
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -130,9 +132,9 @@ export default function LoginPage() {
 
     useEffect(() => {
         if (localStorage.getItem('tiki_access_token')) {
-            navigate('/upload', { replace: true });
+            navigate(redirectTo, { replace: true });
         }
-    }, [navigate]);
+    }, [navigate, redirectTo]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -149,7 +151,7 @@ export default function LoginPage() {
         try {
             const authResponse = await loginUser({ email, password });
             saveAuthSession(authResponse);
-            navigate('/upload');
+            navigate(redirectTo, { replace: true });
         } catch (err) {
             setError(err.message || '로그인에 실패했습니다.');
         } finally {
