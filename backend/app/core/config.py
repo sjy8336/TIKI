@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
     whisper_model: str = Field(default="small", alias="WHISPER_MODEL")
+    whisper_noisy_model: str = Field(default="medium", alias="WHISPER_NOISY_MODEL")
 
     @property
     def cors_origins(self) -> list[str]:

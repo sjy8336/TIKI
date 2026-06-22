@@ -33,6 +33,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
 
     def __init__(self, model_name: str | None = None, language: str | None = "ko") -> None:
         self.model_name = model_name or settings.whisper_model
+        self.noisy_model_name = settings.whisper_noisy_model
         self.language = language
         self.preprocessor = WhisperAudioPreprocessor()
         self._last_preprocessing: AudioPreprocessingResult | None = None
@@ -55,10 +56,11 @@ class WhisperSpeechToTextService(SpeechToTextService):
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        logger.info("Starting STT for %s using Whisper(%s)", path, self.model_name)
-        model = self._load_model(self.model_name)
         preprocessing = self.preprocessor.prepare(path)
         self._last_preprocessing = preprocessing
+        model_name = self._select_model_name(preprocessing)
+        logger.info("Starting STT for %s using Whisper(%s)", path, model_name)
+        model = self._load_model(model_name)
         text, _segments = self._transcribe_preprocessed_with_segments(model, preprocessing)
 
         logger.info(
@@ -75,10 +77,11 @@ class WhisperSpeechToTextService(SpeechToTextService):
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        logger.info("Starting STT with segments for %s using Whisper(%s)", path, self.model_name)
-        model = self._load_model(self.model_name)
         preprocessing = self.preprocessor.prepare(path)
         self._last_preprocessing = preprocessing
+        model_name = self._select_model_name(preprocessing)
+        logger.info("Starting STT with segments for %s using Whisper(%s)", path, model_name)
+        model = self._load_model(model_name)
         text, segments = self._transcribe_preprocessed_with_segments(model, preprocessing)
 
         logger.info(
@@ -96,6 +99,21 @@ class WhisperSpeechToTextService(SpeechToTextService):
 
     def get_last_preprocessing(self) -> AudioPreprocessingResult | None:
         return self._last_preprocessing
+
+    def _select_model_name(self, preprocessing: AudioPreprocessingResult) -> str:
+        if preprocessing.is_noisy and preprocessing.duration_seconds >= 120.0:
+            if (
+                self.noisy_model_name
+                and self.noisy_model_name != self.model_name
+                and self._is_model_cached(self.noisy_model_name)
+            ):
+                return self.noisy_model_name
+        return self.model_name
+
+    @staticmethod
+    def _is_model_cached(model_name: str) -> bool:
+        cache_dir = Path.home() / ".cache" / "whisper"
+        return (cache_dir / f"{model_name}.pt").exists()
 
     def _transcribe_preprocessed_with_segments(
         self,
@@ -125,16 +143,24 @@ class WhisperSpeechToTextService(SpeechToTextService):
             result = model.transcribe(chunk.samples, **options)
             chunk_text = self._clean_transcript_text(result.get("text") or "")
             chunk_segments = list(result.get("segments") or [])
+            core_start = chunk.core_start_seconds if chunk.core_start_seconds is not None else chunk.start_seconds
+            core_end = chunk.core_end_seconds if chunk.core_end_seconds is not None else chunk.end_seconds
+            chunk_kept_texts: list[str] = []
 
             if chunk_segments:
                 for local_index, segment in enumerate(chunk_segments):
                     text = self._clean_transcript_text(segment.get("text") or "")
+                    segment_start = float(segment.get("start") or 0.0)
+                    segment_end = float(segment.get("end") or 0.0)
                     if not self._should_keep_segment(text, segment, preprocessing):
                         continue
+                    if not self._is_segment_in_core_region(segment_start, segment_end, core_start, core_end):
+                        continue
 
-                    start_seconds = chunk.start_seconds + float(segment.get("start") or 0.0)
-                    end_seconds = chunk.start_seconds + float(segment.get("end") or 0.0)
+                    start_seconds = chunk.start_seconds + segment_start
+                    end_seconds = chunk.start_seconds + segment_end
                     confidence = self._segment_confidence(segment)
+                    chunk_kept_texts.append(text)
                     segments.append(text)
                     structured_segments.append(
                         {
@@ -149,6 +175,22 @@ class WhisperSpeechToTextService(SpeechToTextService):
                             "avg_logprob": segment.get("avg_logprob"),
                             "no_speech_prob": segment.get("no_speech_prob"),
                             "compression_ratio": segment.get("compression_ratio"),
+                        }
+                    )
+                if not chunk_kept_texts and chunk_text and not self._is_likely_noise_text(chunk_text):
+                    segments.append(chunk_text)
+                    structured_segments.append(
+                        {
+                            "index": len(structured_segments),
+                            "chunk_index": chunk.index,
+                            "start_seconds": round(chunk.start_seconds, 3),
+                            "end_seconds": round(chunk.end_seconds, 3),
+                            "duration_seconds": round(chunk.duration_seconds, 3),
+                            "text": chunk_text,
+                            "confidence": 0.45 if preprocessing.is_noisy else 0.7,
+                            "avg_logprob": None,
+                            "no_speech_prob": None,
+                            "compression_ratio": None,
                         }
                     )
                 continue
@@ -176,6 +218,8 @@ class WhisperSpeechToTextService(SpeechToTextService):
     def _build_initial_prompt(preprocessing: AudioPreprocessingResult) -> str:
         prompt = "한국어 회의록 전사입니다. 여러 사람이 참여하는 회의 대화입니다."
         prompt += " 잡음, 잔향, 에어컨 소리, 키보드 소리, 겹치는 발화는 무시하고 의미 있는 발화만 전사하세요."
+        prompt += " 회의 핵심 용어 예시: 결재, 업무 등록, 일정 관리, 관리자 페이지, 요구사항 명세서, 통합 테스트, 버그 수정, 배포, 오픈, 리스크, 인사팀, 디자인 시안, 로그인, 대시보드, 담당자 지정."
+        prompt += " 업무 시스템 회의에서는 approval 의미는 결재로 유지하고, payment 의미일 때만 결제로 표기하세요."
         if preprocessing.is_noisy:
             prompt += " 녹음 품질이 좋지 않으므로 끊긴 단어, 중복 음절, 배경 잡음을 억지로 복원하지 말고 명확한 회의 발화만 남기세요."
         return prompt
@@ -220,6 +264,11 @@ class WhisperSpeechToTextService(SpeechToTextService):
         if preprocessing.is_noisy and no_speech_prob is not None and no_speech_prob >= 0.72 and text_length <= 60:
             return False
         return True
+
+    @staticmethod
+    def _is_segment_in_core_region(start_seconds: float, end_seconds: float, core_start: float, core_end: float) -> bool:
+        midpoint = (start_seconds + end_seconds) / 2.0
+        return core_start <= midpoint <= core_end
 
     @staticmethod
     def _segment_confidence(segment: dict[str, Any]) -> float:
