@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
@@ -6,30 +6,61 @@ import MobileTab from '../components/MobileTab';
 
 const iconPaths = {
   plus: ['M12 5v14', 'M5 12h14'],
-  folderKanban: [
-    'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
-    'M8 13h8',
-    'M8 17h5'
-  ],
-  settings: [
-    'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
-    'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'
-  ],
+  grid: ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M3 14h7v7H3z', 'M14 14h7v7h-7z'],
+  list: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01'],
   users: [
     'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2',
     'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8',
-    'M22 21v-2a4 4 0 0 0-3-3.87'
+    'M22 21v-2a4 4 0 0 0-3-3.87',
   ],
-  x: ['M18 6L6 18', 'M6 6l12 12'],
-  chevronRight: ['M9 18l6-6-6-6'],
   chevronDown: ['M6 9l6 6 6-6'],
   check: ['M20 6L9 17l-5-5'],
   moreVertical: ['M12 5h.01', 'M12 12h.01', 'M12 19h.01'],
-  grid: ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M3 14h7v7H3z', 'M14 14h7v7h-7z'],
-  list: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01']
+  clock: ['M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20', 'M12 6v6l4 2'],
+  folder: ['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'],
+  search: ['M21 21l-4.35-4.35', 'M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0'],
 };
 
-function PIcon({ name, size = 18, className = '', style }) {
+// 프로젝트별 회의 요약 더미 텍스트
+const PROJECT_SUMMARY = {
+  1: 'AI 기반 회의록 자동 생성 파이프라인 설계 및 STT 모델 선정 검토 진행 중',
+  2: '공통 컴포넌트 토큰 체계 정립 및 Figma 변수 연동 방안 논의 완료',
+  3: '사용자 인터뷰 VOC 패턴 분석 후 핵심 페인포인트 3가지 도출 예정',
+  4: 'Q3 신규 기능 로드맵 초안 작성 및 이해관계자 우선순위 합의 진행',
+  5: '배치 작업 장애 원인 분석 완료, 자동화 아키텍처 개선안 리뷰 예정',
+  6: '신규 유입 온보딩 시나리오 점검 및 단계별 이탈 원인 분석 중',
+  7: '채널별 캠페인 퍼포먼스 데이터 취합 후 액션 아이템 우선순위 정렬',
+  8: '사내 문서 템플릿 통합 기준 수립 및 부서별 적용 범위 협의 완료',
+  9: '백로그 항목 재정리 및 스프린트 우선순위 기준 팀 내 정합성 확보',
+  10: '핵심 KPI 후보군 정의 후 데이터 수집 가능 여부 검토 단계 진입',
+  11: '온보딩 퍼널 단계별 이탈률 분석 및 가설 기반 개선안 도출 중',
+};
+
+const PROJECTS = [
+  { id: 1, name: 'AI 회의록 자동화', category: '개발', members: 5, createdAt: '2026-06-01', teamLead: '정아름', updatedAt: '2시간 전', participants: ['정아름', '김민수', '송지영', '김소현', '채하율'], meetings: [{ id: 'm-101', title: '주간 스프린트 회의', date: '2026-06-10', round: '1회차' }, { id: 'm-102', title: '요구사항 정제 미팅', date: '2026-06-13', round: '2회차' }] },
+  { id: 2, name: '디자인 시스템 구축', category: '디자인', members: 3, createdAt: '2026-05-27', teamLead: '박디자이너', updatedAt: '어제', participants: ['박디자이너', '정아름', '송지영'], meetings: [{ id: 'm-201', title: '컴포넌트 토큰 정리', date: '2026-06-09', round: '1회차' }] },
+  { id: 3, name: '사용자 인터뷰 분석', category: '기타', members: 7, createdAt: '2026-05-19', teamLead: '김소현', updatedAt: '3일 전', participants: ['김소현', '송지영', '채하율', '외부리서처A'], meetings: [{ id: 'm-301', title: '인터뷰 질문지 점검', date: '2026-06-05', round: '1회차' }, { id: 'm-302', title: 'VOC 인사이트 공유', date: '2026-06-11', round: '2회차' }, { id: 'm-303', title: '후속 액션 플래닝', date: '2026-06-14', round: '3회차' }] },
+  { id: 4, name: '분기별 기획안', category: '기획', members: 4, createdAt: '2026-06-08', teamLead: '송지영', updatedAt: '1시간 전', participants: ['송지영', '김소현', '정아름', '김민수'], meetings: [{ id: 'm-401', title: 'Q3 로드맵 정리', date: '2026-06-15', round: '1회차' }] },
+  { id: 5, name: '운영 자동화 개선', category: '개발', members: 6, createdAt: '2026-04-23', teamLead: '김민수', updatedAt: '5시간 전', participants: ['김민수', '채하율', '정아름'], meetings: [{ id: 'm-501', title: '배치 작업 장애 복기', date: '2026-06-08', round: '1회차' }, { id: 'm-502', title: '자동화 아키텍처 리뷰', date: '2026-06-12', round: '2회차' }] },
+  { id: 6, name: '온보딩 가이드 리뉴얼', category: '기획', members: 2, createdAt: '2026-05-03', teamLead: '김소현', updatedAt: '이번 주', participants: ['김소현', '박디자이너'], meetings: [{ id: 'm-601', title: '신규 유입 시나리오 점검', date: '2026-06-07', round: '1회차' }] },
+  { id: 7, name: '캠페인 퍼널 분석', category: '마케팅', members: 4, createdAt: '2026-05-15', teamLead: '마케터A', updatedAt: '어제', participants: ['마케터A', '김소현', '채하율'], meetings: [{ id: 'm-701', title: '캠페인 성과 리뷰', date: '2026-06-10', round: '1회차' }, { id: 'm-702', title: '채널별 액션 아이템', date: '2026-06-13', round: '2회차' }] },
+  { id: 8, name: '문서 표준화 태스크', category: '기타', members: 3, createdAt: '2026-04-30', teamLead: '송지영', updatedAt: '3일 전', participants: ['송지영', '정아름', '김소현'], meetings: [{ id: 'm-801', title: '문서 템플릿 통합', date: '2026-06-06', round: '1회차' }] },
+  { id: 9, name: '신규 기능 우선순위 정렬', category: '기획', members: 5, createdAt: '2026-05-21', teamLead: '정아름', updatedAt: '어제', participants: ['정아름', '김소현', '송지영', '김민수', '채하율'], meetings: [{ id: 'm-901', title: '우선순위 기준 정합', date: '2026-06-11', round: '1회차' }, { id: 'm-902', title: '백로그 재정리', date: '2026-06-14', round: '2회차' }] },
+  { id: 10, name: '프로덕트 KPI 재정의', category: '기획', members: 4, createdAt: '2026-05-12', teamLead: '김소현', updatedAt: '3일 전', participants: ['김소현', '정아름', '박디자이너', '송지영'], meetings: [{ id: 'm-1001', title: '핵심 KPI 후보 정의', date: '2026-06-09', round: '1회차' }] },
+  { id: 11, name: '온보딩 퍼널 개선안', category: '기획', members: 6, createdAt: '2026-05-30', teamLead: '송지영', updatedAt: '이번 주', participants: ['송지영', '김소현', '정아름', '김민수', '채하율', '박디자이너'], meetings: [{ id: 'm-1101', title: '퍼널 단계별 이탈 분석', date: '2026-06-08', round: '1회차' }, { id: 'm-1102', title: '가설 기반 개선안 리뷰', date: '2026-06-12', round: '2회차' }] },
+];
+
+const stateLabels = {
+  IDLE: '대기 중',
+  UPLOADING: '업로드 중',
+  PROCESSING: 'AI 분석 중',
+  COMPLETED: '분석 완료',
+  FAILED: '오류 발생',
+};
+
+const SORT_OPTIONS = ['최신순', '이름순', '인원 많은순'];
+
+function PIcon({ name, size = 18, className = '' }) {
   const paths = iconPaths[name];
   if (!paths) return null;
   return (
@@ -43,7 +74,6 @@ function PIcon({ name, size = 18, className = '', style }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
-      style={style}
     >
       {paths.map((d, i) => (
         <path key={i} d={d} />
@@ -52,27 +82,168 @@ function PIcon({ name, size = 18, className = '', style }) {
   );
 }
 
-const ProjectList = () => {
+function getTimeRank(value) {
+  const order = { '1시간 전': 6, '2시간 전': 5, '5시간 전': 4, 어제: 3, '3일 전': 2, '이번 주': 1 };
+  return order[value] || 0;
+}
+
+function parseCurrentUser() {
+  try {
+    const raw = localStorage.getItem('tiki_user');
+    if (!raw) return { name: '', email: '' };
+    const user = JSON.parse(raw);
+    return {
+      name: typeof user?.name === 'string' ? user.name.trim() : '',
+      email: typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '',
+    };
+  } catch {
+    return { name: '', email: '' };
+  }
+}
+
+function ProjectCard({ project, onOpen, onOpenConfig, openMenuProjectId, setOpenMenuProjectId }) {
+  const summary = PROJECT_SUMMARY[project.id] || '최근 회의 내용을 요약하고 있어요.';
+  const lastMeeting = project.meetings?.[project.meetings.length - 1];
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(project)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpen(project); }}
+      className="group flex w-full cursor-pointer flex-col rounded-2xl border border-[rgba(0,0,0,0.07)] bg-white text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[rgba(0,153,204,0.25)] hover:shadow-[0_6px_20px_rgba(0,0,0,0.09)]"
+    >
+      <div className="flex flex-1 flex-col p-4">
+
+        {/* 상단: 프로젝트 이름 + ⋮ 메뉴 한 줄 */}
+        <div className="mb-2.5 flex items-start justify-between gap-2" data-project-menu-root="true">
+          <h3 className="flex-1 text-[13.5px] font-bold leading-[1.5] text-[#0D1B2A] line-clamp-1">
+            {project.name}
+          </h3>
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenMenuProjectId((prev) => (prev === project.id ? null : project.id));
+              }}
+              className="-mt-0.5 flex h-6 w-6 items-center justify-center rounded-full text-[#B0BFCC] transition-all hover:bg-[#F1F4F8] hover:text-[#5A6F8A]"
+              aria-label="프로젝트 메뉴"
+            >
+              <PIcon name="moreVertical" size={14} />
+            </button>
+
+            {openMenuProjectId === project.id && (
+              <div className="absolute right-0 top-full z-30 mt-1 w-36 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)]">
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setOpenMenuProjectId(null); onOpenConfig(project); }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
+                >
+                  설정 페이지
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setOpenMenuProjectId(null); onOpen(project); }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
+                >
+                  회의 목록
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 최근 회의 제목 */}
+        {lastMeeting && (
+          <p className="mb-1.5 text-[11.5px] font-medium text-[#0099CC] truncate">
+            {lastMeeting.title}
+          </p>
+        )}
+
+        {/* 회의 요약 2줄 */}
+        <p className="flex-1 text-[12px] leading-[1.6] text-[#7A8FA6] line-clamp-2">
+          {summary}
+        </p>
+
+        {/* 하단: 참여 인원 + 업데이트 시간 */}
+        <div className="mt-3 flex items-center justify-between border-t border-[rgba(0,0,0,0.05)] pt-3 text-[11.5px] text-[#A0AFBF]">
+          <span className="flex items-center gap-1">
+            <PIcon name="users" size={12} />
+            <span>{project.members}명</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <PIcon name="clock" size={12} />
+            <span>{project.updatedAt}</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectCardSkeleton() {
+  return (
+    <div className="rounded-2xl border border-[rgba(0,0,0,0.07)] bg-white shadow-sm">
+      <div className="p-4">
+        <div className="mb-2.5 flex items-center justify-between gap-2">
+          <div className="h-4 w-2/3 animate-pulse rounded bg-[#F1F4F8]" />
+          <div className="h-5 w-5 animate-pulse rounded-full bg-[#F1F4F8]" />
+        </div>
+        <div className="mb-1.5 h-3 w-1/2 animate-pulse rounded bg-[#F1F4F8]" />
+        <div className="h-3 w-full animate-pulse rounded bg-[#F1F4F8]" />
+        <div className="mt-1 h-3 w-4/5 animate-pulse rounded bg-[#F1F4F8]" />
+        <div className="mt-3 flex items-center justify-between border-t border-[rgba(0,0,0,0.05)] pt-3">
+          <div className="h-3 w-14 animate-pulse rounded bg-[#F1F4F8]" />
+          <div className="h-3 w-12 animate-pulse rounded bg-[#F1F4F8]" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectListItem({ project, onOpen }) {
+  const summary = PROJECT_SUMMARY[project.id] || '최근 회의 내용을 요약하고 있어요.';
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(project)}
+      className="flex w-full items-start gap-3 rounded-xl border border-[rgba(0,0,0,0.07)] bg-white px-4 py-3.5 text-left transition hover:bg-[#F8FAFF] hover:border-[rgba(0,153,204,0.2)]"
+    >
+      <div className="min-w-0 flex-1">
+        <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-[#0D1B2A]">
+          {project.name}
+        </h3>
+        <p className="mt-0.5 line-clamp-1 text-xs text-[#7A8FA6]">{summary}</p>
+        <div className="mt-1 flex items-center gap-1 text-xs text-[#A0AFBF]">
+          <PIcon name="users" size={11} />
+          <span>{project.members}명</span>
+        </div>
+      </div>
+      <span className="flex shrink-0 items-center gap-1 pt-0.5 text-xs text-[#A0AFBF]">
+        <PIcon name="clock" size={11} />
+        {project.updatedAt}
+      </span>
+    </button>
+  );
+}
+
+export default function ProjectList() {
   const navigate = useNavigate();
   const sortDropdownRef = useRef(null);
-  const categoryDropdownRef = useRef(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
-  const [activeTab, setActiveTab] = useState('home');
-  const [viewMode, setViewMode] = useState('card');
+  const [activeTab, setActiveTab] = useState('projects');
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('전체');
   const [sortFilter, setSortFilter] = useState('최신순');
   const [isSortOpen, setIsSortOpen] = useState(false);
-  const [isCategoryOpen, setIsCategoryOpen] = useState(false);
+  const [viewMode, setViewMode] = useState('card');
   const [openMenuProjectId, setOpenMenuProjectId] = useState(null);
-  const [groupPage, setGroupPage] = useState({});
+  const [page, setPage] = useState(1);
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentUser] = useState(() => parseCurrentUser());
 
   useEffect(() => {
-    const handleResize = () => {
-      setIsMobile(window.innerWidth < 768);
-      setWindowWidth(window.innerWidth);
-    };
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -80,418 +251,276 @@ const ProjectList = () => {
   useEffect(() => {
     const handleOutsideClick = (e) => {
       if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target)) setIsSortOpen(false);
-      if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(e.target)) setIsCategoryOpen(false);
       if (!e.target.closest('[data-project-menu-root="true"]')) setOpenMenuProjectId(null);
     };
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
-  const stateLabels = {
-    IDLE: '대기 중',
-    UPLOADING: '업로드 중',
-    PROCESSING: 'AI 분석 중',
-    COMPLETED: '분석 완료',
-    FAILED: '오류 발생'
-  };
-
-  const projects = [
-    { id: 1, name: 'AI 회의록 자동화', category: '개발', color: 'bg-[#0099CC]', members: 5, createdAt: '2026-06-01', teamLead: '정아름', updatedAt: '2시간 전', participants: ['정아름', '김민수', '송지영', '김소현', '채하율'], meetings: [{ id: 'm-101', title: '주간 스프린트 회의', date: '2026-06-10', round: '1회차' }, { id: 'm-102', title: '요구사항 정제 미팅', date: '2026-06-13', round: '2회차' }] },
-    { id: 2, name: '디자인 시스템 구축', category: '디자인', color: 'bg-[#7C3AED]', members: 3, createdAt: '2026-05-27', teamLead: '박디자이너', updatedAt: '어제', participants: ['박디자이너', '정아름', '송지영'], meetings: [{ id: 'm-201', title: '컴포넌트 토큰 정리', date: '2026-06-09', round: '1회차' }] },
-    { id: 3, name: '사용자 인터뷰 분석', category: '기타', color: 'bg-[#10B981]', members: 7, createdAt: '2026-05-19', teamLead: '김소현', updatedAt: '3일 전', participants: ['김소현', '송지영', '채하율', '외부리서처A'], meetings: [{ id: 'm-301', title: '인터뷰 질문지 정합성 점검', date: '2026-06-05', round: '1회차' }, { id: 'm-302', title: 'VOC 인사이트 공유', date: '2026-06-11', round: '2회차' }, { id: 'm-303', title: '후속 액션 플래닝', date: '2026-06-14', round: '3회차' }] },
-    { id: 4, name: '분기별 기획안', category: '기획', color: 'bg-[#F59E0B]', members: 4, createdAt: '2026-06-08', teamLead: '송지영', updatedAt: '1시간 전', participants: ['송지영', '김소현', '정아름', '김민수'], meetings: [{ id: 'm-401', title: 'Q3 로드맵 정리', date: '2026-06-15', round: '1회차' }] },
-    { id: 5, name: '운영 자동화 개선', category: '개발', color: 'bg-[#0099CC]', members: 6, createdAt: '2026-04-23', teamLead: '김민수', updatedAt: '5시간 전', participants: ['김민수', '채하율', '정아름'], meetings: [{ id: 'm-501', title: '배치 작업 장애 복기', date: '2026-06-08', round: '1회차' }, { id: 'm-502', title: '자동화 아키텍처 리뷰', date: '2026-06-12', round: '2회차' }] },
-    { id: 6, name: '온보딩 가이드 리뉴얼', category: '기획', color: 'bg-[#F59E0B]', members: 2, createdAt: '2026-05-03', teamLead: '김소현', updatedAt: '이번 주', participants: ['김소현', '박디자이너'], meetings: [{ id: 'm-601', title: '신규 유입 시나리오 점검', date: '2026-06-07', round: '1회차' }] },
-    { id: 7, name: '캠페인 퍼널 분석', category: '마케팅', color: 'bg-[#EF4444]', members: 4, createdAt: '2026-05-15', teamLead: '마케터A', updatedAt: '어제', participants: ['마케터A', '김소현', '채하율'], meetings: [{ id: 'm-701', title: '캠페인 성과 리뷰', date: '2026-06-10', round: '1회차' }, { id: 'm-702', title: '채널별 액션 아이템', date: '2026-06-13', round: '2회차' }] },
-    { id: 8, name: '문서 표준화 태스크', category: '기타', color: 'bg-[#5A6F8A]', members: 3, createdAt: '2026-04-30', teamLead: '송지영', updatedAt: '3일 전', participants: ['송지영', '정아름', '김소현'], meetings: [{ id: 'm-801', title: '문서 템플릿 통합', date: '2026-06-06', round: '1회차' }] },
-    { id: 9, name: '신규 기능 우선순위 정렬', category: '기획', color: 'bg-[#F59E0B]', members: 5, createdAt: '2026-05-21', teamLead: '정아름', updatedAt: '어제', participants: ['정아름', '김소현', '송지영', '김민수', '채하율'], meetings: [{ id: 'm-901', title: '우선순위 기준 정합', date: '2026-06-11', round: '1회차' }, { id: 'm-902', title: '백로그 재정리', date: '2026-06-14', round: '2회차' }] },
-    { id: 10, name: '프로덕트 KPI 재정의', category: '기획', color: 'bg-[#F59E0B]', members: 4, createdAt: '2026-05-12', teamLead: '김소현', updatedAt: '3일 전', participants: ['김소현', '정아름', '박디자이너', '송지영'], meetings: [{ id: 'm-1001', title: '핵심 KPI 후보 정의', date: '2026-06-09', round: '1회차' }] },
-    { id: 11, name: '온보딩 퍼널 개선안', category: '기획', color: 'bg-[#F59E0B]', members: 6, createdAt: '2026-05-30', teamLead: '송지영', updatedAt: '이번 주', participants: ['송지영', '김소현', '정아름', '김민수', '채하율', '박디자이너'], meetings: [{ id: 'm-1101', title: '퍼널 단계별 이탈 분석', date: '2026-06-08', round: '1회차' }, { id: 'm-1102', title: '가설 기반 개선안 리뷰', date: '2026-06-12', round: '2회차' }] }
-  ];
-
-  const categories = ['전체', '개발', '디자인', '기획', '마케팅', '기타'];
-  const sortOptions = ['최신순', '이름순', '인원 많은순'];
-  const categoryPalette = {
-    '전체':        { bg: '#F0F2F5', text: '#5A6F8A', border: 'rgba(90,111,138,0.3)',   accent: '#8A9AB0', dot: '#8A9AB0' },
-    '개발':        { bg: '#EEF3FF', text: '#0099CC', border: 'rgba(0,153,204,0.32)',   accent: '#0099CC', dot: '#0099CC' },
-    '디자인':      { bg: '#F3E8FF', text: '#7C3AED', border: 'rgba(124,58,237,0.3)',   accent: '#7C3AED', dot: '#7C3AED' },
-    '기획':        { bg: '#E6F4EA', text: '#10B981', border: 'rgba(16,185,129,0.3)',   accent: '#10B981', dot: '#10B981' },
-    '마케팅':      { bg: '#FCE8E6', text: '#EF4444', border: 'rgba(239,68,68,0.3)',    accent: '#EF4444', dot: '#EF4444' },
-    '기타':        { bg: '#FEF7E0', text: '#F59E0B', border: 'rgba(245,158,11,0.32)',  accent: '#F59E0B', dot: '#F59E0B' },
-    '기타(직접입력)': { bg: '#FEF7E0', text: '#F59E0B', border: 'rgba(245,158,11,0.32)', accent: '#F59E0B', dot: '#F59E0B' }
-  };
-
-  const getCategoryPalette = (category) => categoryPalette[category] || categoryPalette['기타'];
-
-  const getTimeRank = (value) => {
-    const order = { '1시간 전': 6, '2시간 전': 5, '5시간 전': 4, '어제': 3, '3일 전': 2, '이번 주': 1 };
-    return order[value] || 0;
-  };
-
-  const getGridColumns = (width) => (width >= 1280 ? 4 : 3);
-
-  const changeGroupPage = (categoryName, direction, totalPages) => {
-    setGroupPage((prev) => {
-      const current = prev[categoryName] || 0;
-      const next = direction === 'next'
-        ? Math.min(current + 1, totalPages - 1)
-        : Math.max(current - 1, 0);
-      return { ...prev, [categoryName]: next };
+  const participatedProjects = useMemo(() => {
+    const userName = currentUser.name.toLowerCase();
+    const userEmail = currentUser.email;
+    if (!userName && !userEmail) return PROJECTS;
+    return PROJECTS.filter((project) => {
+      const names = Array.isArray(project.participants) ? project.participants : [];
+      return names.some((p) => {
+        const n = String(p).trim().toLowerCase();
+        return n === userName || n === userEmail;
+      });
     });
-  };
+  }, [currentUser]);
 
-  const filteredProjects = projects
-    .filter((project) => {
-      const matchesCategory = categoryFilter === '전체' || project.category === categoryFilter;
-      const q = searchQuery.trim().toLowerCase();
-      const matchesSearch = q.length === 0 || project.name.toLowerCase().includes(q) || project.category.toLowerCase().includes(q);
-      return matchesCategory && matchesSearch;
-    })
-    .sort((a, b) => {
-      if (sortFilter === '이름순') return a.name.localeCompare(b.name, 'ko');
-      if (sortFilter === '인원 많은순') return b.members - a.members;
-      return getTimeRank(b.updatedAt) - getTimeRank(a.updatedAt);
-    });
-
-  const groupedProjects = filteredProjects.reduce((acc, project) => {
-    if (!acc[project.category]) acc[project.category] = [];
-    acc[project.category].push(project);
-    return acc;
-  }, {});
-
-  const groupedEntries = Object.entries(groupedProjects);
-
-  const openProjectMeetings = (project) => {
-    navigate(`/project/${project.id}/meetings`, { state: { project } });
-  };
-
-  // 카드 컴포넌트: 카테고리 뱃지를 dot + 텍스트 방식으로 교체 (배경색 제거)
-  const renderProjectCard = (project, { railItem = false } = {}) => {
-    const palette = getCategoryPalette(project.category);
-    return (
-      <div
-        key={project.id}
-        onClick={() => openProjectMeetings(project)}
-        className={`${railItem ? 'snap-start shrink-0 w-[270px]' : 'w-full'} relative rounded-2xl border shadow-sm hover:shadow-md transition-all duration-300 group cursor-pointer overflow-hidden flex flex-col`}
-        style={{ backgroundColor: '#F8FAFF', borderColor: 'rgba(0,100,180,0.08)' }}
-      >
-        <span
-          className="absolute top-0 left-0 right-0 h-2.5"
-          style={{ backgroundColor: palette.bg }}
-          aria-hidden="true"
-        />
-
-        <div className="p-5 flex-1 pt-7">
-          <div className="relative flex items-start justify-between mb-1.5" data-project-menu-root="true">
-            <span
-              className="text-[11px] font-semibold tracking-wide"
-              style={{ color: palette.text }}
-            >
-              {project.category}
-            </span>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setOpenMenuProjectId((prev) => (prev === project.id ? null : project.id));
-              }}
-              className="w-7 h-7 -mt-1 -mr-1 rounded-full flex items-center justify-center text-[#0D1B2A]/45 opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-white/70 hover:text-[#0D1B2A] transition-all"
-            >
-              <PIcon name="moreVertical" size={17} />
-            </button>
-
-            {openMenuProjectId === project.id && (
-              <div className="absolute right-0 top-full mt-1 w-32 rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_24px_rgba(0,100,180,0.14)] overflow-hidden z-30">
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setOpenMenuProjectId(null); navigate('/configuration', { state: { project } }); }}
-                  className="w-full px-3 py-2.5 text-left text-sm text-[#0D1B2A] hover:bg-[#EEF3FF]"
-                >설정 페이지</button>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setOpenMenuProjectId(null); openProjectMeetings(project); }}
-                  className="w-full px-3 py-2.5 text-left text-sm text-[#0D1B2A] hover:bg-[#EEF3FF]"
-                >회의 목록</button>
-              </div>
-            )}
-          </div>
-
-          <h3 className="text-base font-bold text-[#0D1B2A] leading-snug mb-1.5">
-            {project.name}
-          </h3>
-        </div>
-
-        <div className="border-t" style={{ borderColor: 'rgba(0,100,180,0.05)' }} />
-
-        <div className="px-5 py-3.5 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-[#0D1B2A]/70 min-w-0">
-            <PIcon name="users" size={15} className="shrink-0" />
-            <span className="text-xs truncate">참여팀원: {project.members}명</span>
-          </div>
-          <span className="text-xs text-[#0D1B2A]/55 shrink-0">{project.updatedAt}</span>
-        </div>
-      </div>
+  const searchedProjects = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
+    if (!keyword) return participatedProjects;
+    return participatedProjects.filter((project) =>
+      project.name.toLowerCase().includes(keyword) ||
+      project.teamLead.toLowerCase().includes(keyword)
     );
-  };
+  }, [participatedProjects, searchQuery]);
 
-  const selectedCategoryPalette = getCategoryPalette(categoryFilter);
+  const sortedProjects = useMemo(() => {
+    const copied = [...searchedProjects];
+    if (sortFilter === '이름순') return copied.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    if (sortFilter === '인원 많은순') return copied.sort((a, b) => b.members - a.members);
+    return copied.sort((a, b) => getTimeRank(b.updatedAt) - getTimeRank(a.updatedAt));
+  }, [searchedProjects, sortFilter]);
+
+  const recentProjects = useMemo(() => sortedProjects.slice(0, 4), [sortedProjects]);
+
+  const itemsPerPage = isMobile ? 4 : 8;
+
+  const pageCount = useMemo(() => Math.max(1, Math.ceil(sortedProjects.length / itemsPerPage)), [itemsPerPage, sortedProjects.length]);
+
+  useEffect(() => { setPage(1); }, [searchQuery, sortFilter]);
+  useEffect(() => { if (page > pageCount) setPage(pageCount); }, [page, pageCount]);
+  useEffect(() => {
+    setIsLoading(true);
+    const t = window.setTimeout(() => setIsLoading(false), 360);
+    return () => window.clearTimeout(t);
+  }, [itemsPerPage, page, searchQuery, sortFilter]);
+
+  const paginatedProjects = useMemo(() => {
+    const start = (page - 1) * itemsPerPage;
+    return sortedProjects.slice(start, start + itemsPerPage);
+  }, [itemsPerPage, page, sortedProjects]);
+
+  const visiblePages = useMemo(() => {
+    const max = 5;
+    if (pageCount <= max) return Array.from({ length: pageCount }, (_, i) => i + 1);
+    const start = Math.max(1, Math.min(page - 2, pageCount - max + 1));
+    return Array.from({ length: max }, (_, i) => start + i);
+  }, [page, pageCount]);
+
+  const openProjectMeetings = useCallback((project) => navigate(`/project/${project.id}/meetings`, { state: { project } }), [navigate]);
+  const openProjectConfig = useCallback((project) => navigate('/configuration', { state: { project } }), [navigate]);
+  const handlePageChange = useCallback((n) => { setPage(n); window.scrollTo({ top: 0, behavior: 'smooth' }); }, []);
 
   return (
-    <div className="min-h-screen bg-[#F8FAFF] overflow-x-hidden pt-20 pb-20 md:pb-0 flex flex-col">
+    <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#F5F7FB] pb-20 pt-20 md:pb-0">
       <Header isMobile={isMobile} phase="IDLE" stateLabels={stateLabels} />
 
-      <main className="flex-1 w-full px-4 md:px-8 py-6 md:py-8">
-        <div className="max-w-6xl mx-auto">
-          {/* 상단 헤더 */}
-          <div className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+      <main className="flex-1 px-4 py-6 md:px-8 md:py-10">
+        <div className="mx-auto max-w-7xl">
+
+          {/* ── 페이지 헤더 ── */}
+          <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-[#0D1B2A]">내 프로젝트</h1>
-              <p className="text-[#5A6F8A] mt-1">진행 중인 프로젝트를 한눈에 관리하세요.</p>
+              <h1 className="text-2xl font-bold tracking-tight text-[#0D1B2A]">내 프로젝트</h1>
+              <p className="mt-2 text-sm text-[#5A6F8A]">내가 참여 중인 프로젝트를 모아 보여드려요.</p>
             </div>
+            {/* 모바일: 전체 너비 가운데 / PC: 우측 자동 */}
             <button
+              type="button"
               onClick={() => navigate('/create-project')}
-              className="flex items-center justify-center gap-2 bg-[#0099CC] hover:bg-[#007EA7] text-white px-5 py-2.5 rounded-xl transition-all shadow-sm"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#0099CC] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-[#007EA7] active:scale-[0.98] sm:w-auto"
             >
-              <PIcon name="plus" size={20} />
-              <span>새 프로젝트 생성</span>
+              <PIcon name="plus" size={17} />
+              새 프로젝트 생성
             </button>
           </div>
 
-          {/* 툴바 */}
-          <div className="mb-6 rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white p-4 sm:p-5 shadow-sm">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-              {/* 검색 */}
-              <div className="lg:col-span-5">
+          {/* ── 최근 작업 ── */}
+          <section className="mb-12">
+            <div className="mb-6 flex items-baseline gap-2">
+              <h2 className="text-lg font-bold text-[#0D1B2A]">최근 작업</h2>
+              <span className="text-xs text-[#A0AFBF]">최대 4개</span>
+            </div>
+
+            {isLoading ? (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                {[0, 1, 2, 3].map((k) => <ProjectCardSkeleton key={k} />)}
+              </div>
+            ) : recentProjects.length > 0 ? (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                {recentProjects.map((project) => (
+                  <ProjectCard
+                    key={`recent-${project.id}`}
+                    project={project}
+                    onOpen={openProjectMeetings}
+                    onOpenConfig={openProjectConfig}
+                    openMenuProjectId={openMenuProjectId}
+                    setOpenMenuProjectId={setOpenMenuProjectId}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-[rgba(0,100,180,0.18)] bg-white p-8 text-center text-sm text-[#5A6F8A]">
+                최근 작업한 프로젝트가 없습니다.
+              </div>
+            )}
+          </section>
+
+          {/* ── 구분선 ── */}
+          <div className="mb-8 border-t border-[rgba(0,0,0,0.06)]" />
+
+          {/* ── 전체 프로젝트 헤더 ── */}
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-baseline gap-2">
+              <h2 className="text-lg font-bold text-[#0D1B2A]">전체 프로젝트</h2>
+              <span className="text-xs text-[#A0AFBF]">{sortedProjects.length}개</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {/* 검색창 */}
+              <div className="relative w-full sm:w-72 lg:w-80">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-[#B0BFCC]">
+                  <PIcon name="search" size={14} />
+                </span>
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="프로젝트명 또는 카테고리 검색"
-                  className="w-full px-3.5 py-2.5 text-sm bg-[#F8FAFF] border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]"
+                  placeholder="프로젝트 이름 검색"
+                  className="w-full rounded-xl border border-[rgba(0,0,0,0.09)] bg-white py-2 pl-8 pr-3 text-sm text-[#0D1B2A] placeholder-[#B0BFCC] transition focus:border-[#0099CC] focus:outline-none focus:ring-2 focus:ring-[rgba(0,153,204,0.12)]"
                 />
               </div>
 
-              <div className="lg:col-span-7 flex items-center gap-2 sm:justify-end flex-wrap">
-                {/* ── 카테고리 드롭다운 ── */}
-                <div className="relative flex-1 sm:flex-none sm:w-[150px]" ref={categoryDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => { setIsCategoryOpen((prev) => !prev); setIsSortOpen(false); }}
-                    className={`w-full px-3 py-2.5 text-sm rounded-xl border transition flex items-center justify-between gap-2 ${
-                      isCategoryOpen
-                        ? 'bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]'
-                        : 'bg-[#F8FAFF] border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)]'
-                    }`}
-                  >
-                    <span className="flex items-center gap-1.5 min-w-0">
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: selectedCategoryPalette.dot }} />
-                      <span className="font-medium truncate">{categoryFilter}</span>
-                    </span>
-                    <PIcon
-                      name="chevronDown"
-                      size={14}
-                      className={`text-[#5A6F8A] transition-transform shrink-0 ${isCategoryOpen ? 'rotate-180' : ''}`}
-                    />
-                  </button>
+              {/* 정렬 드롭다운 */}
+              <div className="relative w-full sm:w-[132px]" ref={sortDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsSortOpen((prev) => !prev)}
+                  className={`flex w-full items-center justify-between gap-1.5 rounded-xl border py-2 pl-3 pr-2.5 text-sm transition ${
+                    isSortOpen
+                      ? 'border-[#0099CC]/40 bg-white shadow-[0_0_0_3px_rgba(0,153,204,0.10)]'
+                      : 'border-[rgba(0,0,0,0.09)] bg-white text-[#0D1B2A] hover:border-[rgba(0,153,204,0.35)]'
+                  }`}
+                >
+                  <span className="truncate font-medium text-[#0D1B2A]">{sortFilter}</span>
+                  <PIcon name="chevronDown" size={13} className={`shrink-0 text-[#A0AFBF] transition-transform ${isSortOpen ? 'rotate-180' : ''}`} />
+                </button>
 
-                  {isCategoryOpen && (
-                    <div className="absolute left-0 right-0 z-20 mt-2 overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)]">
-                      {categories.map((category) => {
-                        const palette = getCategoryPalette(category);
-                        const isActive = categoryFilter === category;
-                        return (
-                          <button
-                            key={category}
-                            type="button"
-                            onClick={() => { setCategoryFilter(category); setIsCategoryOpen(false); }}
-                            className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between transition-colors ${
-                              isActive ? 'bg-[#F8FAFF] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: palette.dot }} />
-                              <span style={{ color: isActive ? palette.text : '#0D1B2A' }}>{category}</span>
-                            </span>
-                            {isActive && <PIcon name="check" size={13} style={{ color: palette.text }} />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                {isSortOpen && (
+                  <div className="absolute left-0 right-0 z-20 mt-1.5 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)]">
+                    {SORT_OPTIONS.map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => { setSortFilter(option); setIsSortOpen(false); }}
+                        className={`flex w-full items-center justify-between px-3.5 py-2.5 text-sm transition-colors ${
+                          sortFilter === option ? 'bg-[#F5F7FB] font-semibold text-[#0099CC]' : 'text-[#0D1B2A] hover:bg-[#F5F7FB]'
+                        }`}
+                      >
+                        <span>{option}</span>
+                        {sortFilter === option && <PIcon name="check" size={13} className="text-[#0099CC]" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-                {/* ── 정렬 드롭다운 ── */}
-                <div className="relative flex-1 sm:flex-none sm:w-[170px]" ref={sortDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => { setIsSortOpen((prev) => !prev); setIsCategoryOpen(false); }}
-                    className={`w-full px-3 py-2.5 text-sm rounded-xl border transition flex items-center justify-between ${
-                      isSortOpen
-                        ? 'bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]'
-                        : 'bg-[#F8FAFF] border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)]'
-                    }`}
-                  >
-                    <span className="font-medium truncate">정렬: {sortFilter}</span>
-                    <PIcon
-                      name="chevronDown"
-                      size={14}
-                      className={`text-[#5A6F8A] transition-transform shrink-0 ${isSortOpen ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-
-                  {isSortOpen && (
-                    <div className="absolute left-0 right-0 z-20 mt-2 overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)]">
-                      {sortOptions.map((option) => (
-                        <button
-                          key={option}
-                          type="button"
-                          onClick={() => { setSortFilter(option); setIsSortOpen(false); }}
-                          className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between transition-colors ${
-                            sortFilter === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'
-                          }`}
-                        >
-                          <span>{option}</span>
-                          {sortFilter === option && <PIcon name="check" size={14} className="text-[#0099CC]" />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* 뷰 모드 토글 */}
-                <div className="inline-flex items-center gap-1 p-1 rounded-xl border border-[rgba(0,100,180,0.12)] bg-[#F8FAFF] shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('card')}
-                    aria-label="카드형 보기"
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center transition ${viewMode === 'card' ? 'bg-white text-[#0099CC] shadow-sm' : 'text-[#8A9AB0] hover:text-[#5A6F8A]'}`}
-                  >
-                    <PIcon name="grid" size={17} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('list')}
-                    aria-label="리스트형 보기"
-                    className={`w-9 h-9 rounded-lg flex items-center justify-center transition ${viewMode === 'list' ? 'bg-white text-[#0099CC] shadow-sm' : 'text-[#8A9AB0] hover:text-[#5A6F8A]'}`}
-                  >
-                    <PIcon name="list" size={17} />
-                  </button>
-                </div>
+              {/* 뷰 토글 */}
+              <div className="inline-flex shrink-0 items-center rounded-xl border border-[rgba(0,0,0,0.09)] bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('card')}
+                  aria-label="카드형 보기"
+                  className={`flex h-8 w-8 items-center justify-center rounded-lg transition ${
+                    viewMode === 'card' ? 'bg-[#0099CC] text-white shadow-sm' : 'text-[#B0BFCC] hover:text-[#5A6F8A]'
+                  }`}
+                >
+                  <PIcon name="grid" size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('list')}
+                  aria-label="리스트형 보기"
+                  className={`flex h-8 w-8 items-center justify-center rounded-lg transition ${
+                    viewMode === 'list' ? 'bg-[#0099CC] text-white shadow-sm' : 'text-[#B0BFCC] hover:text-[#5A6F8A]'
+                  }`}
+                >
+                  <PIcon name="list" size={15} />
+                </button>
               </div>
             </div>
           </div>
 
-          {groupedEntries.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-[rgba(0,100,180,0.18)] bg-white p-10 text-center">
-              {categoryFilter !== '전체' ? (
-                <>
-                  <p className="text-[#0D1B2A] font-semibold">진행 중인 {categoryFilter} 프로젝트가 없습니다</p>
-                  <p className="text-sm text-[#5A6F8A] mt-1">다른 카테고리를 선택하거나 새 프로젝트를 만들어 보세요.</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-[#0D1B2A] font-semibold">검색 결과가 없습니다.</p>
-                  <p className="text-sm text-[#5A6F8A] mt-1">검색어나 필터를 변경해 보세요.</p>
-                </>
-              )}
-            </div>
-          )}
-
-          {groupedEntries.length > 0 && groupedEntries.map(([categoryName, items]) => {
-            const groupPalette = getCategoryPalette(categoryName);
-            const columns = getGridColumns(windowWidth);
-            const totalPages = Math.max(1, Math.ceil(items.length / columns));
-            const currentPage = Math.min(groupPage[categoryName] || 0, totalPages - 1);
-            const needsPagination = !isMobile && viewMode === 'card' && items.length > columns;
-            const pageItems = isMobile ? items : items.slice(currentPage * columns, currentPage * columns + columns);
-
-            return (
-              <section key={categoryName} className="mb-8 last:mb-0">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: groupPalette.accent }} />
-                    <span className="text-sm font-bold text-[#0D1B2A]">{categoryName}</span>
-                    <span
-                      className="text-[11px] px-2 py-0.5 rounded-full font-semibold"
-                      style={{ backgroundColor: groupPalette.bg, color: groupPalette.text }}
-                    >
-                      {items.length}개
-                    </span>
-                  </div>
-
-                  {needsPagination && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-[#8A9AB0] mr-1">{currentPage + 1} / {totalPages}</span>
-                      <button
-                        type="button"
-                        onClick={() => changeGroupPage(categoryName, 'prev', totalPages)}
-                        disabled={currentPage === 0}
-                        aria-label={`${categoryName} 이전 페이지`}
-                        className="w-8 h-8 rounded-full border border-[rgba(0,100,180,0.14)] bg-white text-[#5A6F8A] hover:text-[#0099CC] hover:border-[#0099CC]/35 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition"
-                      >
-                        <PIcon name="chevronRight" size={14} className="rotate-180" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => changeGroupPage(categoryName, 'next', totalPages)}
-                        disabled={currentPage === totalPages - 1}
-                        aria-label={`${categoryName} 다음 페이지`}
-                        className="w-8 h-8 rounded-full border border-[rgba(0,100,180,0.14)] bg-white text-[#5A6F8A] hover:text-[#0099CC] hover:border-[#0099CC]/35 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition"
-                      >
-                        <PIcon name="chevronRight" size={14} />
-                      </button>
-                    </div>
-                  )}
+          {/* ── 전체 프로젝트 목록 ── */}
+          <section>
+            {isLoading ? (
+              viewMode === 'card' ? (
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  {Array.from({ length: itemsPerPage }).map((_, i) => <ProjectCardSkeleton key={i} />)}
                 </div>
-
+              ) : (
+                <div className="space-y-2">
+                  {Array.from({ length: itemsPerPage }).map((_, i) => <ProjectCardSkeleton key={i} />)}
+                </div>
+              )
+            ) : paginatedProjects.length > 0 ? (
+              <>
                 {viewMode === 'card' ? (
-                  isMobile ? (
-                    <div
-                      className="flex gap-4 overflow-x-auto pb-2 px-1 snap-x snap-mandatory [&::-webkit-scrollbar]:hidden"
-                      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                    >
-                      {items.map((project) => renderProjectCard(project, { railItem: true }))}
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-3 xl:grid-cols-4 gap-5">
-                      {pageItems.map((project) => renderProjectCard(project))}
-                    </div>
-                  )
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                    {paginatedProjects.map((project) => (
+                      <ProjectCard
+                        key={project.id}
+                        project={project}
+                        onOpen={openProjectMeetings}
+                        onOpenConfig={openProjectConfig}
+                        openMenuProjectId={openMenuProjectId}
+                        setOpenMenuProjectId={setOpenMenuProjectId}
+                      />
+                    ))}
+                  </div>
                 ) : (
-                  <div className="rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white overflow-hidden">
-                    {items.map((project, idx) => {
-                      const palette = getCategoryPalette(project.category);
-                      return (
-                        <div
-                          key={project.id}
-                          onClick={() => openProjectMeetings(project)}
-                          className={`px-4 sm:px-5 py-3.5 flex items-start justify-between gap-4 cursor-pointer hover:bg-[#F8FAFF] ${idx !== items.length - 1 ? 'border-b border-[rgba(0,100,180,0.08)]' : ''}`}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2.5">
-                              <p className="text-[11px] text-[#8A9AB0]">생성일 {project.createdAt}</p>
-                              <span className="text-[11px] font-semibold" style={{ color: palette.text }}>{project.category}</span>
-                            </div>
-                            <h4 className="text-sm sm:text-base font-semibold text-[#0D1B2A] mt-1 truncate">{project.name}</h4>
-                            <div className="mt-2 flex items-center gap-1.5 text-[#5A6F8A]">
-                              <PIcon name="users" size={15} />
-                              <span className="text-xs sm:text-sm">{project.teamLead}님 외 {Math.max(project.members - 1, 0)}명</span>
-                            </div>
-                          </div>
-                          <div className="shrink-0 flex items-center gap-1.5 text-[#5A6F8A] pt-0.5">
-                            <span className="text-xs">{project.updatedAt}</span>
-                            <span className="hidden sm:inline text-xs font-semibold text-[#0099CC]">열기</span>
-                            <PIcon name="chevronRight" size={14} />
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div className="space-y-2">
+                    {paginatedProjects.map((project) => (
+                      <ProjectListItem key={project.id} project={project} onOpen={openProjectMeetings} />
+                    ))}
                   </div>
                 )}
-              </section>
-            );
-          })}
+
+                {pageCount > 1 && (
+                  <div className="mt-8 flex flex-wrap items-center justify-center gap-1.5">
+                    {visiblePages.map((number) => (
+                      <button
+                        key={number}
+                        type="button"
+                        onClick={() => handlePageChange(number)}
+                        className={`h-9 min-w-[36px] rounded-lg px-3 text-sm font-semibold transition ${
+                          page === number
+                            ? 'bg-[#0099CC] text-white shadow-sm'
+                            : 'border border-[rgba(0,0,0,0.09)] bg-white text-[#5A6F8A] hover:border-[#0099CC]/40 hover:text-[#0099CC]'
+                        }`}
+                        aria-current={page === number ? 'page' : undefined}
+                      >
+                        {number}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-[rgba(0,100,180,0.18)] bg-white p-12 text-center">
+                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#F1F4F8] text-[#A0AFBF]">
+                  <PIcon name="folder" size={22} />
+                </div>
+                <p className="font-semibold text-[#0D1B2A]">검색 결과가 없습니다.</p>
+                <p className="mt-1 text-sm text-[#5A6F8A]">다른 프로젝트 이름으로 다시 검색해 보세요.</p>
+              </div>
+            )}
+          </section>
         </div>
       </main>
 
@@ -499,6 +528,4 @@ const ProjectList = () => {
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
     </div>
   );
-};
-
-export default ProjectList;
+}

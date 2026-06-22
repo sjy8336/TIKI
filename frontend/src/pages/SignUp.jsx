@@ -7,6 +7,7 @@ const cn = (...classes) => classes.filter(Boolean).join(' ');
 
 const iconPaths = {
     mail: ['M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z', 'M22 6l-10 7L2 6'],
+    megaphone: ['M3 11v2', 'M21 6v12', 'M3 11l14-4v10L3 13', 'M11 14v6a2 2 0 0 0 2 2h1'],
     lock: ['M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2z', 'M7 11V7a5 5 0 0 1 10 0v4'],
     zap: ['M13 2L3 14h9l-1 8 10-12h-9l1-8z'],
     mic: ['M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z', 'M19 10v2a7 7 0 0 1-14 0v-2', 'M12 19v4', 'M8 23h8'],
@@ -184,7 +185,7 @@ const INPUT_ERROR =
 
 /* ── 역할 선택 옵션 ── */
 const ROLES = [
-    { value: 'dev', label: '개발자', icon: 'zap', color: '#0099CC' },
+    { value: 'dev', label: '마케터', icon: 'megaphone', color: '#0099CC' },
     { value: 'pm', label: 'PM', icon: 'briefcase', color: '#7C3AED' },
     { value: 'design', label: '디자이너', icon: 'sparkles', color: '#F59E0B' },
     { value: 'other', label: '기타', icon: 'users', color: '#5A6F8A' },

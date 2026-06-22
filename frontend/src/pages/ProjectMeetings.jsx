@@ -168,6 +168,22 @@ function MoreVerticalIcon() {
 	);
 }
 
+function ChevronDownIcon({ className = '' }) {
+	return (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+			<path d="M6 9l6 6 6-6" />
+		</svg>
+	);
+}
+
+function CheckIcon({ className = '' }) {
+	return (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+			<path d="M20 6L9 17l-5-5" />
+		</svg>
+	);
+}
+
 export default function ProjectMeetings() {
 	const navigate = useNavigate();
 	const location = useLocation();
@@ -195,8 +211,15 @@ export default function ProjectMeetings() {
 	const [actionAssigneeFilter, setActionAssigneeFilter] = useState('전체');
 	const [actionStatusFilter, setActionStatusFilter] = useState('전체');
 	const [actionSourceFilter, setActionSourceFilter] = useState('전체');
+	const [openActionFilter, setOpenActionFilter] = useState(null);
+	const [openActionStatusMenuId, setOpenActionStatusMenuId] = useState(null);
 	const [actionItems, setActionItems] = useState([]);
+	const [editingActionItemId, setEditingActionItemId] = useState(null);
+	const [editingActionText, setEditingActionText] = useState('');
 	const [openMoreMenuId, setOpenMoreMenuId] = useState(null);
+	const actionAssigneeFilterRef = useRef(null);
+	const actionStatusFilterRef = useRef(null);
+	const actionSourceFilterRef = useRef(null);
 	const moreMenuRef = useRef(null);
 
 	useEffect(() => {
@@ -210,6 +233,12 @@ export default function ProjectMeetings() {
 			if (createDropdownRef.current && !createDropdownRef.current.contains(e.target)) setIsCreateOpen(false);
 			if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target)) setIsSortOpen(false);
 			if (typeDropdownRef.current && !typeDropdownRef.current.contains(e.target)) setIsTypeOpen(false);
+			const clickedActionFilter =
+				(actionAssigneeFilterRef.current && actionAssigneeFilterRef.current.contains(e.target))
+				|| (actionStatusFilterRef.current && actionStatusFilterRef.current.contains(e.target))
+				|| (actionSourceFilterRef.current && actionSourceFilterRef.current.contains(e.target));
+			if (!clickedActionFilter) setOpenActionFilter(null);
+			if (!e.target.closest('[data-action-status-root]')) setOpenActionStatusMenuId(null);
 			if (!e.target.closest('[data-more-menu-root]')) setOpenMoreMenuId(null);
 		};
 		document.addEventListener('mousedown', handleOutsideClick);
@@ -286,12 +315,16 @@ export default function ProjectMeetings() {
 
 	const allActionItems = actionItems;
 
-	const actionAssigneeOptions = useMemo(() => ['전체', ...new Set(allActionItems.map((item) => item.assignee))], [allActionItems]);
+	const actionAssigneeOptions = useMemo(() => {
+		const participants = Array.isArray(project?.participants) ? project.participants : [];
+		return ['전체', ...new Set([...participants, ...allActionItems.map((item) => item.assignee)].filter(Boolean))];
+	}, [project, allActionItems]);
 	const actionStatusOptions = useMemo(() => {
 		const statusSet = new Set(['검증 전', '연동 완료', '완료']);
 		allActionItems.forEach((item) => statusSet.add(item.status));
 		return ['전체', ...statusSet];
 	}, [allActionItems]);
+	const actionRowStatusOptions = useMemo(() => actionStatusOptions.filter((option) => option !== '전체'), [actionStatusOptions]);
 	const actionSourceOptions = useMemo(() => ['전체', ...new Set(allActionItems.map((item) => item.source))], [allActionItems]);
 
 	const filteredActionItems = useMemo(() => {
@@ -357,6 +390,33 @@ export default function ProjectMeetings() {
 		setActionItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, status: nextStatus } : item)));
 		showToast('액션 아이템 상태가 변경되었습니다.', 'success');
 	};
+	const startActionItemInlineEdit = (item) => {
+		setEditingActionItemId(item.id);
+		setEditingActionText(item.text);
+	};
+	const cancelActionItemInlineEdit = () => {
+		setEditingActionItemId(null);
+		setEditingActionText('');
+	};
+	const commitActionItemInlineEdit = (itemId) => {
+		const nextText = editingActionText.trim();
+		if (!nextText) {
+			showToast('액션 아이템 제목을 입력해 주세요.', 'warning');
+			return;
+		}
+		setActionItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, text: nextText } : item)));
+		setEditingActionItemId(null);
+		setEditingActionText('');
+		showToast('액션 아이템 제목이 수정되었습니다.', 'success');
+	};
+	const removeActionItem = (itemId) => {
+		setActionItems((prev) => prev.filter((item) => item.id !== itemId));
+		if (editingActionItemId === itemId) {
+			setEditingActionItemId(null);
+			setEditingActionText('');
+		}
+		showToast('액션 아이템이 삭제되었습니다.', 'success');
+	};
 	const confirmDeleteMeeting = () => {
 		if (!pendingDeleteMeeting) return;
 		setDeletedMeetingIds((prev) => [...prev, pendingDeleteMeeting]);
@@ -365,7 +425,25 @@ export default function ProjectMeetings() {
 	};
 	const currentToastVariant = TOAST_VARIANTS[toast.type] || TOAST_VARIANTS.info;
 	const projectCategoryColor = CATEGORY_TEXT_COLOR[project.category] || '#F59E0B';
-	const projectDescriptionText = project.description?.trim() || '프로젝트 설명이 아직 입력되지 않았습니다.';
+	const projectDescriptionText = project.description?.trim() || '';
+	const actionTableGridStyle = {
+		gridTemplateColumns: '44px minmax(220px, 2fr) 120px 128px 150px 88px 96px',
+	};
+	const actionFilterButtonClass = (isOpen) => `w-full px-4 py-3 text-left rounded-2xl border transition flex items-center justify-between gap-3 min-h-[54px] ${
+		isOpen
+			? 'bg-[#EEF3FF] border-[#0099CC]/45 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]'
+			: 'bg-white border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)] hover:bg-[#F8FAFF]'
+	}`;
+	const actionCompactFilterButtonClass = (isOpen) => `w-full px-3 py-2.5 rounded-2xl border transition flex items-start justify-between gap-3 min-h-[48px] ${
+		isOpen
+			? 'bg-[#EEF3FF] border-[#0099CC]/45 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]'
+			: 'bg-white border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)] hover:bg-[#F8FAFF]'
+	}`;
+	const actionStatusButtonClass = (isOpen) => `w-fit min-w-[106px] px-3 py-2 rounded-xl border transition inline-flex items-center justify-between gap-2 min-h-[40px] ${
+		isOpen
+			? 'bg-[#EEF3FF] border-[#0099CC]/45 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]'
+			: 'bg-white border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)] hover:bg-[#F8FAFF]'
+	}`;
 
 	useEffect(() => {
 		if (!isParticipantsModalOpen) return undefined;
@@ -393,7 +471,6 @@ export default function ProjectMeetings() {
 									{filteredProjects.map((item) => (
 										<button key={item.id} type="button" onClick={() => navigate(`/project/${item.id}/meetings`, { state: { project: item } })} className={`w-full text-left px-3 py-2.5 rounded-xl border transition ${item.id === project.id ? 'bg-[#EEF3FF] border-[#0099CC]/35 text-[#0099CC] font-semibold' : 'bg-white border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}>
 											<p className="text-sm truncate">{item.name}</p>
-											<p className="text-[11px] mt-0.5 text-[#5A6F8A]">{item.category}</p>
 										</button>
 									))}
 								</div>
@@ -408,7 +485,6 @@ export default function ProjectMeetings() {
 								<div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
 									<div className="flex-1 min-w-0">
 										<div className="flex flex-wrap items-center gap-2">
-											<span className="text-xs font-semibold" style={{ color: projectCategoryColor }}>{project.category}</span>
 											<span className="text-xs text-[#8A9AB0]">생성일 {project.createdAt}</span>
 										</div>
 
@@ -418,7 +494,9 @@ export default function ProjectMeetings() {
 											<span className={`px-2.5 py-1 rounded-full text-xs font-bold ${statusBadgeClass(project.status)}`}>{project.status}</span>
 										</div>
 
-										<p className="text-sm text-[#5A6F8A] mt-2 leading-relaxed">{projectDescriptionText}</p>
+										{projectDescriptionText && (
+											<p className="text-sm text-[#5A6F8A] mt-2 leading-relaxed">{projectDescriptionText}</p>
+										)}
 
 										<div className="mt-3 flex items-center gap-2.5">
 											<div className="flex -space-x-2 cursor-pointer" onClick={() => openParticipantsModal(project.participants, '프로젝트 참여자')}>
@@ -484,14 +562,14 @@ export default function ProjectMeetings() {
 												<div className="relative" ref={sortDropdownRef}>
 													<button type="button" onClick={() => { setIsSortOpen((prev) => !prev); setIsTypeOpen(false); }} className={`w-full sm:w-auto px-3.5 py-2.5 text-sm rounded-xl border transition flex items-center justify-between gap-1.5 ${isSortOpen ? 'bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]' : 'bg-[#F8FAFF] border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)]'}`}>
 														<span className="font-medium">{sortOrder}</span>
-														<span className={`text-xs text-[#5A6F8A] transition-transform inline-block ${isSortOpen ? 'rotate-180' : ''}`}>▼</span>
+														<ChevronDownIcon className={`text-[#5A6F8A] transition-transform ${isSortOpen ? 'rotate-180' : ''}`} />
 													</button>
 													{isSortOpen && (
 														<div className="absolute left-0 z-20 mt-2 w-32 overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)]">
 															{['최신순', '과거순'].map((option) => (
 																<button key={option} type="button" onClick={() => { setSortOrder(option); setIsSortOpen(false); }} className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between transition-colors ${sortOrder === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}>
 																	<span>{option}</span>
-																	{sortOrder === option && <span className="text-[#0099CC] text-xs">✓</span>}
+																	{sortOrder === option && <CheckIcon className="text-[#0099CC]" />}
 																</button>
 															))}
 														</div>
@@ -500,14 +578,14 @@ export default function ProjectMeetings() {
 													<div className="relative" ref={typeDropdownRef}>
 														<button type="button" onClick={() => { setIsTypeOpen((prev) => !prev); setIsSortOpen(false); }} className={`w-full sm:w-auto px-3.5 py-2.5 text-sm rounded-xl border transition flex items-center justify-between gap-1.5 ${isTypeOpen ? 'bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]' : 'bg-[#F8FAFF] border-[rgba(0,100,180,0.12)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)]'}`}>
 														<span className="font-medium">{meetingType}</span>
-														<span className={`text-xs text-[#5A6F8A] transition-transform inline-block ${isTypeOpen ? 'rotate-180' : ''}`}>▼</span>
+													<ChevronDownIcon className={`text-[#5A6F8A] transition-transform ${isTypeOpen ? 'rotate-180' : ''}`} />
 													</button>
 													{isTypeOpen && (
 														<div className="absolute left-0 z-20 mt-2 w-32 overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)]">
 															{['전체', '정기', '수시'].map((option) => (
 																<button key={option} type="button" onClick={() => { setMeetingType(option); setIsTypeOpen(false); }} className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between transition-colors ${meetingType === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}>
 																	<span>{option}</span>
-																	{meetingType === option && <span className="text-[#0099CC] text-xs">✓</span>}
+																{meetingType === option && <CheckIcon className="text-[#0099CC]" />}
 																</button>
 															))}
 														</div>
@@ -516,7 +594,7 @@ export default function ProjectMeetings() {
 													<div className="relative col-span-2 sm:col-auto shrink-0" ref={createDropdownRef}>
 														<button type="button" onClick={() => setIsCreateOpen((prev) => !prev)} className={`w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-white text-sm font-semibold transition ${isCreateOpen ? 'bg-[#007EA7]' : 'bg-[#0099CC] hover:bg-[#007EA7]'}`}>
 													<span>+ 새 회의록</span>
-													<span className={`text-xs transition-transform inline-block ${isCreateOpen ? 'rotate-180' : ''}`}>▼</span>
+														<ChevronDownIcon className={`transition-transform ${isCreateOpen ? 'rotate-180' : ''}`} />
 														</button>
 														{isCreateOpen && (
 															<div className="absolute right-0 z-30 mt-2 w-56 overflow-hidden rounded-xl border border-[rgba(0,100,180,0.16)] bg-white shadow-[0_12px_28px_rgba(0,100,180,0.18)]">
@@ -626,18 +704,99 @@ export default function ProjectMeetings() {
 
 							{/* ── 액션 아이템 탭 ── */}
 							{activePageTab === 'actions' && (
-								<section className="rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white overflow-hidden">
+								<section className="rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white overflow-visible">
 									<div className="px-4 py-3.5 border-b border-[rgba(0,100,180,0.08)] bg-[#F8FAFF]">
 										<div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-											<select value={actionAssigneeFilter} onChange={(e) => setActionAssigneeFilter(e.target.value)} className="w-full px-3 py-2.5 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]">
-												{actionAssigneeOptions.map((option) => <option key={option} value={option}>담당자: {option}</option>)}
-											</select>
-											<select value={actionStatusFilter} onChange={(e) => setActionStatusFilter(e.target.value)} className="w-full px-3 py-2.5 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]">
-												{actionStatusOptions.map((option) => <option key={option} value={option}>상태: {option}</option>)}
-											</select>
-											<select value={actionSourceFilter} onChange={(e) => setActionSourceFilter(e.target.value)} className="w-full px-3 py-2.5 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]">
-												{actionSourceOptions.map((option) => <option key={option} value={option}>회의록 출처: {option}</option>)}
-											</select>
+											<div className="relative" ref={actionAssigneeFilterRef}>
+												<button
+													type="button"
+													onClick={() => setOpenActionFilter((prev) => (prev === 'assignee' ? null : 'assignee'))}
+													className={actionCompactFilterButtonClass(openActionFilter === 'assignee')}
+												>
+													<span className="flex min-w-0 flex-col items-start gap-0.5">
+														<span className="text-[11px] font-semibold leading-none text-[#5A6F8A]">담당자</span>
+														<span className="truncate text-sm font-semibold leading-tight">{actionAssigneeFilter}</span>
+													</span>
+													<ChevronDownIcon className={`shrink-0 text-[#5A6F8A] transition-transform ${openActionFilter === 'assignee' ? 'rotate-180' : ''}`} />
+												</button>
+												{openActionFilter === 'assignee' && (
+													<div className="absolute left-0 right-0 z-30 mt-2 overflow-hidden rounded-2xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_12px_30px_rgba(0,100,180,0.16)]">
+														<div className="max-h-64 overflow-auto py-1">
+															{actionAssigneeOptions.map((option) => (
+																<button
+																	key={option}
+																	type="button"
+																	onClick={() => { setActionAssigneeFilter(option); setOpenActionFilter(null); }}
+																	className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition-colors ${actionAssigneeFilter === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}
+																>
+																	<span>{option}</span>
+																	{actionAssigneeFilter === option && <CheckIcon className="text-[#0099CC]" />}
+																</button>
+															))}
+														</div>
+													</div>
+												)}
+											</div>
+											<div className="relative" ref={actionStatusFilterRef}>
+												<button
+													type="button"
+													onClick={() => setOpenActionFilter((prev) => (prev === 'status' ? null : 'status'))}
+													className={actionCompactFilterButtonClass(openActionFilter === 'status')}
+												>
+													<span className="flex min-w-0 flex-col items-start gap-0.5">
+														<span className="text-[11px] font-semibold leading-none text-[#5A6F8A]">상태</span>
+														<span className="truncate text-sm font-semibold leading-tight">{actionStatusFilter}</span>
+													</span>
+													<ChevronDownIcon className={`shrink-0 text-[#5A6F8A] transition-transform ${openActionFilter === 'status' ? 'rotate-180' : ''}`} />
+												</button>
+												{openActionFilter === 'status' && (
+													<div className="absolute left-0 right-0 z-30 mt-2 overflow-hidden rounded-2xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_12px_30px_rgba(0,100,180,0.16)]">
+														<div className="max-h-64 overflow-auto py-1">
+															{actionStatusOptions.map((option) => (
+																<button
+																	key={option}
+																	type="button"
+																	onClick={() => { setActionStatusFilter(option); setOpenActionFilter(null); }}
+																	className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition-colors ${actionStatusFilter === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}
+																>
+																	<span>{option}</span>
+																	{actionStatusFilter === option && <CheckIcon className="text-[#0099CC]" />}
+																</button>
+															))}
+														</div>
+													</div>
+												)}
+											</div>
+											<div className="relative" ref={actionSourceFilterRef}>
+												<button
+													type="button"
+													onClick={() => setOpenActionFilter((prev) => (prev === 'source' ? null : 'source'))}
+													className={actionCompactFilterButtonClass(openActionFilter === 'source')}
+												>
+													<span className="flex min-w-0 flex-col items-start gap-0.5">
+														<span className="text-[11px] font-semibold leading-none text-[#5A6F8A]">회의록 출처</span>
+														<span className="truncate text-sm font-semibold leading-tight">{actionSourceFilter}</span>
+													</span>
+													<ChevronDownIcon className={`shrink-0 text-[#5A6F8A] transition-transform ${openActionFilter === 'source' ? 'rotate-180' : ''}`} />
+												</button>
+												{openActionFilter === 'source' && (
+													<div className="absolute left-0 right-0 z-30 mt-2 overflow-hidden rounded-2xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_12px_30px_rgba(0,100,180,0.16)]">
+														<div className="max-h-64 overflow-auto py-1">
+															{actionSourceOptions.map((option) => (
+																<button
+																	key={option}
+																	type="button"
+																	onClick={() => { setActionSourceFilter(option); setOpenActionFilter(null); }}
+																	className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition-colors ${actionSourceFilter === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}
+																>
+																	<span>{option}</span>
+																	{actionSourceFilter === option && <CheckIcon className="text-[#0099CC]" />}
+																</button>
+															))}
+														</div>
+													</div>
+												)}
+											</div>
 										</div>
 									</div>
 									<div className="px-4 py-3.5 border-b border-[rgba(0,100,180,0.08)] bg-white">
@@ -667,34 +826,144 @@ export default function ProjectMeetings() {
 										</div>
 									) : (
 										<>
-											<div className="hidden md:grid grid-cols-12 px-4 py-3 text-xs font-bold text-[#5A6F8A] bg-[#F8FAFF] border-b border-[rgba(0,100,180,0.1)]">
-												<div className="col-span-1" />
-												<div className="col-span-4">액션 아이템</div>
-												<div className="col-span-2">담당자</div>
-												<div className="col-span-2">상태 관리</div>
-												<div className="col-span-2">회의록 출처</div>
-												<div className="col-span-1">마감일</div>
+											<div className="hidden md:grid items-center px-4 py-3 bg-[#F8FAFF] border-b border-[rgba(0,100,180,0.1)] text-[12px] font-medium text-gray-500 text-left" style={actionTableGridStyle}>
+												<div />
+												<div>액션 아이템</div>
+												<div>담당자</div>
+												<div>상태 관리</div>
+												<div>회의록 출처</div>
+												<div>마감일</div>
+												<div>관리</div>
 											</div>
 											<div className="divide-y divide-[rgba(0,100,180,0.08)]">
 												{filteredActionItems.map((item) => (
-													<div key={item.id} className="grid grid-cols-1 md:grid-cols-12 px-4 py-3.5 items-center gap-2">
-														<div className="md:col-span-1 flex items-center justify-start">
+													<div key={item.id} className="hidden md:grid items-center gap-3 px-4 py-3.5 group" style={actionTableGridStyle}>
+														<div className="hidden md:flex items-center justify-start">
 															<input type="checkbox" className="w-4 h-4 accent-[#0099CC]" />
 														</div>
-														<div className="md:col-span-4 text-sm text-[#0D1B2A] font-medium">{item.text}</div>
-														<div className="md:col-span-2 text-sm text-[#0D1B2A]">{item.assignee}</div>
-														<div className="md:col-span-2">
-															<select value={item.status} onChange={(e) => handleActionStatusChange(item.id, e.target.value)} className="w-full px-2.5 py-2 text-xs bg-white border border-[rgba(0,100,180,0.12)] rounded-lg focus:outline-none focus:border-[#0099CC]">
-																<option value="검증 전">검증 전</option>
-																<option value="연동 완료">연동 완료</option>
-																<option value="완료">완료</option>
-															</select>
+														<div className="flex items-center min-h-[44px] text-[14px] font-normal text-gray-800">
+															{editingActionItemId === item.id ? (
+																<input
+																	type="text"
+																	value={editingActionText}
+																	onChange={(e) => setEditingActionText(e.target.value)}
+																	onBlur={() => commitActionItemInlineEdit(item.id)}
+																	onKeyDown={(e) => {
+																		if (e.key === 'Enter') commitActionItemInlineEdit(item.id);
+																		if (e.key === 'Escape') cancelActionItemInlineEdit();
+																	}}
+																	className="w-full px-2.5 py-2 text-[14px] font-normal leading-none text-gray-800 bg-white border border-gray-200 rounded-lg focus:outline-none focus:border-[#0099CC]"
+																	autoFocus
+																/>
+															) : (
+																<button type="button" onClick={() => startActionItemInlineEdit(item)} className="text-left text-[14px] font-normal leading-snug text-gray-800 hover:text-[#0D1B2A]">
+																	{item.text}
+																</button>
+															)}
 														</div>
-														<div className="md:col-span-2">
-															<span className="text-xs px-2 py-0.5 rounded-full bg-[#EEF3FF] text-[#0099CC] font-medium">{item.source}</span>
+														<div className="flex items-center justify-self-start min-h-[44px] text-[14px] font-normal text-gray-800">{item.assignee}</div>
+														<div className="relative flex items-center" data-action-status-root>
+															<button
+																type="button"
+																onClick={() => setOpenActionStatusMenuId((prev) => (prev === item.id ? null : item.id))}
+																className={actionStatusButtonClass(openActionStatusMenuId === item.id)}
+															>
+																<span className="truncate text-sm font-semibold">{item.status}</span>
+																<ChevronDownIcon className={`shrink-0 text-[#5A6F8A] transition-transform ${openActionStatusMenuId === item.id ? 'rotate-180' : ''}`} />
+															</button>
+															{openActionStatusMenuId === item.id && (
+																<div className="absolute left-0 top-full z-30 mt-2 min-w-full overflow-hidden rounded-2xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_12px_30px_rgba(0,100,180,0.16)]">
+																	<div className="py-1">
+																		{actionRowStatusOptions.map((option) => (
+																			<button
+																				key={option}
+																				type="button"
+																				onClick={() => { handleActionStatusChange(item.id, option); setOpenActionStatusMenuId(null); }}
+																				className={`flex w-full items-center justify-between px-3.5 py-2.5 text-left text-sm transition-colors ${item.status === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}
+																			>
+																				<span>{option}</span>
+																				{item.status === option && <CheckIcon className="text-[#0099CC]" />}
+																			</button>
+																		))}
+																	</div>
+																</div>
+															)}
 														</div>
-														<div className="md:col-span-1 text-xs text-[#5A6F8A]">{item.due}</div>
+														<div className="flex items-center justify-self-start min-h-[44px] text-left">
+															<span className="text-[14px] font-normal text-gray-800">{item.source}</span>
+														</div>
+														<div className="flex items-center justify-self-start min-h-[44px] text-[14px] font-normal text-gray-800">{item.due}</div>
+														<div className="hidden md:flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+															<button type="button" onClick={() => startActionItemInlineEdit(item)} className="px-2 py-1 text-[12px] font-medium text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50">수정</button>
+															<button type="button" onClick={() => removeActionItem(item.id)} className="px-2 py-1 text-[12px] font-medium text-[#EF4444] border border-[#F8D1D1] rounded-md hover:bg-[#FFF5F5]">삭제</button>
+														</div>
 													</div>
+												))}
+											</div>
+											<div className="md:hidden divide-y divide-[rgba(0,100,180,0.08)]">
+												{filteredActionItems.map((item) => (
+													<article key={item.id} className="px-4 py-4">
+														<div className="flex items-start justify-between gap-3">
+															<div className="min-w-0 flex-1 space-y-2">
+																{editingActionItemId === item.id ? (
+																	<input
+																		type="text"
+																		value={editingActionText}
+																		onChange={(e) => setEditingActionText(e.target.value)}
+																		onBlur={() => commitActionItemInlineEdit(item.id)}
+																		onKeyDown={(e) => {
+																			if (e.key === 'Enter') commitActionItemInlineEdit(item.id);
+																			if (e.key === 'Escape') cancelActionItemInlineEdit();
+																		}}
+																		className="w-full px-3 py-2 text-sm font-semibold text-[#0D1B2A] bg-white border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]"
+																		autoFocus
+																	/>
+																) : (
+																	<button type="button" onClick={() => startActionItemInlineEdit(item)} className="block w-full text-left text-sm font-semibold leading-snug text-[#0D1B2A] hover:text-[#0099CC]">
+																		{item.text}
+																	</button>
+																)}
+																<div className="flex flex-wrap gap-1.5">
+																	<span className="px-2 py-1 rounded-full text-[11px] bg-[#EEF3FF] text-[#0099CC]">{item.assignee}</span>
+																	<span className="px-2 py-1 rounded-full text-[11px] bg-[#F8FAFF] text-[#5A6F8A]">{item.source}</span>
+																	<span className="px-2 py-1 rounded-full text-[11px] bg-[#F8FAFF] text-[#5A6F8A]">{item.due}</span>
+																</div>
+															</div>
+														<div className="shrink-0 flex flex-col items-end gap-2">
+															<div className="relative w-[132px]" data-action-status-root>
+																<button
+																	type="button"
+																	onClick={() => setOpenActionStatusMenuId((prev) => (prev === item.id ? null : item.id))}
+																	className={actionStatusButtonClass(openActionStatusMenuId === item.id)}
+																>
+																	<span className="truncate text-sm font-semibold">{item.status}</span>
+																	<ChevronDownIcon className={`shrink-0 text-[#5A6F8A] transition-transform ${openActionStatusMenuId === item.id ? 'rotate-180' : ''}`} />
+																</button>
+																{openActionStatusMenuId === item.id && (
+																	<div className="absolute left-0 top-full z-30 mt-2 min-w-full overflow-hidden rounded-2xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_12px_30px_rgba(0,100,180,0.16)]">
+																		<div className="py-1">
+																			{actionRowStatusOptions.map((option) => (
+																				<button
+																					key={option}
+																					type="button"
+																					onClick={() => { handleActionStatusChange(item.id, option); setOpenActionStatusMenuId(null); }}
+																					className={`flex w-full items-center justify-between px-3.5 py-2.5 text-left text-sm transition-colors ${item.status === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}
+																				>
+																					<span>{option}</span>
+																					{item.status === option && <CheckIcon className="text-[#0099CC]" />}
+																				</button>
+																			))}
+																		</div>
+																	</div>
+																)}
+															</div>
+															<div className="flex gap-1.5">
+																	<button type="button" onClick={() => startActionItemInlineEdit(item)} className="px-2.5 py-1.5 text-[12px] font-semibold text-[#5A6F8A] border border-[rgba(0,100,180,0.12)] rounded-lg bg-white">수정</button>
+																	<button type="button" onClick={() => removeActionItem(item.id)} className="px-2.5 py-1.5 text-[12px] font-semibold text-[#EF4444] border border-[#F8D1D1] rounded-lg bg-white">삭제</button>
+																</div>
+															</div>
+														</div>
+													</article>
 												))}
 											</div>
 										</>

@@ -33,7 +33,6 @@ function LIcon({ name, size = 18, color = "currentColor", sw = 2, className = ""
 
 export default function CreateProject() {
   const navigate = useNavigate();
-  const categoryDropdownRef = useRef(null);
   const templateDropdownRef = useRef(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const [activeTab, setActiveTab] = useState('home');
@@ -48,7 +47,6 @@ export default function CreateProject() {
 
   useEffect(() => {
     const handleOutsideClick = (e) => {
-      if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(e.target)) setIsCategoryOpen(false);
       if (templateDropdownRef.current && !templateDropdownRef.current.contains(e.target)) setIsTemplateOpen(false);
     };
     document.addEventListener('mousedown', handleOutsideClick);
@@ -57,11 +55,7 @@ export default function CreateProject() {
 
   const [step, setStep] = useState(1);
   const [projectName, setProjectName] = useState('');
-  const [category, setCategory] = useState('');
-  const [isCategoryOpen, setIsCategoryOpen] = useState(false);
-  const [customCategory, setCustomCategory] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedColor, setSelectedColor] = useState('#EEF3FF');
   const [copyTemplate, setCopyTemplate] = useState('none');
   const [isTemplateOpen, setIsTemplateOpen] = useState(false);
   const [email, setEmail] = useState('');
@@ -79,33 +73,18 @@ export default function CreateProject() {
     setTimeout(() => setToastMessage(''), 3000);
   };
 
-  const categoryConfig = {
-    '개발':   { color: '#EEF3FF', labelColor: '#0099CC', name: '개발 (Development)' },
-    '디자인': { color: '#F3E8FF', labelColor: '#7C3AED', name: '디자인 (Design)' },
-    '기획':   { color: '#E6F4EA', labelColor: '#10B981', name: '기획 (Planning)' },
-    '마케팅': { color: '#FCE8E6', labelColor: '#EF4444', name: '마케팅 (Marketing)' },
-    '기타':   { color: '#FEF7E0', labelColor: '#F59E0B', name: '기타 직접 입력' }
-  };
-
   const templateOptions = [
-    { value: 'none', label: '새 환경으로 새로 시작하기', description: '복사 없음', icon: 'sparkles' },
-    { value: 'p1', label: 'TIKI 개발 파이프라인 컨벤션 복사', description: '개발 템플릿', icon: 'folder' },
-    { value: 'p2', label: '신규 모바일 디자인 가이드 컨벤션 복사', description: '디자인 템플릿', icon: 'eye' },
-    { value: 'p3', label: '마케팅 기획 연동 및 AI 분석 규칙 복사', description: '마케팅 템플릿', icon: 'mail' }
+    { value: 'none', label: '새 프로젝트로 시작', description: '기본값', icon: 'sparkles' },
+    { value: 'meeting-ai', label: '회의록 자동화 설정', description: 'Jira / Notion 규칙', icon: 'folder' },
+    { value: 'design-system', label: '디자인 시스템 설정', description: '컴포넌트 규칙', icon: 'eye' },
+    { value: 'strategy-planning', label: '기획 / 전략 설정', description: '로드맵 규칙', icon: 'mail' }
   ];
 
   const selectedTemplate = templateOptions.find((o) => o.value === copyTemplate) || templateOptions[0];
 
-  const handleCategoryChange = (val) => {
-    setCategory(val);
-    setIsCategoryOpen(false);
-    if (categoryConfig[val]) setSelectedColor(categoryConfig[val].color);
-  };
-
   const handleGoToNext = (e) => {
     e.preventDefault();
     if (!projectName.trim()) { triggerToast('⚠️ 프로젝트 이름을 입력해 주세요.'); return; }
-    if (!category) { triggerToast('⚠️ 카테고리를 선택해 주세요.'); return; }
     setStep(2);
   };
 
@@ -136,10 +115,6 @@ export default function CreateProject() {
     }, 1600);
     setTimeout(() => { setBuildProgress(100); setBuildStepText('TIKI 업무 요약 자동화 프로젝트 생성 성공!'); setBuildSuccess(true); }, 2400);
   };
-
-  const previewLabelColor = category ? categoryConfig[category]?.labelColor : '#8A9AB0';
-  const previewBgColor = category ? categoryConfig[category]?.color : '#F0F2F5';
-  const previewCategoryLabel = category === '기타' ? (customCategory || '기타') : (category || '카테고리');
 
   return (
     <div className="min-h-screen bg-[#F8FAFF] font-sans text-[#0D1B2A] antialiased overflow-x-hidden pt-20 pb-20 md:pb-0 flex flex-col">
@@ -213,40 +188,38 @@ export default function CreateProject() {
               <span className="text-[10px] bg-[#EEF3FF] text-[#0099CC] px-2.5 py-1 rounded-full font-bold">Live Preview</span>
             </div>
 
-            {/* ── 카드 본문 수정 컴포넌트 ── */}
+            {/* ── 카드 본문: ProjectList 카드와 동일한 구조 ── */}
             <div
-              className="relative rounded-2xl border shadow-sm overflow-hidden flex flex-col transition-all duration-300"
-              style={{ backgroundColor: '#F8FAFF', borderColor: 'rgba(0,100,180,0.08)' }}
+              className="group w-full rounded-2xl border border-[rgba(0,100,180,0.10)] bg-white p-5 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-[#0099CC]/30 hover:shadow-md flex flex-col"
             >
-              <span
-                className="absolute top-0 left-0 right-0 h-2.5 transition-colors duration-300"
-                style={{ backgroundColor: previewBgColor }}
-                aria-hidden="true"
-              />
-
-              <div className="p-5 flex-1 pt-7">
-                <div className="mb-1.5">
-                  <span
-                    className="text-[11px] font-semibold tracking-wide transition-all duration-300"
-                    style={{ color: previewLabelColor }}
-                  >
-                    {previewCategoryLabel}
-                  </span>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-[15px] font-bold leading-snug text-[#0D1B2A] transition-colors group-hover:text-[#0099CC]">
+                    {projectName.trim() ? projectName : '프로젝트 이름을 입력해 주세요'}
+                  </h3>
                 </div>
-
-                <h3 className="text-base font-bold text-[#0D1B2A] leading-snug mb-1.5">
-                  {projectName.trim() ? projectName : '프로젝트 이름을 입력해 주세요'}
-                </h3>
               </div>
 
-              <div className="border-t" style={{ borderColor: 'rgba(0,100,180,0.05)' }} />
-              <div className="px-5 py-3.5 flex items-center justify-between gap-2">
-                {/* 참여팀원 포맷 수정 (나 + 초대된 팀원 수) */}
-                <div className="flex items-center gap-1.5 text-[#0D1B2A]/70 min-w-0">
+              <p
+                className="mt-2.5 overflow-hidden text-[13px] leading-[1.65] text-[#5A6F8A]"
+                style={{
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                }}
+              >
+                {description.trim() ? description : '프로젝트 설명을 입력하면 여기에 2줄로 보여드려요.'}
+              </p>
+
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-[rgba(0,100,180,0.06)] pt-3">
+                <div className="flex min-w-0 items-center gap-1.5 text-[#0D1B2A]/70">
                   <LIcon name="users" size={15} className="shrink-0" />
-                  <span className="text-xs truncate">참여팀원: {invitedMembers.length + 1}명</span>
+                  <span className="truncate text-xs">참여 {invitedMembers.length + 1}명</span>
                 </div>
-                <span className="text-xs text-[#0D1B2A]/55 shrink-0">방금 전</span>
+                <div className="flex shrink-0 items-center gap-1.5 text-[#0D1B2A]/55">
+                  <LIcon name="clock" size={14} className="shrink-0" />
+                  <span className="text-xs">방금 전</span>
+                </div>
               </div>
             </div>
 
@@ -255,7 +228,7 @@ export default function CreateProject() {
               <div className="p-3.5 bg-[#F6F8FB] rounded-xl border border-[#CBD5E1]/60 flex items-start space-x-2 text-xs text-[#334155] animate-fadeIn">
                 <LIcon name="sparkles" size={16} className="mt-0.5 shrink-0 text-[#64748B]" />
                 <p className="leading-relaxed">
-                  <strong>템플릿 복제 예약됨</strong>: 선택하신 이전 프로젝트의 회의록 학습 데이터 및 AI 컨벤션 설정이 그대로 옮겨집니다.
+                  <strong>이전 프로젝트 설정 가져오기 예약됨</strong>: 선택하신 프로젝트의 회의록 학습 데이터와 초기 설정을 그대로 이어받습니다.
                 </p>
               </div>
             )}
@@ -293,58 +266,6 @@ export default function CreateProject() {
                     className="w-full px-4 py-3 bg-[#F8FAFF] border border-[rgba(0,100,180,0.12)] rounded-xl text-sm text-[#0D1B2A] focus:outline-none focus:border-[#0099CC] transition" required />
                 </div>
 
-                <div className="relative" ref={categoryDropdownRef}>
-                  <label className="block text-xs sm:text-sm font-semibold text-[#0D1B2A] mb-2">
-                    카테고리 선택 <span className="text-[#EF4444] ml-1">*</span>
-                  </label>
-                  <button type="button" onClick={() => setIsCategoryOpen((prev) => !prev)}
-                    className={`w-full px-4 py-3.5 bg-[#F8FAFF] border rounded-xl text-sm transition flex items-center justify-between text-left ${isCategoryOpen ? 'border-[#0099CC] shadow-[0_0_0_3px_rgba(0,153,204,0.12)]' : 'border-[rgba(0,100,180,0.12)] hover:border-[rgba(0,100,180,0.22)]'}`}>
-                    {category ? (
-                      <span className="flex items-center gap-2 text-[#0D1B2A] font-medium">
-                        <span>{categoryConfig[category]?.name || category}</span>
-                        {categoryConfig[category] && (
-                          <span style={{ backgroundColor: categoryConfig[category].color, color: categoryConfig[category].labelColor }}
-                            className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border border-[rgba(0,100,180,0.08)]">카테고리 색상</span>
-                        )}
-                      </span>
-                    ) : (
-                      <span className="text-[#5A6F8A]">분야를 선택해 주세요</span>
-                    )}
-                    <LIcon name="chevronDown" size={14} className={`text-[#5A6F8A] transition-transform duration-200 ${isCategoryOpen ? 'rotate-180' : ''}`} />
-                  </button>
-
-                  {isCategoryOpen && (
-                    <div className="absolute left-0 right-0 z-20 mt-2 overflow-hidden rounded-xl border border-[rgba(0,100,180,0.12)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)]">
-                      <div className="max-h-64 overflow-y-auto py-1.5">
-                        {[{ value: '개발', label: '개발 (Development)' }, { value: '디자인', label: '디자인 (Design)' }, { value: '기획', label: '기획 (Planning)' }, { value: '마케팅', label: '마케팅 (Marketing)' }, { value: '기타', label: '기타 (직접 입력)' }].map((option) => {
-                          const isSelected = category === option.value;
-                          return (
-                            <button key={option.value} type="button" onClick={() => handleCategoryChange(option.value)}
-                              className={`w-full px-3.5 py-2.5 text-left text-sm flex items-center justify-between transition-colors ${isSelected ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'}`}>
-                              <span className="truncate">{option.label}</span>
-                              <span className="flex items-center gap-2">
-                                {categoryConfig[option.value] && (
-                                  <span style={{ backgroundColor: categoryConfig[option.value].color, color: categoryConfig[option.value].labelColor }}
-                                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border border-[rgba(0,100,180,0.08)]">컬러</span>
-                                )}
-                                {isSelected && <LIcon name="check" size={14} className="text-[#0099CC]" />}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {category === '기타' && (
-                  <div className="bg-[#EEF3FF] p-4 rounded-xl border border-[rgba(0,153,204,0.15)] animate-fadeIn">
-                    <label className="block text-xs font-bold text-[#0099CC] mb-1.5 uppercase">카테고리 분야 직접 입력</label>
-                    <input type="text" value={customCategory} onChange={(e) => setCustomCategory(e.target.value)} placeholder="예: 사업개발지원"
-                      className="w-full px-3 py-2.5 bg-white border border-[rgba(0,100,180,0.12)] rounded-lg text-sm focus:outline-none focus:border-[#0099CC]" required={category === '기타'} />
-                  </div>
-                )}
-
                 <div>
                   <label className="block text-xs sm:text-sm font-semibold text-[#0D1B2A] mb-2">
                     프로젝트 설명 <span className="text-[#5A6F8A] font-normal ml-1">(선택 사항)</span>
@@ -353,12 +274,16 @@ export default function CreateProject() {
                     className="w-full px-4 py-3 bg-[#F8FAFF] border border-[rgba(0,100,180,0.12)] rounded-xl text-sm text-[#0D1B2A] focus:outline-none focus:border-[#0099CC] transition resize-none leading-relaxed" />
                 </div>
 
-                <div className="bg-[#F8FAFF] rounded-xl border border-[rgba(0,100,180,0.06)] p-4">
-                  <div className="flex items-start space-x-3">
-                    <div className="mt-0.5 text-[#7C3AED]"><LIcon name="sparkles" size={18} /></div>
+                <div className="rounded-xl border border-[rgba(0,100,180,0.08)] bg-[#F8FAFF] p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 text-[#7C3AED]">
+                      <LIcon name="sparkles" size={18} />
+                    </div>
                     <div className="flex-1">
-                      <h4 className="text-xs sm:text-sm font-semibold text-[#0D1B2A]">이전 템플릿 및 설정 복사하기</h4>
-                      <p className="text-[11px] sm:text-xs text-[#5A6F8A] mt-1 leading-relaxed">사내에 이미 구축해둔 AI 요약 컨벤션이나 Notion 매핑 규칙 설정을 그대로 적용합니다.</p>
+                      <h4 className="text-xs sm:text-sm font-semibold text-[#0D1B2A]">이전 프로젝트 설정 가져오기</h4>
+                      <p className="mt-1 text-[11px] sm:text-xs leading-relaxed text-[#5A6F8A]">
+                        새로 시작하거나, 기존 프로젝트의 회의 컨벤션과 초기 설정을 이어받을 수 있습니다.
+                      </p>
                       <div className="mt-3 relative" ref={templateDropdownRef}>
                         <button type="button" onClick={() => setIsTemplateOpen((prev) => !prev)}
                           className={`w-full px-3 py-2 bg-white border rounded-lg text-xs text-[#0D1B2A] transition flex items-center justify-between text-left ${isTemplateOpen ? 'border-[#0099CC] shadow-[0_0_0_3px_rgba(0,153,204,0.12)]' : 'border-[rgba(0,100,180,0.1)] hover:border-[rgba(0,100,180,0.22)]'}`}>
@@ -412,11 +337,31 @@ export default function CreateProject() {
                   <div className="space-y-3">
                     <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="invite@team-tiki.com" disabled={isInviting}
                       className="w-full px-4 py-3 bg-[#F8FAFF] border border-[rgba(0,100,180,0.12)] rounded-xl text-sm focus:outline-none focus:border-[#0099CC] transition" />
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-[#F8FAFF] p-2 rounded-xl border border-[rgba(0,100,180,0.08)]">
-                      <div className="flex bg-white rounded-lg p-1 border border-[rgba(0,100,180,0.05)] shadow-inner">
-                        <button type="button" onClick={() => setRole('member')} className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-bold transition-all ${role === 'member' ? 'bg-[#EEF3FF] text-[#0099CC] shadow-sm' : 'text-[#5A6F8A] hover:bg-gray-50'}`}>일반 멤버 (Member)</button>
-                        <button type="button" onClick={() => setRole('admin')} className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-xs font-bold transition-all ${role === 'admin' ? 'bg-[#7C3AED]/10 text-[#7C3AED] shadow-sm' : 'text-[#5A6F8A] hover:bg-gray-50'}`}>관리자 (Admin)</button>
-                      </div>
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-[#F8FAFF] p-2 rounded-xl border border-[rgba(0,100,180,0.08)]">
+                        <div className="grid flex-1 grid-cols-2 gap-2 rounded-lg border border-[rgba(0,100,180,0.05)] bg-white p-1 shadow-inner">
+                          <button
+                            type="button"
+                            onClick={() => setRole('member')}
+                            className={`flex min-h-[46px] items-center justify-center rounded-md px-3 py-2 text-xs font-bold transition-all ${
+                              role === 'member'
+                                ? 'bg-[#EEF3FF] text-[#0099CC] shadow-sm ring-1 ring-[#0099CC]/10'
+                                : 'text-[#5A6F8A] hover:bg-gray-50'
+                            }`}
+                          >
+                            일반 멤버 (Member)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRole('admin')}
+                            className={`flex min-h-[46px] items-center justify-center rounded-md px-3 py-2 text-xs font-bold transition-all ${
+                              role === 'admin'
+                                ? 'bg-[#F3E8FF] text-[#7C3AED] shadow-sm ring-1 ring-[#7C3AED]/10'
+                                : 'text-[#5A6F8A] hover:bg-gray-50'
+                            }`}
+                          >
+                            관리자 (Admin)
+                          </button>
+                        </div>
                       <button type="button" onClick={handleAddMember} disabled={isInviting}
                         className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition shadow-sm whitespace-nowrap flex items-center justify-center space-x-2">
                         {isInviting ? (<><LIcon name="loader" size={14} className="animate-spin text-white" /><span>전송 처리 중...</span></>) : (<><LIcon name="mail" size={14} /><span>구성원 추가</span></>)}
