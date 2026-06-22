@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.services.ai.audio_preprocessing import WhisperAudioPreprocessor
+from app.services.ai.stt import WhisperSpeechToTextService
+from app.services.ai.llm_analysis import HeuristicLLMAnalysisService
+from app.services.ai_engine import _augment_context_with_audio_quality, _summarize_audio_preprocessing
+
+
+class HeuristicMeetingAnalysisTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = HeuristicLLMAnalysisService()
+
+    def test_dialogue_normalization_strips_speakers_and_fillers(self) -> None:
+        text = """
+정아름: 다들 왔죠? 그럼 회의 시작하겠습니다.
+
+김소현: 네.
+
+(웃음)
+
+송지영: 잠시만요. 제 노트북 업데이트가 갑자기...
+"""
+        normalized = self.service._normalize_dialogue_transcript(text)
+
+        self.assertNotIn("정아름:", normalized)
+        self.assertNotIn("김소현:", normalized)
+        self.assertNotIn("(웃음)", normalized)
+        self.assertIn("회의 시작하겠습니다.", normalized)
+        self.assertIn("제 노트북 업데이트가 갑자기...", normalized)
+
+    def test_noise_sentence_filter_keeps_real_content(self) -> None:
+        sentences = [
+            "네",
+            "좋습니다",
+            "우선 로그인 기능부터 만들고, 그 다음 업무 등록 기능, 결재 기능 순으로 가는 게 좋습니다.",
+            "음",
+        ]
+
+        filtered = self.service._filter_noise_sentences(sentences)
+
+        self.assertEqual(
+            filtered,
+            ["우선 로그인 기능부터 만들고, 그 다음 업무 등록 기능, 결재 기능 순으로 가는 게 좋습니다."],
+        )
+
+    def test_action_item_title_cleanup_drops_temporal_prefix(self) -> None:
+        title = self.service._build_title("오늘은 사내 업무관리시스템 구축 프로젝트 일정이랑 업무 분담을 정하겠습니다.")
+
+        self.assertFalse(title.startswith("은 "))
+        self.assertIn("사내 업무관리시스템", title)
+
+    def test_sentence_cleanup_collapses_repeated_phrases(self) -> None:
+        sentence = (
+            "그럼 이건 첫 번째 리스크로 등록하고 담당한 소연님이 "
+            "그럼 이건 첫 번째 리스크로 등록하고 담당한 소연님이 "
+            "인사팀과 협의하는 걸로 하고요"
+        )
+
+        cleaned = self.service._cleanup_sentence(sentence)
+
+        self.assertEqual(
+            cleaned,
+            "그럼 이건 첫 번째 리스크로 등록하고 담당한 소연님이 인사팀과 협의하는 걸로 하고요",
+        )
+
+    def test_meeting_summary_preserves_action_items_on_noisy_dialogue(self) -> None:
+        transcript = """
+정아름: 오늘은 사내 업무관리시스템 구축 프로젝트 일정이랑 업무 분담을 정하겠습니다.
+김소현: 우선 로그인 기능부터 만들고, 그 다음 업무 등록 기능, 결재 기능 순으로 가는 게 좋습니다.
+채하율: 요구사항 명세서는 김소현 님이 진행하고 2026-06-25까지 완료하는 걸로 하겠습니다.
+송지영: 다음 회의에서는 개발 일정과 예상 리스크를 다시 보죠.
+"""
+        result = self.service.summarize_and_extract_tickets(
+            transcript,
+            context={
+                "extra": {
+                    "audio_preprocessing": {
+                        "raw_noisy": True,
+                        "quality_flags": ["raw_noise_detected"],
+                    }
+                }
+            },
+        )
+
+        action_titles = [item["title"] for item in result["action_items"]]
+
+        self.assertIn("업무관리시스템", result["summary"])
+        self.assertGreaterEqual(len(result["action_items"]), 3)
+        self.assertTrue(any("로그인" in title for title in action_titles), action_titles)
+        self.assertTrue(any("요구사항 명세서" in title for title in action_titles), action_titles)
+        self.assertTrue(result["decisions"])
+        self.assertTrue(result["next_agenda"])
+        self.assertIn("다음 회의", result["next_agenda"][0])
+        self.assertTrue(result["extra_data"]["audio_noise_context"])
+        self.assertLessEqual(len(result["summary"]), 320)
+
+    def test_decisions_ignore_meeting_opening_lines(self) -> None:
+        transcript = """
+정아름: 다들 왔죠? 그럼 회의 시작하겠습니다.
+김소현: 결제 기능은 필수라고 생각합니다. 이걸로 결정하겠습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+
+        self.assertTrue(result["decisions"])
+        self.assertTrue(any("결정" in item for item in result["decisions"]))
+        self.assertFalse(any("회의 시작" in item for item in result["decisions"]))
+
+    def test_followup_agenda_captures_discussion_questions(self) -> None:
+        transcript = "송지영: 이번에는 추가 기능 요청이 들어올 경우에 어떻게 대응할지 이야기해봅시다."
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+
+        self.assertTrue(result["next_agenda"])
+        self.assertTrue(any("대응할지" in item for item in result["next_agenda"]))
+        self.assertFalse(result["issues"])
+
+    def test_noise_summary_rewrites_into_meeting_summary_style(self) -> None:
+        transcript = """
+정아름: 다들 왔죠? 그럼 회의 시작하겠습니다.
+김소현: 결제 기능은 필수라고 생각합니다.
+채하율: 업무 등록 기능도 중요하다고 생각해요.
+송지영: 디자인 수정 요청이 많아질 수 있어서 리스크가 있습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(
+            transcript,
+            context={
+                "extra": {
+                    "audio_preprocessing": {
+                        "raw_noisy": True,
+                        "quality_flags": ["raw_noise_detected"],
+                    }
+                }
+            },
+        )
+
+        self.assertLessEqual(len(result["summary"]), 320)
+        self.assertNotIn("회의 시작", result["summary"])
+        self.assertNotIn("다들 왔죠", result["summary"])
+        self.assertIn("결제", result["summary"])
+        self.assertIn("업무 등록", result["summary"])
+
+    def test_keywords_are_topic_tags_not_generic_noise_words(self) -> None:
+        transcript = """
+정아름: 로그인, 업무 등록, 결재 기능의 우선순위를 정하겠습니다.
+김소현: 디자인 수정 요청은 따로 보고, 테스트 일정과 리스크 관리도 확인해야 합니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+        keywords = [item["text"] for item in result["keywords"]]
+
+        self.assertTrue(any(tag in keywords for tag in ("업무관리시스템", "기능 우선순위", "디자인 수정", "리스크 관리")))
+        self.assertFalse(any(tag in keywords for tag in ("일정", "마감", "완료")))
+
+    def test_decisions_are_rewritten_into_concise_statements(self) -> None:
+        transcript = """
+김소현: 결제 기능은 필수라고 생각합니다. 저는 업무 등록 기능도 중요하다고 생각해요. 업무를 등록하고 담당자를 지정하는 기능이 있어야 결제도 의미가 있을 것 같아요. 저도 동의해요 좋습니다.
+송지영: 그럼 알림 기능은 2차 개발 후보로 분류하겠습니다.
+정아름: 월 5일까지 확보하는 걸 목표로 하겠습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+        decisions = result["decisions"]
+
+        self.assertTrue(any("결제 기능" in item for item in decisions), decisions)
+        self.assertTrue(any("업무 등록 기능" in item for item in decisions), decisions)
+        self.assertTrue(any("알림 기능" in item and "2차 개발 후보" in item for item in decisions), decisions)
+        self.assertTrue(any("월 5일" in item or "2026-07-05" in item for item in decisions), decisions)
+        self.assertTrue(all(len(item) <= 60 for item in decisions), decisions)
+
+    def test_korean_due_date_is_parsed_into_action_item(self) -> None:
+        transcript = """
+정아름: 7월 10일까지는 수정 요청을 받고 이후에는 긴급 수정만 반영하는 게 좋겠습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+
+        self.assertTrue(result["action_items"])
+        self.assertEqual(result["action_items"][0]["due_at"], "2026-07-10")
+
+    def test_action_item_title_is_compacted_into_ticket_style(self) -> None:
+        title = self.service._build_action_item_title(
+            "그럼 요구사항 명세서는 김소현 님이 진행하고 6월 25일까지 완료하는 걸로 하겠습니다."
+        )
+
+        self.assertEqual(title, "요구사항 명세서 진행")
+        self.assertLessEqual(len(title), 20)
+
+    def test_action_items_are_capped_at_seven(self) -> None:
+        transcript = """
+정아름: 업무관리시스템 일정을 정리하겠습니다.
+김소현: 로그인 기능을 진행하겠습니다.
+채하율: 업무 등록 기능을 진행하겠습니다.
+송지영: 결제 기능을 진행하겠습니다.
+민수: 알림 기능을 진행하겠습니다.
+지은: 파일 첨부 기능을 검토하겠습니다.
+현우: 디자인 수정을 반영하겠습니다.
+수연: 테스트 일정을 확인하겠습니다.
+도윤: 리스크 관리를 대응하겠습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+
+        self.assertEqual(len(result["action_items"]), 7)
+        self.assertTrue(any("업무관리시스템" in item["title"] for item in result["action_items"]))
+        self.assertTrue(any("로그인" in item["title"] for item in result["action_items"]))
+        self.assertTrue(any("업무 등록" in item["title"] for item in result["action_items"]))
+
+    def test_issues_are_compacted_into_short_risk_titles(self) -> None:
+        transcript = """
+정아름: 특히 결제 기능은 모두가 나면 안 되죠. 그럼 테스트는 어떤 방식으로 진행하실 건가요.
+김소현: 그럼 이건 첫 번째 리스크로 등록하고 담당한 소연님이 인사팀과 협의하는 걸로 하고요.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+        issue_titles = [item["text"] for item in result["issues"]]
+
+        self.assertTrue(result["issues"])
+        self.assertTrue(all(len(title) <= 36 for title in issue_titles), issue_titles)
+        self.assertTrue(any("협의" in title or "리스크" in title for title in issue_titles), issue_titles)
+
+    def test_assignee_is_corrected_from_context_name_candidates(self) -> None:
+        transcript = """
+정아름: 요구사항 명세서는 소연님이 진행하고 6월 25일까지 완료하겠습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(
+            transcript,
+            context={
+                "participants": ["김소현", "정아름"],
+            },
+        )
+
+        self.assertTrue(result["action_items"])
+        self.assertEqual(result["action_items"][0]["assignee"], "김소현")
+
+    def test_audio_preprocessing_summary_merges_quality_flags_into_context(self) -> None:
+        preprocessing = {
+            "source_path": "/tmp/meeting.m4a",
+            "strategy": "ffmpeg_denoise",
+            "sample_rate": 16000,
+            "duration_seconds": 123.4,
+            "chunking_enabled": True,
+            "chunk_count": 3,
+            "quality_flags": ["raw_noise_detected", "ffmpeg_denoised"],
+            "load_metadata": {
+                "raw_noisy": True,
+                "ffmpeg_denoised": True,
+                "stationary_noise_suppressed": False,
+                "noisy_recording": True,
+            },
+        }
+
+        summary = _summarize_audio_preprocessing(preprocessing)
+        augmented = _augment_context_with_audio_quality(
+            {"project_name": "TIKI", "note": "기존 메모"},
+            preprocessing,
+        )
+
+        self.assertTrue(summary["raw_noisy"])
+        self.assertTrue(summary["ffmpeg_denoised"])
+        self.assertEqual(summary["chunk_count"], 3)
+        self.assertIn("audio_preprocessing", augmented["extra"])
+        self.assertIn("ffmpeg_denoised=true", augmented["note"])
+
+    def test_raw_noisy_long_audio_forces_chunking_even_after_denoise(self) -> None:
+        preprocessor = WhisperAudioPreprocessor()
+        fake_samples = np.zeros(preprocessor.sample_rate * 120, dtype=np.float32)
+
+        def fake_load_audio(_audio_path: str) -> np.ndarray:
+            preprocessor._last_load_metadata = {
+                "raw_noisy": True,
+                "ffmpeg_denoised": True,
+                "stationary_noise_suppressed": False,
+                "quality_flags": ["raw_noise_detected", "ffmpeg_denoised"],
+            }
+            return fake_samples
+
+        with patch.object(WhisperAudioPreprocessor, "load_audio", side_effect=fake_load_audio):
+            result = preprocessor.prepare("/tmp/noisy-meeting.m4a")
+
+        self.assertTrue(result.chunking_enabled)
+        self.assertEqual(result.strategy, "noisy_fixed_window_split")
+        self.assertGreater(len(result.chunks), 1)
+        self.assertTrue(result.is_noisy)
+        self.assertGreater(result.chunks[0].end_seconds, result.chunks[0].core_end_seconds or 0)
+        self.assertLess(result.chunks[1].start_seconds, result.chunks[1].core_start_seconds or 0)
+
+    def test_noisy_meeting_uses_noisy_model_selection(self) -> None:
+        service = WhisperSpeechToTextService(model_name="small", language="ko")
+        noisy_preprocessing = type(
+            "Preprocessing",
+            (),
+            {
+                "is_noisy": True,
+                "duration_seconds": 765.0,
+            },
+        )()
+        calm_preprocessing = type(
+            "Preprocessing",
+            (),
+            {
+                "is_noisy": False,
+                "duration_seconds": 765.0,
+            },
+        )()
+
+        with patch.object(WhisperSpeechToTextService, "_is_model_cached", return_value=True):
+            self.assertEqual(service._select_model_name(noisy_preprocessing), "medium")
+
+        with patch.object(WhisperSpeechToTextService, "_is_model_cached", return_value=False):
+            self.assertEqual(service._select_model_name(noisy_preprocessing), "small")
+        self.assertEqual(service._select_model_name(calm_preprocessing), "small")
+
+    def test_segment_core_region_filter_uses_midpoint(self) -> None:
+        self.assertTrue(WhisperSpeechToTextService._is_segment_in_core_region(29.0, 31.0, 30.0, 60.0))
+        self.assertFalse(WhisperSpeechToTextService._is_segment_in_core_region(27.0, 29.0, 30.0, 60.0))
+
+
+if __name__ == "__main__":
+    unittest.main()
