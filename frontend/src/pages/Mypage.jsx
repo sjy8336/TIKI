@@ -29,6 +29,7 @@ const ICON_PATHS = {
   menu: ["M3 12h18","M3 6h18","M3 18h18"],
   linkOff: ["M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71","M5.17 11.75l-1.72 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71","M1 1l22 22"],
   arrowLeft: ["M19 12H5","M12 19l-7-7 7-7"],
+  briefcase: ["M20 7h-4V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z","M16 7V5H8v2"],
 };
 
 function Icon({ name, size = 16, color = "currentColor", sw = 1.8 }) {
@@ -53,6 +54,24 @@ const NAV_ITEMS = [
   { id: "sessions",    label: "세션 관리",       icon: "monitor" },
   { id: "data",        label: "데이터",          icon: "download" },
 ];
+
+const DEPARTMENTS = [
+  "기획팀",
+  "디자인팀",
+  "프론트엔드 개발팀",
+  "백엔드 개발팀",
+  "QA팀",
+  "마케팅팀",
+  "인사팀",
+  "직접 입력",
+];
+
+const ROLE_LABELS = {
+  dev: "개발자",
+  pm: "PM",
+  design: "디자이너",
+  other: "기타",
+};
 
 const DEVICES = [
   { id: 1, name: "Chrome · Windows 11", location: "Seoul, KR", lastActive: "현재 접속 중", icon: "monitor", current: true },
@@ -134,6 +153,90 @@ function Input({ type = "text", value, onChange, placeholder, disabled, error, r
   );
 }
 
+// ── Select ────────────────────────────────────────────────────────────────
+function Select({ value, onChange, options, error, placeholder, autoOpen = false }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    const handleOutside = (event) => {
+      if (rootRef.current && !rootRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
+  useEffect(() => {
+    if (autoOpen) {
+      setOpen(true);
+    }
+  }, [autoOpen]);
+
+  const handleSelect = (option) => {
+    onChange({ target: { value: option } });
+    setOpen(false);
+  };
+
+  const displayText = value || placeholder || "선택";
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className={cn(
+          "w-full px-3.5 py-2.5 text-[13px] rounded-xl border transition flex items-center justify-between cursor-pointer",
+          open
+            ? "bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]"
+            : error
+            ? "bg-[#FFF5F5] border-[#EF4444]/40 text-[#0D1B2A] hover:border-[#EF4444]/60"
+            : "bg-white border-[rgba(0,100,180,.15)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)]"
+        )}
+      >
+        <span className={cn("truncate", !value && "text-[#9BAABE]")}>{displayText}</span>
+        <Icon
+          name="chevronDown"
+          size={14}
+          color="#5A6F8A"
+          sw={2}
+          className={cn("transition-transform", open && "rotate-180")}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 bottom-full mb-2 w-full overflow-hidden rounded-lg border border-[rgba(0,100,180,.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)]">
+          {options.map((option) => {
+            const isSelected = value === option;
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => handleSelect(option)}
+                className={cn(
+                  "w-full px-3 py-2 text-[13px] text-left flex items-center justify-between transition-colors cursor-pointer",
+                  isSelected
+                    ? "bg-[#EEF3FF] text-[#0099CC] font-semibold"
+                    : "text-[#0D1B2A] hover:bg-[#F8FAFF]"
+                )}
+              >
+                <span>{option}</span>
+                {isSelected && <Icon name="check" size={14} color="#0099CC" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="sr-only" aria-hidden="true">
+        {placeholder}
+      </div>
+    </div>
+  );
+}
+
 // ── Divider ───────────────────────────────────────────────────────────────
 function Divider({ label }) {
   return (
@@ -203,12 +306,45 @@ function PwStrengthBar({ password }) {
 // Sections
 // ═══════════════════════════════════════════════════════════════════════════
 
-function ProfileSection({ showToast, initialName, initialEmail }) {
+function ProfileSection({ showToast, initialName, initialEmail, initialDepartment }) {
   const fileRef = useRef(null);
   const [name, setName] = useState(initialName);
   const [bio, setBio] = useState("AI 기반 회의 자동화를 연구합니다.");
   const [avatar, setAvatar] = useState(null);
   const [saving, setSaving] = useState(false);
+
+  // 부서: 가입 시 선택한 값을 그대로 표시. "변경" 버튼을 눌러야 수정 모드로 전환됨.
+  const initialIsCustom = !!initialDepartment && !DEPARTMENTS.includes(initialDepartment);
+  const [department, setDepartment] = useState(initialDepartment || "");
+  const [isEditingDept, setIsEditingDept] = useState(false);
+  const [deptSelect, setDeptSelect] = useState(initialIsCustom ? "직접 입력" : (initialDepartment || ""));
+  const [deptCustom, setDeptCustom] = useState(initialIsCustom ? initialDepartment : "");
+  const [deptError, setDeptError] = useState("");
+
+  const isCustomDept = deptSelect === "직접 입력";
+
+  const startEditDept = () => {
+    // 수정 모드 진입 시, 현재 확정된 부서값으로 select를 다시 맞춰줌
+    const curIsCustom = !!department && !DEPARTMENTS.includes(department);
+    setDeptSelect(curIsCustom ? "직접 입력" : department);
+    setDeptCustom(curIsCustom ? department : "");
+    setDeptError("");
+    setIsEditingDept(true);
+  };
+
+  const cancelEditDept = () => {
+    setDeptError("");
+    setIsEditingDept(false);
+  };
+
+  const confirmDept = () => {
+    if (!deptSelect) { setDeptError("부서를 선택해 주세요."); return; }
+    if (isCustomDept && !deptCustom.trim()) { setDeptError("부서명을 입력해 주세요."); return; }
+    setDepartment(isCustomDept ? deptCustom.trim() : deptSelect);
+    setDeptError("");
+    setIsEditingDept(false);
+    showToast("부서가 변경됐습니다.");
+  };
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
@@ -275,6 +411,54 @@ function ProfileSection({ showToast, initialName, initialEmail }) {
         <Field label="이메일" hint="이메일은 로그인 ID로, 변경할 수 없습니다.">
           <Input value={initialEmail} disabled />
         </Field>
+
+        <Field label="부서">
+          {!isEditingDept ? (
+            <div className="flex items-center justify-between rounded-xl border border-[rgba(0,100,180,.15)] bg-[#F8FAFF] px-3.5 py-2.5">
+              <div className="flex items-center gap-2">
+                <Icon name="briefcase" size={14} color="#5A6F8A" />
+                <span className="text-[13px] font-semibold text-[#0D1B2A]">
+                  {department || "부서 미설정"}
+                </span>
+              </div>
+              <button onClick={startEditDept}
+                className="shrink-0 rounded-lg border border-[rgba(0,100,180,.15)] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#5A6F8A] transition-colors hover:border-[rgba(0,153,204,.4)] hover:text-[#0099CC]">
+                변경
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Select
+                value={deptSelect}
+                onChange={e => { setDeptSelect(e.target.value); setDeptError(""); }}
+                options={DEPARTMENTS}
+                placeholder="부서 선택"
+                error={deptError}
+                autoOpen={isEditingDept}
+              />
+              {isCustomDept && (
+                <Input
+                  value={deptCustom}
+                  onChange={e => { setDeptCustom(e.target.value); setDeptError(""); }}
+                  placeholder="부서명을 입력하세요"
+                  error={!!deptError}
+                />
+              )}
+              {deptError && <p className="text-[12px] text-[#EF4444]">{deptError}</p>}
+              <div className="flex gap-2">
+                <button onClick={confirmDept}
+                  className="rounded-lg bg-[linear-gradient(135deg,#0099CC,#0077AA)] px-3 py-1.5 text-[12px] font-bold text-white">
+                  확인
+                </button>
+                <button onClick={cancelEditDept}
+                  className="rounded-lg border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] px-3 py-1.5 text-[12px] font-semibold text-[#5A6F8A]">
+                  취소
+                </button>
+              </div>
+            </div>
+          )}
+        </Field>
+
         <Field label="한 줄 소개" className="sm:col-span-2">
           <Input value={bio} onChange={e => setBio(e.target.value)} placeholder="간단한 소개를 입력하세요" />
         </Field>
@@ -646,6 +830,13 @@ export default function MyPage() {
   const activeNav = NAV_ITEMS.find(n => n.id === activeTab);
   const profileName = sessionUser?.name || "사용자";
   const profileEmail = sessionUser?.email || "";
+  const profileDepartment =
+    sessionUser?.department ||
+    sessionUser?.dept ||
+    sessionUser?.team ||
+    ROLE_LABELS[sessionUser?.role] ||
+    sessionUser?.role ||
+    "";
 
   return (
     <div className="relative min-h-screen bg-white text-[#0D1B2A] [font-family:'Pretendard',-apple-system,BlinkMacSystemFont,sans-serif]">
@@ -724,7 +915,7 @@ export default function MyPage() {
           </div>
 
           <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 shadow-[0_2px_16px_rgba(0,60,150,.05)] sm:p-7">
-            {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} />}
+            {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} />}
             {activeTab === "security"     && <SecuritySection showToast={showToast} setModal={handleModal} />}
             {activeTab === "integrations" && <IntegrationsSection showToast={showToast} />}
             {activeTab === "sessions"     && <SessionsSection showToast={showToast} setModal={handleModal} />}

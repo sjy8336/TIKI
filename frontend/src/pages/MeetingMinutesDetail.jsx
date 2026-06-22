@@ -217,6 +217,147 @@ function Spinner({ size = 14, color = "#fff" }) {
   );
 }
 
+/* ─── 의제 달성률 카드 ──────────────────────────────── */
+function AgendaCompletionSection({ actions, onToggleAction }) {
+  const total = actions.length;
+  const done = actions.filter((action) => action.status === "done").length;
+  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  const achieved = total > 0 && done === total;
+  const gaugeColor = achieved ? "#10B981" : "#0099CC";
+  const size = 136;
+  const stroke = 11;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (pct / 100) * circumference;
+  const remaining = total - done;
+
+  return (
+    <section
+      className="rounded-2xl bg-white px-5 py-5 md:px-7 md:py-6 overflow-hidden relative"
+      style={{ border: "1px solid rgba(0,100,180,0.12)" }}
+    >
+      <div className="relative flex items-start justify-between gap-3 flex-wrap mb-5">
+        <div>
+          <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: gaugeColor }}>
+            AGENDA PROGRESS
+          </p>
+          <p className="text-base md:text-lg font-bold text-slate-900">
+            이번 회의, 할 일을 다 끝냈을까?
+          </p>
+        </div>
+        <span
+          className="text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5"
+          style={{
+            color: achieved ? "#10B981" : "#0099CC",
+            background: achieved ? "rgba(16,185,129,0.12)" : "rgba(0,153,204,0.1)",
+          }}
+        >
+          {achieved && <LucideIcon name="check-circle" size={12} color="#10B981" />}
+          {achieved ? "목표 달성" : `${remaining}건 남음`}
+        </span>
+      </div>
+
+      {/* "다" 글자 위치에 맞춘 들여쓰기. 도넛↔구분선, 구분선↔액션리스트
+          간격을 동일하게 SECTION_GAP(md:gap-10)으로 통일. */}
+      <div className="relative flex flex-col md:flex-row md:items-center gap-5 md:gap-30 md:ml-24">
+        {/* 좌측 — 도넛 게이지 */}
+        <div className="flex items-center gap-5 md:gap-0 md:flex-col md:items-center flex-shrink-0">
+          <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+            <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+              <circle
+                cx={size / 2} cy={size / 2} r={radius}
+                fill="none" stroke="rgba(0,100,180,0.08)" strokeWidth={stroke}
+              />
+              <circle
+                cx={size / 2} cy={size / 2} r={radius}
+                fill="none" stroke={gaugeColor} strokeWidth={stroke}
+                strokeDasharray={circumference} strokeDashoffset={offset}
+                strokeLinecap="round"
+                transform={`rotate(-90 ${size / 2} ${size / 2})`}
+                style={{ transition: "stroke-dashoffset 0.5s ease" }}
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <p className="text-3xl font-extrabold leading-none" style={{ color: gaugeColor }}>{pct}<span className="text-base font-bold">%</span></p>
+              <p className="text-[11px] font-semibold text-slate-400 mt-1.5">{done}/{total} 완료</p>
+            </div>
+          </div>
+
+          {/* 모바일: 게이지 옆에 미니 통계 */}
+          <div className="flex md:hidden flex-col gap-1.5">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
+              <span className="text-slate-500">완료 <b className="text-slate-800">{done}</b></span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "#CBD5E1" }} />
+              <span className="text-slate-500">남음 <b className="text-slate-800">{remaining}</b></span>
+            </div>
+          </div>
+        </div>
+
+        {/* 구분선 (데스크탑) — 좌우 형제와의 거리는 부모의 gap-10이 동일하게 처리 */}
+        <div className="hidden md:block w-px h-32 bg-slate-100 flex-shrink-0" />
+
+        {/* 우측 — 액션 아이템 카드 리스트 */}
+        <div className="min-w-0 w-full md:max-w-2xl">
+          <div className="flex items-center justify-between mb-2.5">
+            <p className="text-xs font-semibold text-slate-400">Action Item 상세</p>
+            <p className="text-xs text-slate-300">{done}/{total}</p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {actions.map((action, idx) => {
+              const isDone = action.status === "done";
+              return (
+                <button
+                  key={`${action.text}-${idx}`}
+                  type="button"
+                  onClick={() => onToggleAction(idx)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left transition-all hover:-translate-y-0.5 cursor-pointer"
+                  style={{
+                    borderColor: isDone ? "rgba(16,185,129,0.3)" : "rgba(0,100,180,0.1)",
+                    background: isDone ? "rgba(16,185,129,0.06)" : "#fff",
+                  }}
+                >
+                  <span
+                    className="flex-shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors"
+                    style={{
+                      background: isDone ? "#10B981" : "rgba(0,100,180,0.08)",
+                    }}
+                  >
+                    {isDone ? (
+                      <LucideIcon name="check" size={11} color="#fff" />
+                    ) : null}
+                  </span>
+                  <span
+                    className={`text-sm font-medium flex-1 min-w-0 truncate ${isDone ? "text-emerald-700 line-through" : "text-slate-700"}`}
+                  >
+                    {action.text}
+                  </span>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                      {action.due || "미정"}
+                    </span>
+                    <span
+                      className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                      style={{
+                        color: isDone ? "#10B981" : "#5A6F8A",
+                        background: isDone ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
+                      }}
+                    >
+                      {action.assignee}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ─── Toast ──────────────────────────────────────────── */
 function Toast({ msg, color }) {
   if (!msg) return null;
@@ -238,7 +379,6 @@ function Modal({ open, onClose, title, children, footer, maxWidth = 448 }) {
       className="fixed inset-0 z-50 flex justify-center p-4"
       style={{
         alignItems: "center",
-        // 모바일: 하단 탭바 60px만큼 위로 올려서 중앙 정렬
         paddingBottom: "76px",
       }}
     >
@@ -251,7 +391,6 @@ function Modal({ open, onClose, title, children, footer, maxWidth = 448 }) {
         className="relative bg-white border border-slate-200 rounded-2xl w-full shadow-xl flex flex-col"
         style={{
           maxWidth,
-          // 탭바 60px + 상단 여백 16px + 하단 여백 16px = 92px, 추가로 모바일 높이 여유 확보
           maxHeight: "min(560px, calc(100vh - 92px))",
         }}
       >
@@ -323,7 +462,7 @@ function CustomDropdown({
 
       {open && !disabled && (
         <div
-          className="absolute z-20 mt-1 w-full rounded-lg border overflow-hidden max-h-52 overflow-y-auto"
+          className="absolute z-20 bottom-full mb-1 w-full rounded-lg border overflow-hidden max-h-52 overflow-y-auto"
           style={{ borderColor: "rgba(0,100,180,0.12)", background: "#fff", boxShadow: "0 8px 24px rgba(13,27,42,0.12)" }}
         >
           {options.map(option => (
@@ -409,7 +548,6 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
     todo:     "bg-slate-100 text-slate-500",
   };
 
-  // 이 서비스에 해당하는 발행 이력만 필터링
   const svcLogs = auditLog.filter(l => l.svcId === svc.id);
 
   const handleTicketClick = (ticket) => {
@@ -419,7 +557,6 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
 
   return (
     <Modal open={open} onClose={onClose} title={`${svc.name} 연동 현황`}>
-      {/* 진행률 */}
       <div className="mb-4">
         <div className="flex justify-between mb-1.5">
           <span className="text-xs text-slate-400">전체 진행률</span>
@@ -433,7 +570,6 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
         </div>
       </div>
 
-      {/* 티켓 목록 — 클릭 시 새 탭 Deep Link */}
       <div className="space-y-2 max-h-60 overflow-y-auto mb-4">
         {svc.tickets.map(t => (
           <button
@@ -464,7 +600,6 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
               <span className={`text-xs font-bold px-2 py-0.5 rounded ${statusCls[t.status]}`}>
                 {statusLabel[t.status]}
               </span>
-              {/* 외부 링크 아이콘 */}
               <svg
                 width="11" height="11" viewBox="0 0 12 12" fill="none"
                 className="text-slate-300 group-hover:text-slate-500 transition-colors flex-shrink-0"
@@ -477,7 +612,6 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
         ))}
       </div>
 
-      {/* 발행 이력 — Audit Trail (모달 내부에도 표시) */}
       {svcLogs.length > 0 && (
         <div
           className="rounded-xl p-3 space-y-1.5"
@@ -553,7 +687,6 @@ function IssueModal({ open, onClose, onIssued, services }) {
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState("");
 
-  // 로딩 & 에러 상태
   const [issuing, setIssuing] = useState(false);
   const [issueError, setIssueError] = useState(null);
 
@@ -595,17 +728,15 @@ function IssueModal({ open, onClose, onIssued, services }) {
     setStep(2);
   };
 
-  // 발행 처리 — 로딩 시뮬레이션 + 랜덤 에러 시뮬레이션(10% 확률)
   const handleIssue = async () => {
-    if (issuing) return; // 중복 클릭 방지
+    if (issuing) return;
     if (!canIssue) return;
     setIssuing(true);
     setIssueError(null);
 
-    await new Promise(r => setTimeout(r, 1800)); // API 호출 시뮬레이션
+    await new Promise(r => setTimeout(r, 1800));
 
-    // 에러 시뮬레이션 (실제 환경에서는 API 응답에 따라)
-    const simulateError = false; // true로 바꾸면 에러 테스트 가능
+    const simulateError = false;
     if (simulateError) {
       setIssueError({
         type: "auth",
@@ -699,14 +830,12 @@ function IssueModal({ open, onClose, onIssued, services }) {
         )
       }
     >
-      {/* 스텝 인디케이터 */}
       <div className="flex items-center gap-2 mb-5">
         <StepDot n={1} />
         <div className="flex-1 h-px transition-all" style={{ background: step > 1 ? "#10B981" : "rgba(0,100,180,0.12)" }} />
         <StepDot n={2} />
       </div>
 
-      {/* ── STEP 1 ── */}
       {step === 1 && (
         <div className="space-y-5">
           <div>
@@ -783,11 +912,9 @@ function IssueModal({ open, onClose, onIssued, services }) {
         </div>
       )}
 
-      {/* ── STEP 2 ── */}
       {step === 2 && (
         <div className="space-y-4">
 
-          {/* 에러 배너 */}
           {issueError && (
             <div
               className="rounded-xl p-3.5 flex items-start gap-3"
@@ -808,7 +935,6 @@ function IssueModal({ open, onClose, onIssued, services }) {
             </div>
           )}
 
-          {/* 통합/개별 탭 */}
           <div
             className="flex rounded-xl p-1 gap-1"
             style={{ background: "rgba(0,100,180,0.06)", border: "1px solid rgba(0,100,180,0.10)" }}
@@ -847,7 +973,6 @@ function IssueModal({ open, onClose, onIssued, services }) {
             </button>
           </div>
 
-          {/* 선택 항목 요약 */}
           <div
             className="rounded-xl p-3"
             style={{ background: "rgba(0,153,204,0.05)", border: "1px solid rgba(0,153,204,0.18)" }}
@@ -877,7 +1002,6 @@ function IssueModal({ open, onClose, onIssued, services }) {
             </div>
           </div>
 
-          {/* 통합 발행 폼 */}
           {issueMode === "merged" && (
             <div className="space-y-3">
               <div>
@@ -936,7 +1060,6 @@ function IssueModal({ open, onClose, onIssued, services }) {
             </div>
           )}
 
-          {/* 개별 발행 폼 */}
           {issueMode === "individual" && (
             <div className="space-y-2.5 max-h-64 overflow-y-auto pr-0.5">
               <p className="text-xs text-slate-400 leading-relaxed">
@@ -1135,20 +1258,19 @@ function EditableDecision({ text, onSave }) {
 }
 
 /* ─── ActionItem ─────────────────────────────────────── */
-function ActionItem({ item, onIssue }) {
-  const [checked, setChecked] = useState(item.status === "done");
+function ActionItem({ item, checked, onToggle, onIssue }) {
   return (
     <div
       className={`group flex items-start gap-3 p-3 rounded-xl border cursor-pointer ${
         checked ? "border-emerald-200 bg-emerald-50/50" : "border-slate-200"
       }`}
-      onClick={() => setChecked(prev => !prev)}
+      onClick={onToggle}
     >
       <input
         type="checkbox"
         checked={checked}
         onClick={e => e.stopPropagation()}
-        onChange={() => setChecked(prev => !prev)}
+        onChange={onToggle}
         className={`mt-0.5 flex-shrink-0 ${checked ? "accent-emerald-500" : "accent-cyan-500"}`}
       />
       <div className="flex-1 min-w-0">
@@ -1185,7 +1307,7 @@ function Divider({ label }) {
 }
 
 /* ─── AI Summary Panel ───────────────────────────────── */
-function SummaryPanel({ onOpenRegen, onOpenIssue, transcriptVisible, onToggleTranscript, isMobile, summaryCollapsed, onToggleSummary }) {
+function SummaryPanel({ onOpenRegen, onOpenIssue, transcriptVisible, onToggleTranscript, isMobile, summaryCollapsed, onToggleSummary, actions, onToggleAction }) {
   const [decisions, setDecisions] = useState(SUMMARY_DATA.decisions);
   return (
     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden h-full flex flex-col">
@@ -1269,8 +1391,14 @@ function SummaryPanel({ onOpenRegen, onOpenIssue, transcriptVisible, onToggleTra
           <div>
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Action Items</p>
             <div className="space-y-2">
-              {SUMMARY_DATA.actions.map((a, i) => (
-                <ActionItem key={i} item={a} onIssue={onOpenIssue} />
+              {actions.map((a, i) => (
+                <ActionItem
+                  key={i}
+                  item={a}
+                  checked={a.status === "done"}
+                  onToggle={() => onToggleAction(i)}
+                  onIssue={onOpenIssue}
+                />
               ))}
             </div>
           </div>
@@ -1381,11 +1509,9 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
       className="lg:w-auto flex-shrink-0 rounded-2xl px-4 py-4"
       style={{ border: "1px solid rgba(0,100,180,0.12)", background: "rgba(0,153,204,0.03)" }}
     >
-      {/* 헤더 행 */}
       <div className="flex items-center justify-between mb-3 gap-3">
         <div className="flex items-center gap-2">
           <p className="text-xs font-semibold text-slate-400">연동 서비스 현황</p>
-          {/* 전체 진행 요약 알약 */}
           <span
             className="text-xs font-bold px-2 py-0.5 rounded-full"
             style={{
@@ -1397,7 +1523,6 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
           </span>
         </div>
 
-        {/* 최근 발행 Audit Trail — 데스크탑만 노출 */}
         {!isMobile && latestLog && (
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <span
@@ -1414,21 +1539,16 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
         )}
       </div>
 
-      {/* 뱃지 + 발행 버튼 행 */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* 서비스 뱃지들 */}
         {services.map(svc => (
           <IntegrationBadge key={svc.id} svc={svc} onClick={onBadgeClick} />
         ))}
 
-        {/* 구분선 (데스크탑) */}
         <div className="hidden sm:block w-px h-5 bg-slate-200 mx-1" />
 
-        {/* 발행 버튼 */}
         <IssueButton onClick={onIssueOpen} />
       </div>
 
-      {/* 최근 발행 — 모바일에서는 뱃지 아래 텍스트로 노출 */}
       {isMobile && latestLog && (
         <p className="text-xs text-slate-400 mt-2.5 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
@@ -1440,10 +1560,6 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
   );
 }
 
-/* ─── 발행 버튼 (로딩 스피너 포함) ─────────────────────
-   부모(IssueModal)에서 issuing 상태를 받아 표시할 수도 있으나,
-   여기서는 컨트롤 타워의 버튼 자체는 모달 오픈 트리거이므로
-   별도 issuingGlobal prop으로 발행 중 상태를 반영합니다.       */
 function IssueButton({ onClick, issuingGlobal = false }) {
   return (
     <button
@@ -1484,15 +1600,15 @@ export default function TikiSprint12() {
   const [shownCount, setShownCount] = useState(PAGE_SIZE);
   const [toast, setToast] = useState({ msg: "", color: "#10B981" });
 
-  // ── 연동 서비스 상태 (실시간 카운트 동기화를 위해 state로 관리) ──
   const [services, setServices] = useState(INITIAL_INTEGRATION_SERVICES);
-  // Audit Trail 로그
   const [auditLog, setAuditLog] = useState([
     { svcId: "jira",   label: "TIKI-98 발행",  time: "06-14 14:32", user: "이민준" },
     { svcId: "notion", label: "P-22 발행",      time: "06-14 15:01", user: "김지훈" },
   ]);
+  const [summaryActions, setSummaryActions] = useState(() =>
+    SUMMARY_DATA.actions.map((action) => ({ ...action }))
+  );
 
-  // 모달 상태
   const [modal, setModal] = useState(null);
   const [detailSvc, setDetailSvc] = useState(null);
   const [issueOpen, setIssueOpen] = useState(false);
@@ -1594,11 +1710,9 @@ export default function TikiSprint12() {
     }
   }, [allCollapsed]);
 
-  /* 발행 완료 콜백 — 카운트 즉시 갱신 + Audit Trail 추가 */
   const handleIssued = useCallback((svcName, label, user) => {
     const svcId = INITIAL_INTEGRATION_SERVICES.find(s => s.name === svcName)?.id || "jira";
 
-    // 해당 서비스의 첫 번째 todo 티켓을 done으로 갱신 (시뮬레이션)
     setServices(prev =>
       prev.map(svc => {
         if (svc.id !== svcId) return svc;
@@ -1614,7 +1728,6 @@ export default function TikiSprint12() {
       })
     );
 
-    // Audit Trail 추가
     const now = new Date();
     const timeStr = `${String(now.getMonth() + 1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
     setAuditLog(prev => [...prev, { svcId, label, time: timeStr, user }]);
@@ -1640,12 +1753,22 @@ export default function TikiSprint12() {
   const visibleParticipants = PARTICIPANTS.slice(0, 4);
   const hiddenCount = Math.max(PARTICIPANTS.length - visibleParticipants.length, 0);
 
-  // 뱃지 클릭 시 최신 서비스 데이터 넘기기
   const handleBadgeClick = useCallback((svc) => {
-    // services state에서 최신 데이터를 찾아 모달에 넘김
     const latest = services.find(s => s.id === svc.id) || svc;
     setDetailSvc(latest);
   }, [services]);
+
+  const handleToggleAction = useCallback((index) => {
+    setSummaryActions((prev) =>
+      prev.map((action, i) => {
+        if (i !== index) return action;
+        return {
+          ...action,
+          status: action.status === "done" ? "todo" : "done",
+        };
+      })
+    );
+  }, []);
 
   return (
     <div
@@ -1664,11 +1787,9 @@ export default function TikiSprint12() {
         }}
       />
 
-      {/* ── MEETING META ── */}
       <div className="px-4 md:px-8 lg:px-12 pt-24 pb-0 max-w-screen-xl mx-auto">
         <div className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
-            {/* 회의 기본 정보 */}
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2 mb-2">
                 <span className="text-xs font-semibold text-slate-400">2025.06.14</span>
@@ -1705,7 +1826,6 @@ export default function TikiSprint12() {
               </div>
             </div>
 
-            {/* ── 연동 컨트롤 타워 ── */}
             <IntegrationControlTower
               services={services}
               auditLog={auditLog}
@@ -1717,7 +1837,10 @@ export default function TikiSprint12() {
         </div>
       </div>
 
-      {/* ── MAIN ── */}
+      <div className="px-4 md:px-8 lg:px-12 pt-4 max-w-screen-xl mx-auto">
+        <AgendaCompletionSection actions={summaryActions} onToggleAction={handleToggleAction} />
+      </div>
+
       <div
         className={`px-4 md:px-8 lg:px-12 py-5 max-w-screen-xl mx-auto ${isMobile ? "pb-[230px]" : "pb-32"}`}
       >
@@ -1725,7 +1848,6 @@ export default function TikiSprint12() {
           className="flex flex-col gap-5 md:flex-row transition-all duration-300"
           style={{ alignItems: isMobile ? "stretch" : "flex-start" }}
         >
-          {/* AI Summary */}
           <div
             className="flex-shrink-0 transition-all duration-300"
             style={{
@@ -1741,10 +1863,11 @@ export default function TikiSprint12() {
               onToggleTranscript={() => setTranscriptVisible(v => !v)}
               onOpenRegen={() => setModal("regen")}
               onOpenIssue={() => setIssueOpen(true)}
+              actions={summaryActions}
+              onToggleAction={handleToggleAction}
             />
           </div>
 
-          {/* Transcript Panel */}
           <div
             className={`flex-1 min-w-0 ${isMobile ? "" : "overflow-hidden"}`}
             style={{
@@ -1814,7 +1937,6 @@ export default function TikiSprint12() {
         </div>
       </div>
 
-      {/* ── AUDIO PLAYER ── */}
       <AudioPlayer
         curTime={curTime}
         playing={playing}
@@ -1827,7 +1949,6 @@ export default function TikiSprint12() {
 
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
 
-      {/* ── MODALS ── */}
       <ServiceDetailModal
         open={!!detailSvc}
         onClose={() => setDetailSvc(null)}
