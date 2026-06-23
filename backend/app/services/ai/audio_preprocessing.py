@@ -89,12 +89,12 @@ class WhisperAudioPreprocessor:
         self,
         sample_rate: int = 16_000,
         frame_ms: int = 30,
-        min_silence_seconds: float = 1.0,
-        min_chunk_seconds: float = 30.0,
+        min_silence_seconds: float = 1.2,
+        min_chunk_seconds: float = 45.0,
         max_chunk_seconds: float = 180.0,
-        noisy_split_threshold_seconds: float = 45.0,
-        noisy_fixed_window_seconds: float = 30.0,
-        noisy_chunk_overlap_seconds: float = 2.0,
+        noisy_split_threshold_seconds: float = 90.0,
+        noisy_fixed_window_seconds: float = 60.0,
+        noisy_chunk_overlap_seconds: float = 3.0,
         padding_seconds: float = 0.25,
         absolute_silence_floor: float = 0.0025,
     ) -> None:
@@ -499,17 +499,17 @@ class WhisperAudioPreprocessor:
         if peak <= 0.0:
             return False
 
-        # If almost every frame looks "active", the recording is likely noisy and
-        # silence-based splitting will not help. In that case, fall back to fixed
-        # windows so Whisper gets smaller, easier context windows.
-        if active_ratio >= 0.82:
+        # Meetings often have dense speech. Only force fixed windows when the
+        # signal looks both dense and noisy enough that silence-based splitting
+        # is unlikely to help.
+        if active_ratio >= 0.92:
             return True
 
-        if duration_seconds >= 90.0 and active_ratio >= 0.68:
+        if duration_seconds >= 180.0 and active_ratio >= 0.82 and noise_floor / peak >= 0.18:
             return True
 
         # Very flat energy profiles often mean constant background noise.
-        if noise_floor / peak >= 0.18 and duration_seconds >= 60.0:
+        if noise_floor / peak >= 0.22 and duration_seconds >= 120.0:
             return True
 
         return False

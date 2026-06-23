@@ -14,6 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.services.ai.audio_preprocessing import WhisperAudioPreprocessor
 from app.services.ai.stt import WhisperSpeechToTextService
 from app.services.ai.llm_analysis import HeuristicLLMAnalysisService
+from app.services.ai.text_normalization import normalize_meeting_terms
 from app.services.ai_engine import _augment_context_with_audio_quality, _summarize_audio_preprocessing
 
 
@@ -74,6 +75,21 @@ class HeuristicMeetingAnalysisTests(unittest.TestCase):
             "그럼 이건 첫 번째 리스크로 등록하고 담당한 소연님이 인사팀과 협의하는 걸로 하고요",
         )
 
+    def test_meeting_term_normalization_corrects_common_whisper_misreads(self) -> None:
+        text = "산의 업무 관리 시스템에서 데시보드와 결지 요청, 디자인 시한, 우성 검토, 정관리 기능과 노구인, 담당자 지적, 중간 시암을 확인합니다."
+
+        normalized = normalize_meeting_terms(text)
+
+        self.assertIn("사내 업무 관리 시스템", normalized)
+        self.assertIn("대시보드", normalized)
+        self.assertIn("결재 요청", normalized)
+        self.assertIn("디자인 시안", normalized)
+        self.assertIn("우선 검토", normalized)
+        self.assertIn("일정 관리 기능", normalized)
+        self.assertIn("로그인", normalized)
+        self.assertIn("담당자 지정", normalized)
+        self.assertIn("중간 시안", normalized)
+
     def test_meeting_summary_preserves_action_items_on_noisy_dialogue(self) -> None:
         transcript = """
 정아름: 오늘은 사내 업무관리시스템 구축 프로젝트 일정이랑 업무 분담을 정하겠습니다.
@@ -104,6 +120,27 @@ class HeuristicMeetingAnalysisTests(unittest.TestCase):
         self.assertIn("다음 회의", result["next_agenda"][0])
         self.assertTrue(result["extra_data"]["audio_noise_context"])
         self.assertLessEqual(len(result["summary"]), 320)
+
+    def test_summary_is_rewritten_into_dashboard_style(self) -> None:
+        transcript = """
+정아름: 다들 왔죠? 그럼 회의 시작하겠습니다.
+김소현: 네 알겠습니다.
+채하율: 네, 준비됐습니다.
+송지영: 저도 준비됐습니다.
+정아름: 오늘 회의 목적은 사내 업무관리시스템 구축 프로젝트 일정이랑 업무 분담을 정하는 겁니다.
+김소현: 기본적으로 업무 등록 기능, 일정 관리 기능, 결제 기능, 공지사항 기능, 그리고 관리자 페이지가 있습니다.
+채하율: 결제 기능은 필수라고 생각합니다.
+송지영: 요구사항 명세서는 김소현님이 진행하고 7월 12일까지 완료하는 걸로 하겠습니다.
+정아름: 디자인 중간 시안은 7월 15일, 최종 시안은 7월 22일로 정리하겠습니다.
+"""
+
+        result = self.service.summarize_and_extract_tickets(transcript)
+
+        self.assertTrue(result["summary"].startswith("회의에서는"))
+        self.assertIn("기능 우선순위", result["summary"])
+        self.assertIn("후속", result["summary"])
+        self.assertNotIn("회의 시작하겠습니다", result["summary"])
+        self.assertNotIn("오늘 회의 목적은", result["summary"])
 
     def test_decisions_ignore_meeting_opening_lines(self) -> None:
         transcript = """
@@ -297,6 +334,16 @@ class HeuristicMeetingAnalysisTests(unittest.TestCase):
         self.assertTrue(result.is_noisy)
         self.assertGreater(result.chunks[0].end_seconds, result.chunks[0].core_end_seconds or 0)
         self.assertLess(result.chunks[1].start_seconds, result.chunks[1].core_start_seconds or 0)
+
+    def test_dense_meeting_audio_does_not_force_noisy_split_too_early(self) -> None:
+        preprocessor = WhisperAudioPreprocessor()
+        fake_samples = np.zeros(preprocessor.sample_rate * 120, dtype=np.float32)
+
+        with patch.object(WhisperAudioPreprocessor, "_estimate_energy_profile", return_value={"active_ratio": 0.8, "noise_floor": 0.1, "peak": 1.0, "threshold": 0.16}), \
+             patch.object(WhisperAudioPreprocessor, "_looks_noisy", return_value=False):
+            forced = preprocessor._should_force_quality_split(fake_samples, 120.0)
+
+        self.assertFalse(forced)
 
     def test_noisy_meeting_uses_noisy_model_selection(self) -> None:
         service = WhisperSpeechToTextService(model_name="small", language="ko")
