@@ -49,13 +49,19 @@ function IIcon({ name, size = 16, className = "", color = "currentColor", sw = 2
   );
 }
 
-const categoryMeta = {
-  '개발': { color: '#EEF3FF', labelColor: '#0099CC' },
-  '디자인': { color: '#F3E8FF', labelColor: '#7C3AED' },
-  '기획': { color: '#E6F4EA', labelColor: '#10B981' },
-  '마케팅': { color: '#FCE8E6', labelColor: '#EF4444' },
-  '기타': { color: '#FEF7E0', labelColor: '#F59E0B' },
-};
+const MEETING_TEMPLATE_OPTIONS = [
+  { value: 'basic', label: '기본 회의록', description: '가장 일반적인 회의록 형식' },
+  { value: 'sprint', label: '스프린트 회의', description: '스프린트 점검에 적합한 형식' },
+  { value: 'design', label: '디자인 리뷰', description: '디자인 리뷰에 맞춘 형식' },
+  { value: 'planning', label: '기획 회의', description: '기획/의사결정 중심 형식' },
+  { value: 'marketing', label: '마케팅 회의', description: '캠페인/성과 정리에 적합' },
+];
+
+const VISIBILITY_OPTIONS = [
+  { value: 'private', label: '개인' },
+  { value: 'members', label: '구성원만' },
+  { value: 'org', label: '전체보기' },
+];
 
 const avatarPalette = ['bg-sky-500', 'bg-violet-500', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500', 'bg-indigo-500'];
 
@@ -143,34 +149,17 @@ const Configuration = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const categoryOptions = ['개발', '디자인', '기획', '마케팅', '기타'];
-
-  const normalizeCategory = (category) => {
-    if (!category) return '기획';
-    if (category === '기타(직접입력)') return '기타';
-    return categoryOptions.includes(category) ? category : '기타';
-  };
-
-  const getInitialCustomCategory = (category) => {
-    if (!category) return '';
-    if (categoryOptions.includes(category) || category === '기타(직접입력)') return '';
-    return category;
-  };
-
   const buildInitialState = (project) => ({
     projectName: project?.name || '',
-    projectCategory: normalizeCategory(project?.category),
-    projectCategoryCustom: getInitialCustomCategory(project?.category),
+    projectPurpose: project?.description || '',
+    meetingTemplate: 'basic',
+    projectVisibility: 'project',
     participants: Array.isArray(project?.participants) ? project.participants : [],
     jiraDomain: '',
     jiraEmail: '',
     jiraToken: '',
     notionDbId: '',
     notionToken: '',
-    dueDate: 'YYYY-MM-DD',
-    autoAssign: '',
-    filterChat: true,
-    customRules: ''
   });
 
   const [formData, setFormData] = useState(() => buildInitialState(selectedProject));
@@ -182,6 +171,12 @@ const Configuration = () => {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [inviteQuery, setInviteQuery] = useState('');
   const [adminNames, setAdminNames] = useState([]);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const [templateMenuDirection, setTemplateMenuDirection] = useState('down');
+  const [templateMenuMaxHeight, setTemplateMenuMaxHeight] = useState(320);
+  const [visibilityMenuOpen, setVisibilityMenuOpen] = useState(false);
+  const templateMenuRef = useRef(null);
+  const visibilityMenuRef = useRef(null);
   const currentToastVariant = TOAST_VARIANTS[toast.type] || TOAST_VARIANTS.info;
 
   const buildInitialAdminNames = (project, participants) => {
@@ -209,6 +204,31 @@ const Configuration = () => {
 
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const handleOutsideClick = (event) => {
+      if (templateMenuRef.current && !templateMenuRef.current.contains(event.target)) {
+        setTemplateMenuOpen(false);
+      }
+      if (visibilityMenuRef.current && !visibilityMenuRef.current.contains(event.target)) {
+        setVisibilityMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setTemplateMenuOpen(false);
+        setVisibilityMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }, []);
 
   const updateField = (field, value) => setFormData(prev => ({ ...prev, [field]: value }));
@@ -308,17 +328,18 @@ const Configuration = () => {
       resolvedAdmins.push(participants[0]);
     }
 
-    const category = formData.projectCategory === '기타'
-      ? (formData.projectCategoryCustom.trim() || '기타(직접입력)')
-      : formData.projectCategory;
-
     const nextProject = {
       ...selectedProject,
       name: formData.projectName.trim() || selectedProject.name,
-      category,
+      description: formData.projectPurpose.trim(),
+      meetingTemplate: formData.meetingTemplate,
+      visibility: formData.projectVisibility,
       participants,
       admins: resolvedAdmins,
       teamLead: resolvedAdmins[0] || selectedProject.teamLead || participants[0] || '담당자',
+      jiraDomain: formData.jiraDomain.trim(),
+      jiraEmail: formData.jiraEmail.trim(),
+      notionDbId: formData.notionDbId.trim(),
     };
 
     writeProjectOverride(selectedProject.id, nextProject);
@@ -337,7 +358,8 @@ const Configuration = () => {
     navigate('/project-list');
   };
 
-  const previewPrompt = `[팀 컨벤션 시스템 프롬프트]\n- 기한 포맷: ${formData.dueDate}\n- 자동 배정: ${formData.autoAssign || '미설정'}\n- 잡담 필터링: ${formData.filterChat ? '활성화' : '불가'}\n- 규칙: ${formData.customRules || '없음'}`;
+  const templateLabel = MEETING_TEMPLATE_OPTIONS.find((item) => item.value === formData.meetingTemplate)?.label || '기본 회의록';
+  const visibilityLabel = VISIBILITY_OPTIONS.find((item) => item.value === formData.projectVisibility)?.label || '프로젝트 참여자';
 
   const stateLabels = {
     IDLE: '대기 중',
@@ -349,6 +371,7 @@ const Configuration = () => {
 
   const settingsTabs = [
     { id: 'basic', title: '기본정보 수정', icon: 'sliders' },
+    { id: 'access', title: '공개범위', icon: 'shield' },
     { id: 'members', title: '인원관리', icon: 'users' },
     { id: 'integration', title: '연동하기', icon: 'link2' },
   ];
@@ -447,7 +470,7 @@ const Configuration = () => {
                 <div className={cardClass}>
                   <div className="border-b border-slate-100 pb-5">
                     <h2 className="text-lg font-bold text-slate-900">프로젝트 기본정보 수정</h2>
-                    <p className="mt-1 text-sm text-slate-500">프로젝트 이름과 카테고리를 수정할 수 있습니다.</p>
+                    <p className="mt-1 text-sm text-slate-500">프로젝트의 핵심 정보와 회의 기본 형식을 정합니다.</p>
                   </div>
 
                   <div className="mt-6 space-y-6">
@@ -463,58 +486,151 @@ const Configuration = () => {
                     </div>
 
                     <div>
-                      <label className={labelClass}>프로젝트 카테고리 선택</label>
-                      <div className="flex flex-wrap gap-2">
-                        {categoryOptions.map((option) => {
-                          const selected = formData.projectCategory === option;
-                          const meta = categoryMeta[option];
-                          return (
-                            <button
-                              key={option}
-                              type="button"
-                              onClick={() => {
-                                updateField('projectCategory', option);
-                                if (option !== '기타') {
-                                  updateField('projectCategoryCustom', '');
-                                }
-                              }}
-                              className="rounded-full border px-3 py-1.5 text-sm font-semibold transition-all hover:brightness-[0.99]"
-                              style={selected
-                                ? {
-                                  backgroundColor: meta.color,
-                                  color: meta.labelColor,
-                                  borderColor: meta.labelColor,
-                                  boxShadow: '0 1px 2px rgba(15,23,42,0.08)',
-                                }
-                                : {
-                                  backgroundColor: meta.color,
-                                  color: meta.labelColor,
-                                  borderColor: `${meta.labelColor}55`,
-                                  opacity: 0.82,
-                                }}
-                            >
-                              <span className="inline-flex items-center gap-2">
-                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: meta.labelColor }} />
-                                {option}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      <label className={labelClass}>프로젝트 설명</label>
+                      <textarea
+                        rows={4}
+                        value={formData.projectPurpose}
+                        placeholder="이 프로젝트가 어떤 목적을 가지고 있는지 간단히 적어주세요"
+                        className={`${inputClass} resize-none`}
+                        onChange={(e) => updateField('projectPurpose', e.target.value)}
+                      />
                     </div>
 
-                    {formData.projectCategory === '기타' && (
-                      <div>
-                        <label className={labelClass}>기타 분야 직접 입력</label>
-                        <input
-                          type="text"
-                          value={formData.projectCategoryCustom}
-                          placeholder="예: 리서치, 운영혁신, 고객성공"
-                          className={inputClass}
-                          onChange={(e) => updateField('projectCategoryCustom', e.target.value)}
-                        />
+                    <div>
+                      <label className={labelClass}>기본 회의 템플릿</label>
+                      <div ref={templateMenuRef} className="relative">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            const nextOpen = !templateMenuOpen;
+                            if (nextOpen) {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const viewportPadding = 12;
+                              const isMobileViewport = window.innerWidth < 768;
+                              const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+                              const spaceAbove = rect.top - viewportPadding;
+
+                              const shouldOpenUp = isMobileViewport
+                                ? spaceAbove >= spaceBelow
+                                : spaceBelow < 300 && spaceAbove > spaceBelow;
+
+                              const direction = shouldOpenUp ? 'up' : 'down';
+                              const availableSpace = Math.max(180, direction === 'up' ? spaceAbove : spaceBelow);
+                              const maxHeight = isMobileViewport
+                                ? Math.min(availableSpace, Math.floor(window.innerHeight * 0.55))
+                                : Math.min(availableSpace, 320);
+
+                              setTemplateMenuDirection(direction);
+                              setTemplateMenuMaxHeight(maxHeight);
+                            }
+                            setTemplateMenuOpen(nextOpen);
+                          }}
+                          className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm text-slate-800 transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-sky-100"
+                          aria-haspopup="listbox"
+                          aria-expanded={templateMenuOpen}
+                        >
+                          <div className="min-w-0">
+                            <span className="block truncate font-medium">
+                              {MEETING_TEMPLATE_OPTIONS.find((option) => option.value === formData.meetingTemplate)?.label || '기본 회의록'}
+                            </span>
+                          </div>
+                          <span className={`ml-3 flex shrink-0 items-center text-slate-400 transition-transform ${templateMenuOpen ? 'rotate-180' : ''}`}>
+                            <IIcon name="chevronDown" size={16} />
+                          </span>
+                        </button>
+
+                        {templateMenuOpen && (
+                          <div
+                            className={`absolute left-0 right-0 z-30 overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white shadow-[0_16px_30px_-18px_rgba(15,23,42,0.28)] ${
+                              templateMenuDirection === 'up'
+                                ? 'bottom-[calc(100%+0.45rem)]'
+                                : 'top-[calc(100%+0.45rem)]'
+                            }`}
+                            style={{ maxHeight: `${templateMenuMaxHeight}px` }}
+                          >
+                            {MEETING_TEMPLATE_OPTIONS.map((option) => {
+                              const selected = formData.meetingTemplate === option.value;
+                              return (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  onClick={() => {
+                                    updateField('meetingTemplate', option.value);
+                                    setTemplateMenuOpen(false);
+                                  }}
+                                  className={`flex w-full items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 text-left last:border-b-0 transition-colors ${
+                                    selected ? 'bg-sky-50' : 'bg-white hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                      <p className={`truncate text-sm font-semibold ${selected ? 'text-sky-700' : 'text-slate-800'}`}>{option.label}</p>
+                                      <span className="hidden shrink-0 text-xs text-slate-300 sm:inline">·</span>
+                                      <p className="hidden truncate text-xs text-slate-400 sm:block">{option.description}</p>
+                                    </div>
+                                  </div>
+                                  {selected && <IIcon name="checkCircle" size={16} className="mt-0.5 shrink-0 text-sky-500" />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                    )}
+                      <p className="mt-2 text-xs text-slate-400">
+                        회의 생성 시 기본으로 적용될 형식을 선택합니다. 필요하면 회의별로 따로 조정할 수 있어요.
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
+                      <p className="text-sm font-semibold text-slate-800">선택한 템플릿과 공개범위는 프로젝트 기본값으로 저장됩니다.</p>
+                      <p className="mt-1 text-xs text-slate-500">회의 생성 시 이 값이 기본으로 적용되며, 필요한 경우 회의별로 따로 조정할 수 있습니다.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'access' && (
+                <div className={cardClass}>
+                  <div className="border-b border-slate-100 pb-5">
+                    <h2 className="text-lg font-bold text-slate-900">프로젝트 공개범위</h2>
+                    <p className="mt-1 text-sm text-slate-500">프로젝트 기본 접근 범위를 정합니다. 회의별로 더 좁게 설정할 수도 있습니다.</p>
+                  </div>
+
+                  <div className="mt-6">
+                    <label className={labelClass}>기본 공개범위</label>
+                    <div className="grid gap-2 md:grid-cols-3">
+                      {VISIBILITY_OPTIONS.map((option) => {
+                        const selected = formData.projectVisibility === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => updateField('projectVisibility', option.value)}
+                            className={`rounded-xl border px-4 py-3 text-left transition-all ${
+                              selected
+                                ? 'border-sky-300 bg-sky-50 shadow-sm'
+                                : 'border-slate-200 bg-white hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className={`text-sm font-semibold ${selected ? 'text-sky-700' : 'text-slate-700'}`}>
+                                {option.label}
+                              </span>
+                              {selected && <IIcon name="checkCircle" size={16} className="text-sky-500" />}
+                            </div>
+                            <p className="mt-1 text-xs text-slate-400">
+                              {option.value === 'private' && '나만 볼 수 있는 상태로 설정됩니다.'}
+                              {option.value === 'members' && '초대된 구성원만 볼 수 있습니다.'}
+                              {option.value === 'org' && '조직 전체에서 볼 수 있는 상태로 설정됩니다.'}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-sky-100 bg-sky-50/70 p-4 text-sm text-slate-600">
+                      공개범위는 프로젝트 기본값입니다. 실제 회의록 공개 여부는 나중에 회의 생성/회의별 설정에서 더 세밀하게 조정하는 방식이 가장 자연스럽습니다.
+                    </div>
                   </div>
                 </div>
               )}
@@ -523,7 +639,7 @@ const Configuration = () => {
                 <div className={cardClass}>
                   <div className="border-b border-slate-100 pb-5">
                     <h2 className="text-lg font-bold text-slate-900">인원 관리</h2>
-                    <p className="mt-1 text-sm text-slate-500">인원을 추가/삭제하고, 관리자 권한을 여러 명에게 부여할 수 있습니다.</p>
+                    <p className="mt-1 text-sm text-slate-500">구성원을 추가/삭제하고, 관리자 권한을 여러 명에게 부여할 수 있습니다.</p>
                   </div>
 
                   <div className="mt-6 flex flex-wrap items-center gap-2.5 rounded-xl bg-slate-50 px-4 py-3.5">
@@ -544,7 +660,7 @@ const Configuration = () => {
                   </div>
 
                   <div className="mt-6">
-                    <label className={labelClass}>참여 인원 초대 (이메일 검색)</label>
+                    <label className={labelClass}>참여 인원 추가 (이름 또는 이메일 검색)</label>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <div className="relative flex-1">
                         <IIcon name="userPlus" size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -596,10 +712,10 @@ const Configuration = () => {
                             : 'bg-slate-300 cursor-not-allowed'
                         }`}
                       >
-                        초대 발송
+                        추가
                       </button>
                     </div>
-                    <p className="mt-1.5 text-xs text-slate-400">목록에서 사용자를 선택하면 초대 메일 발송 후 참여 인원에 이름으로 추가됩니다.</p>
+                    <p className="mt-1.5 text-xs text-slate-400">목록에서 사용자를 선택하면 참여 인원에 바로 추가됩니다. 실제 이메일 발송은 백엔드 연동이 붙을 때 연결하는 편이 자연스럽습니다.</p>
                   </div>
 
                   <div className="mt-6">
@@ -730,11 +846,11 @@ const Configuration = () => {
                     </button>
                   </div>
 
-                  <div className={cardClass}>
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-5">
-                      <h2 className="text-base font-bold text-slate-900">Notion 연동</h2>
-                      <StatusBadge status={status.notion} />
-                    </div>
+                <div className={cardClass}>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-5">
+                    <h2 className="text-base font-bold text-slate-900">Notion 연동</h2>
+                    <StatusBadge status={status.notion} />
+                  </div>
 
                     <div className="mt-5 space-y-4">
                       <div>
@@ -785,20 +901,15 @@ const Configuration = () => {
 
                   <div className="space-y-4 rounded-2xl border border-sky-100 bg-sky-50/60 p-6 sm:p-7">
                     <h3 className="flex items-center gap-2 text-sm font-bold text-sky-700">
-                      <IIcon name="zap" size={16} /> 자동화 규칙 설명
+                      <IIcon name="zap" size={16} /> 기본값 안내
                     </h3>
                     <p className="text-sm text-slate-600">
-                      연동된 데이터를 바탕으로 회의 분석 결과를 이슈 등록 형식에 맞게 변환합니다. 마감일 포맷, 담당자 자동 배정, 커스텀 규칙이 적용됩니다.
+                      프로젝트 기본 설정은 회의 생성 시 기본값으로 반영됩니다. 템플릿과 공개범위를 먼저 정해두면 이후 회의 생성이 훨씬 빨라집니다.
                     </p>
                     <ul className="space-y-1.5 text-sm text-slate-600">
-                      <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-sky-400" />기본 마감일 포맷: {formData.dueDate}</li>
-                      <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-sky-400" />자동 배정 정책: {formData.autoAssign || '미설정(수동 배정)'}</li>
-                      <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-sky-400" />잡담 필터링: {formData.filterChat ? '활성화' : '비활성화'}</li>
+                      <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-sky-400" />기본 회의 템플릿: {templateLabel}</li>
+                      <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-sky-400" />기본 공개범위: {visibilityLabel}</li>
                     </ul>
-                    <div className="rounded-xl border border-sky-100 bg-white p-4">
-                      <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-sky-600">시스템 프롬프트 프리뷰</p>
-                      <pre className="whitespace-pre-wrap text-sm text-slate-600">{previewPrompt}</pre>
-                    </div>
                   </div>
                 </div>
               )}

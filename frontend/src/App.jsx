@@ -11,6 +11,7 @@ import ProjectMeetings from './pages/ProjectMeetings';
 import MeetingMinutesCreate from './pages/MeetingMinutesCreate';
 import MyPage from './pages/Mypage';
 import Landingpage from './pages/Landingpage';
+import OnboardingPage from './pages/Onboarding';
 
 function App() {
   const isAuthenticated = Boolean(localStorage.getItem('tiki_access_token'));
@@ -36,6 +37,7 @@ function App() {
         }
       />
       <Route path="/landing" element={<Landingpage />} />
+      <Route path="/onboarding" element={<OnboardingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignUpPage />} />
       <Route
