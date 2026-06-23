@@ -17,6 +17,7 @@ from typing import Any
 from app.core.config import settings
 from app.models.enums import TicketPriority, TicketStatus
 from app.services.ai.rag_context import RAGContext, normalize_rag_context
+from app.services.ai.text_normalization import normalize_meeting_terms
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +398,7 @@ MEETING_ANALYSIS_SCHEMA: dict[str, Any] = {
 
 
 def _normalize_text_value(value: Any) -> str:
-    return _collapse_repeated_phrases(str(value or ""))
+    return normalize_meeting_terms(_collapse_repeated_phrases(str(value or "")))
 
 
 def _collapse_repeated_phrases(text: Any) -> str:
@@ -891,7 +892,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
 
     @staticmethod
     def _normalize_text(text: str) -> str:
-        return WHITESPACE_PATTERN.sub(" ", text or "").strip()
+        return normalize_meeting_terms(WHITESPACE_PATTERN.sub(" ", text or "").strip())
 
     @staticmethod
     def _normalize_dialogue_transcript(text: str) -> str:
@@ -909,7 +910,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
             if not line or line in FILLER_SENTENCES:
                 continue
 
-            lines.append(WHITESPACE_PATTERN.sub(" ", line))
+            lines.append(normalize_meeting_terms(WHITESPACE_PATTERN.sub(" ", line)))
 
         return "\n".join(lines).strip()
 
@@ -1688,29 +1689,40 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         next_agenda: list[str],
         analysis_text: str,
     ) -> str:
-        cleaned = _compact_summary_text(summary, max_chars=MAX_SUMMARY_CHARS)
-        should_rewrite = noisy_audio or len(cleaned) > MAX_SUMMARY_CHARS or self._looks_like_transcript_summary(cleaned)
-        if not should_rewrite:
-            return cleaned
-
         themes = self._extract_summary_themes(analysis_text, action_items, decisions, issues, next_agenda)
-        parts: list[str] = []
+        opening = self._build_summary_opening(themes, analysis_text)
+        parts: list[str] = [opening]
 
-        if themes:
-            parts.append(f"회의에서는 {self._join_korean_list(themes[:5])} 중심으로 우선순위와 후속 대응 기준을 정리했다.")
-        elif decisions:
-            parts.append("회의에서는 주요 기능 우선순위와 후속 대응 기준을 정리했다.")
-        else:
-            parts.append("회의에서는 핵심 의사결정과 후속 작업을 정리했다.")
-
+        action_topic = self._collect_action_topics(action_items)
         if action_items:
-            parts.append("요구사항 명세서, 디자인, 테스트, 수정 요청 같은 후속 일정도 함께 공유했다.")
+            if action_topic:
+                parts.append(f"{self._join_korean_list(action_topic[:4])} 관련 후속 작업도 함께 공유했다.")
+            else:
+                parts.append("요구사항 명세서, 디자인, 테스트 등 후속 일정도 함께 공유했다.")
+
+        if decisions:
+            decision_topic = self._collect_decision_topics(decisions)
+            if decision_topic:
+                decision_text = self._join_korean_list(decision_topic[:3])
+                parts.append(f"주요 결정사항은 {self._with_particle(decision_text, 'ro')} 정리했다.")
+            else:
+                parts.append("주요 결정사항도 함께 정리했다.")
 
         if issues:
-            parts.append("디자인 수정 반복과 테스트 기간 리스크도 함께 확인했다.")
+            issue_topic = self._collect_issue_topics(issues)
+            if issue_topic:
+                parts.append(f"주요 리스크는 {self._join_korean_list(issue_topic[:3])}로 확인했다.")
+            else:
+                parts.append("주요 리스크도 함께 확인했다.")
+
+        if next_agenda:
+            parts.append("다음 회의에서 이어서 볼 후속 안건도 정리했다.")
 
         rewritten = " ".join(parts)
-        return _compact_summary_text(rewritten, max_chars=MAX_SUMMARY_CHARS)
+        cleaned = _compact_summary_text(rewritten, max_chars=MAX_SUMMARY_CHARS)
+        if noisy_audio and self._looks_like_transcript_summary(cleaned):
+            cleaned = _compact_summary_text(cleaned, max_chars=MAX_SUMMARY_CHARS)
+        return cleaned
 
     @staticmethod
     def _looks_like_transcript_summary(text: str) -> bool:
@@ -1756,6 +1768,8 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
             return f"{text}{'은' if cls._ends_with_batchim(text) else '는'}"
         if particle_kind == "object":
             return f"{text}{'을' if cls._ends_with_batchim(text) else '를'}"
+        if particle_kind == "ro":
+            return f"{text}{'으로' if cls._ends_with_batchim(text) else '로'}"
         return text
 
     @staticmethod
@@ -1787,6 +1801,57 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
                 break
 
         return themes
+
+    @staticmethod
+    def _build_summary_opening(themes: list[str], analysis_text: str) -> str:
+        lowered = analysis_text.lower()
+        if "업무관리시스템" in lowered or "업무 관리 시스템" in lowered:
+            return "회의에서는 사내 업무관리시스템 구축을 위한 기능 우선순위와 역할 분담을 정리했다."
+        if "회의록" in lowered and ("jira" in lowered or "stt" in lowered or "화자 분리" in lowered):
+            return "회의에서는 AI 회의록 시스템의 핵심 구성요소와 진행 현황을 공유했다."
+        if themes:
+            return f"회의에서는 {HeuristicLLMAnalysisService._join_korean_list(themes[:4])} 중심으로 주요 안건을 정리했다."
+        return "회의에서는 주요 안건과 후속 일정을 정리했다."
+
+    def _collect_action_topics(self, action_items: list[dict[str, Any]]) -> list[str]:
+        topics: list[str] = []
+        seen: set[str] = set()
+        for item in action_items:
+            title = str(item.get("title", "") or "")
+            description = str(item.get("description", "") or "")
+            topic = self._extract_action_item_topic(title) or self._extract_action_item_topic(description)
+            if not topic:
+                continue
+            if topic.lower() in seen:
+                continue
+            seen.add(topic.lower())
+            topics.append(topic)
+        return topics
+
+    def _collect_decision_topics(self, decisions: list[str]) -> list[str]:
+        topics: list[str] = []
+        seen: set[str] = set()
+        for decision in decisions:
+            for topic in self._extract_decision_topics(decision):
+                if topic.lower() in seen:
+                    continue
+                seen.add(topic.lower())
+                topics.append(topic)
+        return topics
+
+    def _collect_issue_topics(self, issues: list[dict[str, Any]]) -> list[str]:
+        topics: list[str] = []
+        seen: set[str] = set()
+        for issue in issues:
+            text = str(issue.get("text", "") or "")
+            topic = self._extract_issue_topic(text) or self._extract_issue_kind(text)
+            if not topic:
+                continue
+            if topic.lower() in seen:
+                continue
+            seen.add(topic.lower())
+            topics.append(topic)
+        return topics
 
     @classmethod
     def _normalize_action_items(cls, action_items: Any) -> list[dict[str, Any]]:

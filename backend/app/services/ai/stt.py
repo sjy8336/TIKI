@@ -11,6 +11,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.services.ai.audio_preprocessing import AudioPreprocessingResult, WhisperAudioPreprocessor
+from app.services.ai.text_normalization import normalize_meeting_terms
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
     def _clean_transcript_text(text: str) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
         cleaned = cleaned.replace("…", ".")
-        return cleaned
+        return normalize_meeting_terms(cleaned)
 
     @staticmethod
     def _is_likely_noise_text(text: str) -> bool:
