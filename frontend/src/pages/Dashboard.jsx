@@ -397,6 +397,213 @@ function ProjectBadge({ project, size = "sm" }) {
   );
 }
 
+const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function toDateStr(year, month, day) {
+  return `${year}-${pad2(month + 1)}-${pad2(day)}`;
+}
+
+function parseDateStr(dateStr) {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return { year: y, month: m - 1, day: d };
+}
+
+function buildCalendarGrid(year, month) {
+  const firstOfMonth = new Date(year, month, 1);
+  const startOffset = firstOfMonth.getDay(); // 0(일) ~ 6(토)
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+  const cells = [];
+
+  // 이전 달 채우기
+  for (let i = 0; i < startOffset; i++) {
+    const day = daysInPrevMonth - startOffset + 1 + i;
+    const prevMonth = month === 0 ? 11 : month - 1;
+    const prevYear = month === 0 ? year - 1 : year;
+    cells.push({ day, inMonth: false, dateStr: toDateStr(prevYear, prevMonth, day) });
+  }
+
+  // 이번 달
+  for (let day = 1; day <= daysInMonth; day++) {
+    cells.push({ day, inMonth: true, dateStr: toDateStr(year, month, day) });
+  }
+
+  // 다음 달로 6주(42칸) 맞추기
+  const nextMonth = month === 11 ? 0 : month + 1;
+  const nextYear = month === 11 ? year + 1 : year;
+  let nextDay = 1;
+  while (cells.length < 42) {
+    cells.push({ day: nextDay, inMonth: false, dateStr: toDateStr(nextYear, nextMonth, nextDay) });
+    nextDay++;
+  }
+
+  return cells;
+}
+
+function CustomDatePicker({ value, onSelect, onClose, anchorRef }) {
+  const todayStr = "2026-06-18";
+  const parsedValue = parseDateStr(value) || parseDateStr(todayStr);
+  const [viewYear, setViewYear] = useState(parsedValue.year);
+  const [viewMonth, setViewMonth] = useState(parsedValue.month);
+  const [coords, setCoords] = useState(null);
+  const calendarRef = useRef(null);
+
+  // 실제 렌더링된 캘린더 높이를 측정해서, 뷰포트 안에 완전히 들어오는 좌표를 직접 계산
+  useEffect(() => {
+    const anchorEl = anchorRef?.current;
+    const calendarEl = calendarRef.current;
+    if (!anchorEl || !calendarEl) return;
+
+    const computePosition = () => {
+      const anchorRect = anchorEl.getBoundingClientRect();
+      const calendarHeight = calendarEl.offsetHeight || 320;
+      const calendarWidth = calendarEl.offsetWidth || 280;
+      const margin = 8;
+      // 패널 헤더(상단 고정바) 및 화면 가장자리와 부딫히지 않도록 여유 마진
+      const topBound = 72;
+      const bottomBound = window.innerHeight - 16;
+
+      const spaceBelow = bottomBound - anchorRect.bottom;
+      const spaceAbove = anchorRect.top - topBound;
+
+      let top;
+      if (spaceAbove >= calendarHeight + margin) {
+        // 위에 충분한 공간 → 위로 펼침 (기본 선호)
+        top = anchorRect.top - calendarHeight - margin;
+      } else if (spaceBelow >= calendarHeight + margin) {
+        // 위가 부족하면 아래로 펼침
+        top = anchorRect.bottom + margin;
+      } else {
+        // 둘 다 부족하면 더 넓은 쪽에 붙이고 허용 범위 안으로 클램프
+        top = spaceBelow >= spaceAbove
+          ? anchorRect.bottom + margin
+          : anchorRect.top - calendarHeight - margin;
+        top = Math.max(topBound, Math.min(top, bottomBound - calendarHeight));
+      }
+
+      let left = anchorRect.left + anchorRect.width / 2 - calendarWidth / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - calendarWidth - 8));
+
+      setCoords({ top, left });
+    };
+
+    computePosition();
+    window.addEventListener("resize", computePosition);
+    return () => window.removeEventListener("resize", computePosition);
+  }, [anchorRef, viewYear, viewMonth]);
+
+  const cells = useMemo(() => buildCalendarGrid(viewYear, viewMonth), [viewYear, viewMonth]);
+
+  const goPrevMonth = (e) => {
+    e.stopPropagation();
+    if (viewMonth === 0) {
+      setViewMonth(11);
+      setViewYear((y) => y - 1);
+    } else {
+      setViewMonth((m) => m - 1);
+    }
+  };
+
+  const goNextMonth = (e) => {
+    e.stopPropagation();
+    if (viewMonth === 11) {
+      setViewMonth(0);
+      setViewYear((y) => y + 1);
+    } else {
+      setViewMonth((m) => m + 1);
+    }
+  };
+
+  return (
+    <div
+      ref={calendarRef}
+      className="fixed z-[300] w-[280px] max-w-[88vw] box-border overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)] p-3.5"
+      style={{
+        top: coords ? `${coords.top}px` : 0,
+        left: coords ? `${coords.left}px` : 0,
+        visibility: coords ? "visible" : "hidden"
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between mb-2.5">
+        <button
+          type="button"
+          onClick={goPrevMonth}
+          className="p-1.5 rounded-lg text-[#5A6F8A] hover:bg-[#F1F4F8] hover:text-[#0D1B2A] transition-colors cursor-pointer"
+          aria-label="이전 달"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+        <span className="text-sm font-bold text-[#0D1B2A]">
+          {viewYear}년 {viewMonth + 1}월
+        </span>
+        <button
+          type="button"
+          onClick={goNextMonth}
+          className="p-1.5 rounded-lg text-[#5A6F8A] hover:bg-[#F1F4F8] hover:text-[#0D1B2A] transition-colors cursor-pointer"
+          aria-label="다음 달"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 gap-y-1.5 w-full">
+        {WEEKDAY_LABELS.map((label, idx) => (
+          <div
+            key={label}
+            className={`text-center text-[11px] font-semibold py-1 ${
+              idx === 0 ? "text-[#EF4444]" : idx === 6 ? "text-[#0099CC]" : "text-[#9AA7B8]"
+            }`}
+          >
+            {label}
+          </div>
+        ))}
+
+        {cells.map((cell, idx) => {
+          const isSelected = cell.dateStr === value;
+          const isToday = cell.dateStr === todayStr;
+          const weekdayIdx = idx % 7;
+          return (
+            <button
+              key={`${cell.dateStr}-${idx}`}
+              type="button"
+              onClick={() => {
+                onSelect(cell.dateStr);
+                onClose();
+              }}
+              className={`aspect-square w-full flex items-center justify-center text-[13px] rounded-lg transition-colors cursor-pointer ${
+                isSelected
+                  ? "bg-[#0099CC] text-white font-bold"
+                  : !cell.inMonth
+                  ? "text-[#C7D1DC] hover:bg-[#F8FAFF]"
+                  : isToday
+                  ? "text-[#0099CC] font-bold border border-[#0099CC]/40 hover:bg-[#EEF3FF]"
+                  : weekdayIdx === 0
+                  ? "text-[#EF4444] hover:bg-[#F8FAFF]"
+                  : weekdayIdx === 6
+                  ? "text-[#0099CC] hover:bg-[#F8FAFF]"
+                  : "text-[#0D1B2A] hover:bg-[#F8FAFF]"
+              }`}
+            >
+              {cell.day}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function DDayBadge({ dday }) {
   return (
     <span
@@ -470,7 +677,6 @@ export default function App() {
   const [integratingId, setIntegratingId] = useState(null);
   const [justCompletedId, setJustCompletedId] = useState(null);
 
-  const dueDateInputRef = useRef(null);
   const dueDateDropdownRef = useRef(null);
   const assigneeDropdownRef = useRef(null);
   const statusDropdownRef = useRef(null);
@@ -713,20 +919,6 @@ export default function App() {
     FAILED: "오류 발생"
   };
 
-  const openDueDatePicker = () => {
-    if (typeof dueDateInputRef.current?.showPicker === "function") {
-      dueDateInputRef.current.showPicker();
-    }
-  };
-
-  const openDueDateCalendar = () => {
-    setIsDueDateOpen(false);
-    setTimeout(() => {
-      openDueDatePicker();
-      dueDateInputRef.current?.focus?.();
-    }, 0);
-  };
-
   const isAnyFilterActive = statusFilter !== "전체" || projectFilter !== "전체" || searchQuery.trim() !== "";
 
   const filteredItems = useMemo(() => {
@@ -793,16 +985,12 @@ export default function App() {
 
   const isPanelOpen = Boolean(selectedItem);
   const isIntegratingSelected = selectedItem && integratingId === selectedItem.id;
+  const mobilePanelBottomOffset = isMobile ? "calc(74px + env(safe-area-inset-bottom, 0px))" : "0px";
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFF] text-[#0D1B2A] font-sans antialiased pt-20 pb-20 md:pb-0 [font-family:'Pretendard',-apple-system,sans-serif]">
       <style>
         {`
-          .date-input-neutral { color: #0D1B2A; -webkit-text-fill-color: #0D1B2A; }
-          .date-input-neutral::-webkit-datetime-edit,
-          .date-input-neutral::-webkit-datetime-edit-year-field,
-          .date-input-neutral::-webkit-datetime-edit-month-field,
-          .date-input-neutral::-webkit-datetime-edit-day-field { color: #0D1B2A; -webkit-text-fill-color: #0D1B2A; }
           @keyframes rowSettle { 0% { opacity: 0; transform: translateY(-6px); } 100% { opacity: 1; transform: translateY(0); } }
           .row-settle { animation: rowSettle 0.35s ease-out; }
           @keyframes spinSlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -1338,8 +1526,12 @@ export default function App() {
       ══════════════════════════════════════════════════════════════════════ */}
       {isPanelOpen && (
         <div
-          className="overlay-enter fixed inset-0 z-50 flex justify-end"
-          style={{ backgroundColor: "rgba(13,27,42,0.35)", backdropFilter: "blur(2px)" }}
+          className="overlay-enter fixed inset-0 z-[200] flex justify-end"
+          style={{
+            backgroundColor: "rgba(13,27,42,0.35)",
+            backdropFilter: "blur(2px)",
+            bottom: mobilePanelBottomOffset
+          }}
           onClick={handleOverlayClick}
         >
           <div
@@ -1434,21 +1626,25 @@ export default function App() {
                       <label className="block text-xs font-bold text-[#0D1B2A] mb-1.5">마감 기한</label>
                       <button
                         type="button"
-                        onClick={openDueDateCalendar}
-                        className="w-full px-3 py-2 text-sm rounded-lg border border-[rgba(0,100,180,0.12)] bg-white text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)] transition flex items-center justify-between cursor-pointer"
+                        onClick={() => {
+                          setIsAssigneeOpen(false);
+                          setIsDueDateOpen((prev) => !prev);
+                        }}
+                        className={`w-full px-3 py-2 text-sm rounded-lg border transition flex items-center justify-between cursor-pointer ${
+                          isDueDateOpen ? "bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)]" : "bg-white border-[rgba(0,100,180,0.12)] hover:border-[rgba(0,153,204,0.4)]"
+                        }`}
                       >
                         <span className={`font-medium ${editForm.dueDate ? "text-[#0D1B2A]" : "text-[#9AA7B8]"}`}>{editForm.dueDate || "날짜 선택"}</span>
-                        <LucideIcon name="chevronDown" size={14} className="text-[#5A6F8A]" />
+                        <LucideIcon name="chevronDown" size={14} className={`text-[#5A6F8A] transition-transform ${isDueDateOpen ? "rotate-180" : ""}`} />
                       </button>
-                      <input
-                        ref={dueDateInputRef}
-                        type="date"
-                        value={editForm.dueDate}
-                        onChange={(e) => setEditForm({ ...editForm, dueDate: e.target.value })}
-                        className="sr-only"
-                        tabIndex={-1}
-                        aria-hidden="true"
-                      />
+                      {isDueDateOpen && (
+                        <CustomDatePicker
+                          value={editForm.dueDate}
+                          onSelect={(dateStr) => setEditForm({ ...editForm, dueDate: dateStr })}
+                          onClose={() => setIsDueDateOpen(false)}
+                          anchorRef={dueDateDropdownRef}
+                        />
+                      )}
                     </div>
 
                     <div className="relative" ref={assigneeDropdownRef}>
@@ -1472,7 +1668,7 @@ export default function App() {
                                 onClick={() => { setEditForm({ ...editForm, assignee: m.name }); setIsAssigneeOpen(false); }}
                                 className={`w-full px-3 py-2 text-sm text-left flex items-center justify-between transition-colors cursor-pointer ${isSelected ? "bg-[#EEF3FF] text-[#0099CC] font-semibold" : "text-[#0D1B2A] hover:bg-[#F8FAFF]"}`}
                               >
-                                <span>{m.name} ({m.role})</span>
+                                <span>{m.name}</span>
                                 {isSelected && <LucideIcon name="check" size={14} className="text-[#0099CC]" />}
                               </button>
                             );
