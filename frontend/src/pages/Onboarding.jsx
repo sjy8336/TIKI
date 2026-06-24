@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import Header from "../components/Header";
 import MobileTab from "../components/MobileTab";
 import Footer from "../components/Footer";
-import { ArrowRight, Play, Check, Upload, Zap, Share2, ChevronRight, FolderPlus, Link2, Rocket } from "lucide-react";
 
 /* ─── Design Tokens ───────────────────────────────────────────────────────── */
 // bg:        #F8FAFF
@@ -93,7 +92,7 @@ function Hero() {
         {/* CTA row */}
         <div className="mt-8 flex flex-wrap items-center gap-3 pb-12 sm:pb-16">
           <Link to="/signup" className="flex items-center gap-2 px-6 py-3.5 rounded-xl text-sm font-bold text-white bg-[#0099CC] hover:bg-[#007AA8] transition-all duration-200 shadow-[0_10px_28px_rgba(0,153,204,0.38)] hover:-translate-y-0.5 active:translate-y-0">
-            <Play size={14} className="fill-white" />
+            <Icon name="play" size={14} className="text-white" strokeWidth={2.4} />
             무료로 시작하기
           </Link>
         </div>
@@ -204,16 +203,16 @@ function ProblemSolution() {
             </h2>
             <div className="space-y-3">
               {[
-                { icon: Zap, color: "text-[#F59E0B]", bg: "bg-[#F59E0B]/10", text: "회의 핵심을 자동으로 요약해 드려요" },
-                { icon: Check, color: "text-[#10B981]", bg: "bg-[#10B981]/10", text: "담당자별 액션 아이템을 뽑아드려요" },
-                { icon: Share2, color: "text-[#7C3AED]", bg: "bg-[#7C3AED]/10", text: "Jira·Notion으로 바로 내보낼 수 있어요" },
-              ].map(({ icon: Icon, color, bg, text }) => (
+                { icon: "zap", color: "text-[#F59E0B]", bg: "bg-[#F59E0B]/10", text: "회의 핵심을 자동으로 요약해 드려요" },
+                { icon: "check", color: "text-[#10B981]", bg: "bg-[#10B981]/10", text: "담당자별 액션 아이템을 뽑아드려요" },
+                { icon: "share2", color: "text-[#7C3AED]", bg: "bg-[#7C3AED]/10", text: "Jira·Notion으로 바로 내보낼 수 있어요" },
+              ].map(({ icon, color, bg, text }) => (
                 <div
                   key={text}
                   className="flex gap-3 items-start p-4 rounded-xl bg-white ring-1 ring-[rgba(0,100,180,0.12)] hover:ring-[rgba(0,153,204,0.5)] transition-all"
                 >
                   <span className={`shrink-0 w-8 h-8 rounded-lg ${bg} flex items-center justify-center`}>
-                    <Icon size={15} className={color} strokeWidth={2.5} />
+                    <Icon name={icon} size={15} className={color} strokeWidth={2.5} />
                   </span>
                   <p className="text-[13px] text-[#0D1B2A] font-medium leading-relaxed self-center">{text}</p>
                 </div>
@@ -231,7 +230,7 @@ function HowItWorks() {
   const steps = [
     {
       num: "01",
-      icon: Upload,
+      icon: "upload",
       iconBg: "bg-[#EEF3FF]",
       iconColor: "text-[#0099CC]",
       accent: "border-[#0099CC]",
@@ -241,7 +240,7 @@ function HowItWorks() {
     },
     {
       num: "02",
-      icon: Play,
+      icon: "play",
       iconBg: "bg-[#F3F0FF]",
       iconColor: "text-[#7C3AED]",
       accent: "border-[#7C3AED]",
@@ -251,7 +250,7 @@ function HowItWorks() {
     },
     {
       num: "03",
-      icon: Zap,
+      icon: "zap",
       iconBg: "bg-[#ECFDF5]",
       iconColor: "text-[#10B981]",
       accent: "border-[#10B981]",
@@ -286,7 +285,6 @@ function HowItWorks() {
         {/* steps */}
         <div className="grid sm:grid-cols-3 gap-6 sm:gap-5">
           {steps.map((s) => {
-            const Icon = s.icon;
             return (
               <div
                 key={s.num}
@@ -294,7 +292,7 @@ function HowItWorks() {
               >
                 <div className="flex items-center justify-between mb-5">
                   <span className={`w-10 h-10 rounded-xl ${s.iconBg} flex items-center justify-center`}>
-                    <Icon size={18} className={s.iconColor} strokeWidth={2} />
+                    <Icon name={s.icon} size={18} className={s.iconColor} strokeWidth={2} />
                   </span>
                   <Mono className="text-[11px] font-bold text-[#5A6F8A]">{s.t}</Mono>
                 </div>
@@ -407,7 +405,7 @@ function Tips() {
     {
       accent: "from-[#0099CC] to-[#4F8ECC]",
       topBorder: "border-[#0099CC]",
-      icon: FolderPlus,
+      icon: "folderPlus",
       iconBg: "bg-[#EEF3FF]",
       iconColor: "text-[#0099CC]",
       title: "프로젝트부터 만드는 게 좋아요",
@@ -416,7 +414,7 @@ function Tips() {
     {
       accent: "from-[#7C3AED] to-[#9F67F0]",
       topBorder: "border-[#7C3AED]",
-      icon: Link2,
+      icon: "link2",
       iconBg: "bg-[#F3F0FF]",
       iconColor: "text-[#7C3AED]",
       title: "연동은 나중에 해도 괜찮아요",
@@ -425,7 +423,7 @@ function Tips() {
     {
       accent: "from-[#10B981] to-[#34D399]",
       topBorder: "border-[#10B981]",
-      icon: Rocket,
+      icon: "rocket",
       iconBg: "bg-[#ECFDF5]",
       iconColor: "text-[#10B981]",
       title: "일단 한 번 써보면 감이 옵니다",
@@ -449,14 +447,13 @@ function Tips() {
 
         <div className="grid sm:grid-cols-3 gap-4 sm:gap-5">
           {tips.map((c) => {
-            const Icon = c.icon;
             return (
             <div
               key={c.title}
               className={`relative overflow-hidden rounded-2xl border-t-[3px] ${c.topBorder} bg-[#F8FAFF] ring-1 ring-[rgba(0,100,180,0.12)] hover:ring-[rgba(0,153,204,0.5)] hover:-translate-y-0.5 transition-all duration-300 p-6 sm:p-7`}
             >
               <div className={`w-9 h-9 rounded-xl ${c.iconBg} ring-1 ring-[rgba(0,100,180,0.14)] flex items-center justify-center mb-5`}>
-                <Icon size={16} className={c.iconColor} strokeWidth={2.2} />
+                <Icon name={c.icon} size={16} className={c.iconColor} strokeWidth={2.2} />
               </div>
               <h3 className="text-[15px] font-bold text-[#0D1B2A] mb-2 mt-1">{c.title}</h3>
               <p className="text-[13px] text-[#5A6F8A] leading-relaxed">{c.desc}</p>
@@ -507,7 +504,7 @@ function CTA() {
 
             <div className="flex flex-col sm:flex-row gap-3 shrink-0">
               <button className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-sm font-bold text-white bg-[#0099CC] hover:bg-[#007AA8] transition-all duration-200 shadow-[0_8px_28px_rgba(0,153,204,0.45)] hover:-translate-y-0.5 whitespace-nowrap">
-                <Play size={14} className="fill-white" />
+                <Icon name="play" size={14} className="text-white" strokeWidth={2.4} />
                 프로젝트 생성하기
               </button>
             </div>
@@ -548,5 +545,40 @@ export default function TikiOnboardingPage() {
       {!isMobile ? <Footer /> : null}
       {isMobile ? <MobileTab active="home" /> : null}
     </div>
+  );
+}
+
+const icons = {
+  play: ["M8 5v14l11-7z"],
+  check: ["M20 6L9 17l-5-5"],
+  upload: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M17 8l-5-5-5 5", "M12 3v12"],
+  zap: ["M13 2L3 14h9l-1 8 10-12h-9l1-8z"],
+  share2: ["M18 8a3 3 0 1 0-3-3", "M6 14a3 3 0 1 0 3 3", "M18 8l-8.59 5.73", "M6 14l8.59 5.73"],
+  folderPlus: ["M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z", "M12 11v6", "M9 14h6"],
+  link2: ["M15 7h3a5 5 0 0 1 0 10h-3", "M9 17H6a5 5 0 0 1 0-10h3", "M8 12h8"],
+  rocket: ["M4.5 16.5c-1.5 1.5-1.5 4 0 5.5", "M19 3c-4.5 0-8.5 2-11 5.5L3 13l4 1 1 4 4.5-5C16 10.5 18 6.5 18 2z", "M10 14l-2 2", "M14 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4"],
+};
+
+function Icon({ name, size = 16, className = "", strokeWidth = 2 }) {
+  const paths = icons[name];
+  if (!paths) return null;
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {paths.map((d, idx) => (
+        <path key={idx} d={d} />
+      ))}
+    </svg>
   );
 }
