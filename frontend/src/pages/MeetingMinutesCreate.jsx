@@ -492,7 +492,7 @@ export default function MeetingMinutesCreate() {
 
                   <div className="rounded-2xl border border-[rgba(0,100,180,0.08)] bg-white p-4 space-y-3">
                     <div className="flex items-center justify-between gap-2">
-                      <label className="block text-xs font-semibold text-[#5A6F8A]">액션 아이템</label>
+                      <label className="block text-xs font-semibold text-[#5A6F8A]">해야 할 일</label>
                       <span className="text-[11px] text-[#5A6F8A]">담당자와 마감일을 함께 넣을 수 있습니다.</span>
                     </div>
                     <div className="space-y-2">
