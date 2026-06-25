@@ -11,16 +11,11 @@ from typing import Any
 
 import numpy as np
 
-try:  # pragma: no cover - torch is optional in lightweight dev/test envs
-    import torch
-except ImportError:  # pragma: no cover - optional dependency
-    torch = None
-
 from app.core.config import settings
 from app.services.ai.audio_preprocessing import WhisperAudioPreprocessor
 
 logger = logging.getLogger(__name__)
-DIARIZATION_MERGE_GAP_SECONDS = 0.35
+DIARIZATION_MERGE_GAP_SECONDS = 0.6
 
 
 def _clean_label(value: Any) -> str:
@@ -139,8 +134,10 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
     ) -> list[dict[str, Any]]:
         if not self.enabled:
             return []
-        if torch is None:
-            raise RuntimeError("torch is required for pyannote diarization but is not installed.")
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("torch is required for pyannote diarization but is not installed.") from exc
 
         path = Path(audio_path)
         if not path.exists():
@@ -179,4 +176,6 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
 
 
 def build_speaker_diarization_service() -> SpeakerDiarizationService:
+    if not settings.diarization_enabled:
+        return NoopSpeakerDiarizationService()
     return PyannoteSpeakerDiarizationService()

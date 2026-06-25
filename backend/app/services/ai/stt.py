@@ -7,11 +7,10 @@ import re
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from app.core.config import settings
 from app.services.ai.audio_preprocessing import AudioPreprocessingResult, WhisperAudioPreprocessor
-from app.services.ai.diarization import build_speaker_diarization_service
 from app.services.ai.text_normalization import normalize_meeting_terms
 
 logger = logging.getLogger(__name__)
@@ -19,6 +18,87 @@ GENERIC_SPEAKER_LABEL_PREFIX = "팀원"
 MIN_MINOR_SPEAKER_TURN_SECONDS = 4.0
 MIN_MINOR_SPEAKER_RATIO = 0.02
 MIN_MINOR_SPEAKER_COUNT_TRIGGER = 5
+TranscriptionProfile = Literal["light", "balanced", "premium"]
+DEFAULT_TRANSCRIPTION_PROFILE: TranscriptionProfile = "balanced"
+TRANSCRIPTION_PROFILE_SETTINGS: dict[TranscriptionProfile, dict[str, Any]] = {
+    "light": {
+        "preprocessor": {
+            "min_chunk_seconds": 60.0,
+            "transcription_overlap_seconds": 0.15,
+            "noisy_chunk_overlap_seconds": 0.8,
+            "max_chunk_seconds": 240.0,
+        },
+        "options": {
+            "beam_size": 1,
+            "best_of": 1,
+            "patience": 0.0,
+            "no_speech_threshold": 0.5,
+            "compression_ratio_threshold": 3.0,
+            "logprob_threshold": -1.25,
+        },
+        "noisy_options": {
+            "beam_size": 1,
+            "best_of": 1,
+            "patience": 0.0,
+            "no_speech_threshold": 0.45,
+            "compression_ratio_threshold": 2.8,
+            "logprob_threshold": -1.2,
+        },
+    },
+    "balanced": {
+        "preprocessor": {
+            "transcription_overlap_seconds": 0.75,
+            "noisy_chunk_overlap_seconds": 2.4,
+            "max_chunk_seconds": 180.0,
+        },
+        "options": {
+            "beam_size": 3,
+            "best_of": 3,
+            "patience": 0.8,
+            "no_speech_threshold": 0.4,
+            "compression_ratio_threshold": 2.4,
+            "logprob_threshold": -1.0,
+        },
+        "noisy_options": {
+            "beam_size": 4,
+            "best_of": 4,
+            "patience": 1.0,
+            "no_speech_threshold": 0.35,
+            "compression_ratio_threshold": 2.2,
+            "logprob_threshold": -1.05,
+        },
+    },
+    "premium": {
+        "preprocessor": {
+            "transcription_overlap_seconds": 1.0,
+            "noisy_chunk_overlap_seconds": 3.0,
+            "max_chunk_seconds": 180.0,
+        },
+        "options": {
+            "beam_size": 5,
+            "best_of": 5,
+            "patience": 1.2,
+            "no_speech_threshold": 0.35,
+            "compression_ratio_threshold": 2.2,
+            "logprob_threshold": -0.95,
+        },
+        "noisy_options": {
+            "beam_size": 6,
+            "best_of": 6,
+            "patience": 1.3,
+            "no_speech_threshold": 0.3,
+            "compression_ratio_threshold": 2.0,
+            "logprob_threshold": -1.0,
+        },
+    },
+}
+
+
+def _normalize_transcription_profile(value: Any | None) -> TranscriptionProfile:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    if normalized in TRANSCRIPTION_PROFILE_SETTINGS:
+        return normalized  # type: ignore[return-value]
+    return DEFAULT_TRANSCRIPTION_PROFILE
 
 
 def _build_generic_speaker_label(index: int) -> str:
@@ -393,12 +473,19 @@ class WhisperSpeechToTextService(SpeechToTextService):
     The model is loaded on first use so app startup stays lightweight.
     """
 
-    def __init__(self, model_name: str | None = None, language: str | None = "ko") -> None:
+    def __init__(
+        self,
+        model_name: str | None = None,
+        language: str | None = "ko",
+        transcription_profile: TranscriptionProfile | str | None = None,
+    ) -> None:
         self.model_name = model_name or settings.whisper_model
         self.light_model_name = settings.whisper_light_model
         self.language = language
-        self.preprocessor = WhisperAudioPreprocessor()
-        self.diarization_service = build_speaker_diarization_service()
+        self.transcription_profile = _normalize_transcription_profile(transcription_profile)
+        profile_settings = TRANSCRIPTION_PROFILE_SETTINGS[self.transcription_profile]
+        self.preprocessor = WhisperAudioPreprocessor(**profile_settings["preprocessor"])
+        self._diarization_service: Any | None = None
         self._last_preprocessing: AudioPreprocessingResult | None = None
         self._last_diarization_summary: dict[str, Any] | None = None
 
@@ -476,8 +563,17 @@ class WhisperSpeechToTextService(SpeechToTextService):
         *,
         preprocessing: AudioPreprocessingResult | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        diarization_service = self._get_diarization_service()
+        if diarization_service is None:
+            return [], {
+                "enabled": False,
+                "status": "disabled",
+                "speaker_count": 0,
+                "turn_count": 0,
+            }
+
         try:
-            speaker_turns = self.diarization_service.diarize(
+            speaker_turns = diarization_service.diarize(
                 str(audio_path),
                 samples=getattr(preprocessing, "samples", None),
                 sample_rate=getattr(preprocessing, "sample_rate", None),
@@ -504,7 +600,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
             "status": "applied" if speaker_turns else "empty",
             "speaker_count": len(speaker_ids),
             "turn_count": len(speaker_turns),
-            "model_name": getattr(self.diarization_service, "model_name", None),
+            "model_name": getattr(diarization_service, "model_name", None),
             "speakers": speaker_ids,
         }
 
@@ -530,30 +626,14 @@ class WhisperSpeechToTextService(SpeechToTextService):
 
         if not preprocessing.chunking_enabled or len(preprocessing.chunks) <= 1:
             logger.info("Parallel STT: single chunk, using sequential path for %s", path.name)
-            model = self._load_model(model_name)
-            return self._transcribe_preprocessed_with_segments(model, preprocessing)
+            return self._transcribe_preprocessed_with_segments(preprocessing)
 
         logger.info(
             "Parallel STT starting for %s (chunks=%d, workers=%d, model=%s)",
             path.name, len(preprocessing.chunks), n_workers, model_name,
         )
 
-        options: dict[str, object] = {
-            "task": "transcribe",
-            "temperature": 0.0,
-            "condition_on_previous_text": False,
-            "beam_size": 5,
-            "best_of": 5,
-            "patience": 1.0,
-            "no_speech_threshold": 0.4,
-            "compression_ratio_threshold": 2.4,
-            "logprob_threshold": -1.0,
-            "fp16": False,
-            "verbose": False,
-            "initial_prompt": self._build_initial_prompt(preprocessing),
-        }
-        if self.language:
-            options["language"] = self.language
+        options = self._build_transcription_options(preprocessing)
 
         raw_results = transcribe_chunks_parallel(
             preprocessing.chunks, model_name, options, n_workers=n_workers,
@@ -657,19 +737,14 @@ class WhisperSpeechToTextService(SpeechToTextService):
         return self._last_diarization_summary
 
     def _select_model_name(self, preprocessing: AudioPreprocessingResult) -> str:
-        if self._is_model_cached(self.light_model_name):
-            if not preprocessing.is_noisy or preprocessing.duration_seconds < 120.0:
-                return self.light_model_name
-        return self.model_name
+        # Large-only policy: keep one transcription model and tune chunking/decoding
+        # around it instead of switching to a smaller Whisper model.
+        return self._resolve_available_model_name(self.model_name)
 
     def _select_chunk_model_name(self, preprocessing: AudioPreprocessingResult, chunk: Any) -> str:
-        if self.light_model_name == self.model_name:
-            return self.model_name
-        if not self._is_model_cached(self.light_model_name):
-            return self.model_name
-
-        difficulty = self._score_chunk_difficulty(preprocessing, chunk)
-        return self.light_model_name if difficulty <= 1 else self.model_name
+        # Chunk-level model selection stays fixed to the large model; quality is
+        # controlled by chunk boundaries and decoding options, not model swapping.
+        return self._resolve_available_model_name(self.model_name)
 
     @staticmethod
     def _is_model_cached(model_name: str) -> bool:
@@ -677,39 +752,39 @@ class WhisperSpeechToTextService(SpeechToTextService):
         return (cache_dir / f"{model_name}.pt").exists()
 
     def _resolve_available_model_name(self, preferred: str) -> str:
-        candidates = [preferred]
-        if preferred != self.light_model_name:
-            candidates.append(self.light_model_name)
-        if self.model_name not in candidates:
-            candidates.append(self.model_name)
-        if "base" not in candidates:
-            candidates.append("base")
-
-        for candidate in candidates:
-            if candidate and self._is_model_cached(candidate):
-                return candidate
         return preferred
+
+    def _build_transcription_options(self, preprocessing: AudioPreprocessingResult) -> dict[str, object]:
+        profile_settings = TRANSCRIPTION_PROFILE_SETTINGS[self.transcription_profile]
+        options: dict[str, object] = {
+            "task": "transcribe",
+            "temperature": 0.0,
+            "condition_on_previous_text": False,
+            "fp16": False,
+            "verbose": False,
+            "initial_prompt": self._build_initial_prompt(preprocessing),
+            **profile_settings["options"],
+        }
+        if preprocessing.is_noisy:
+            options.update(profile_settings["noisy_options"])
+        if self.language:
+            options["language"] = self.language
+        return options
+
+    def _get_diarization_service(self):
+        if not settings.diarization_enabled:
+            return None
+        if self._diarization_service is None:
+            from app.services.ai.diarization import build_speaker_diarization_service
+
+            self._diarization_service = build_speaker_diarization_service()
+        return self._diarization_service
 
     def _transcribe_preprocessed_with_segments(
         self,
         preprocessing: AudioPreprocessingResult,
     ) -> tuple[str, list[dict[str, Any]]]:
-        options: dict[str, object] = {
-            "task": "transcribe",
-            "temperature": 0.0,
-            "condition_on_previous_text": False,
-            "beam_size": 5,
-            "best_of": 5,
-            "patience": 1.0,
-            "no_speech_threshold": 0.4,
-            "compression_ratio_threshold": 2.4,
-            "logprob_threshold": -1.0,
-            "fp16": False,
-            "verbose": False,
-            "initial_prompt": self._build_initial_prompt(preprocessing),
-        }
-        if self.language:
-            options["language"] = self.language
+        options = self._build_transcription_options(preprocessing)
 
         segments: list[str] = []
         structured_segments: list[dict[str, Any]] = []

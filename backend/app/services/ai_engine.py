@@ -15,13 +15,14 @@ from typing import Any
 from app.services.ai.llm_analysis import LLMAnalysisService, build_llm_analysis_service
 from app.services.ai.rag_context import RAGContext, normalize_rag_context
 from app.services.ai.stt import SpeechToTextService, WhisperSpeechToTextService
-from app.schemas.meeting_record import MeetingSearchChunk, MeetingSearchDocument
+from app.schemas.meeting_record import MeetingSearchChunk, MeetingSearchDocument, MeetingSearchSection
 from app.services.pipeline.security_masking import mask_personal_information
 
 logger = logging.getLogger(__name__)
 
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。])\s+|\n+")
-
+SCRIPT_SEGMENT_CONTRACT_VERSION = "v1"
+TX_ROW_CONTRACT_VERSION = "v1"
 
 def _format_mmss(seconds: Any) -> str | None:
     if seconds is None:
@@ -35,6 +36,12 @@ def _format_mmss(seconds: Any) -> str | None:
     minutes, remainder = divmod(total_seconds, 60)
     return f"{minutes:02d}:{remainder:02d}"
 
+def _resolve_script_segment_who(speaker_fields: dict[str, Any]) -> str | None:
+    for key in ("speaker_display_name", "participant_name", "speaker_label", "speaker_id", "speaker"):
+        value = _normalize_segment_text(speaker_fields.get(key))
+        if value and value.lower() not in {"none", "null", "unknown"}:
+            return value
+    return None
 
 def _build_script_segment(
     *,
@@ -73,12 +80,18 @@ def _build_script_segment(
     )
     normalized_text = _normalize_segment_text(text)
     normalized_masked_text = _normalize_segment_text(masked_text if masked_text is not None else normalized_text)
+    who = _resolve_script_segment_who(speaker_fields)
+    when = _format_mmss(start_seconds)
     return {
+        "contract_version": SCRIPT_SEGMENT_CONTRACT_VERSION,
         "index": index,
         "file_index": file_index,
         "file_path": file_path,
         "file_name": file_name,
         "segment_label": segment_label,
+        "who": who,
+        "when": when,
+        "what": normalized_masked_text or normalized_text,
         "chunk_index": chunk_index,
         "chunk_local_index": chunk_local_index,
         "speaker": speaker_fields["speaker"],
@@ -98,7 +111,6 @@ def _build_script_segment(
         "chunk_difficulty": chunk_difficulty,
         "source": source,
     }
-
 
 def _build_tx_rows(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -128,9 +140,12 @@ def _build_tx_rows(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         rows.append(
             {
+                "contract_version": TX_ROW_CONTRACT_VERSION,
                 "time": _format_mmss(normalized["start_seconds"]),
+                "when": normalized["when"],
                 "ts": int(round(float(normalized["start_seconds"]))) if normalized["start_seconds"] is not None else None,
                 "spk": normalized["speaker"],
+                "who": normalized["who"],
                 "speaker_id": normalized["speaker_id"],
                 "speaker_label": normalized["speaker_label"],
                 "participant_name": normalized["participant_name"],
@@ -138,14 +153,14 @@ def _build_tx_rows(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "speaker_kind": normalized["speaker_kind"],
                 "is_mapped": normalized["is_mapped"],
                 "segment_label": normalized["segment_label"],
-                "txt": normalized["masked_text"] or normalized["text"] or "",
+                "what": normalized["what"] or normalized["masked_text"] or normalized["text"] or "",
+                "txt": normalized["what"] or normalized["masked_text"] or normalized["text"] or "",
                 "confidence": normalized["confidence"],
                 "source": normalized["source"],
                 "index": normalized["index"],
             }
         )
     return rows
-
 
 def _build_script_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -178,7 +193,6 @@ def _build_script_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any
             )
         )
     return rows
-
 
 def _build_speaker_fields(
     speaker: Any,
@@ -238,7 +252,6 @@ def _build_speaker_fields(
         "is_mapped": mapped,
     }
 
-
 def _join_search_parts(*parts: Any) -> str:
     values: list[str] = []
     seen: set[str] = set()
@@ -259,7 +272,6 @@ def _join_search_parts(*parts: Any) -> str:
             seen.add(key)
             values.append(text)
     return " | ".join(values)
-
 
 @dataclass(slots=True)
 class AIAnalysisPayload:
@@ -300,7 +312,6 @@ class AIAnalysisPayload:
             "status": item.get("status"),
         }
 
-
 @dataclass(slots=True)
 class AIProcessingResult:
     transcript: str
@@ -334,7 +345,6 @@ class AIProcessingResult:
             "analysis": analysis,
         }
 
-
 @dataclass(slots=True)
 class AIFileProcessingResult:
     index: int
@@ -356,7 +366,6 @@ class AIFileProcessingResult:
         if self.audio_preprocessing:
             payload["audio_preprocessing"] = self.audio_preprocessing
         return payload
-
 
 @dataclass(slots=True)
 class AIProcessingBatchResult:
@@ -395,7 +404,6 @@ class AIProcessingBatchResult:
             "analysis": analysis,
         }
 
-
 def _build_analysis_payload(
     analysis_data: dict[str, Any],
     *,
@@ -416,7 +424,6 @@ def _build_analysis_payload(
         prompt_version=analysis_data.get("prompt_version"),
         extra_data=dict(analysis_data.get("extra_data", {})),
     )
-
 
 def build_project_rag_context(project: dict[str, Any] | None = None, **overrides: Any) -> dict[str, Any]:
     base = {
@@ -446,14 +453,11 @@ def build_project_rag_context(project: dict[str, Any] | None = None, **overrides
     normalized = normalize_rag_context(base)
     return normalized.to_dict() if normalized else {}
 
-
 def _split_sentences(text: str) -> list[str]:
     return [part.strip() for part in SENTENCE_SPLIT_PATTERN.split(text or "") if part.strip()]
 
-
 def _normalize_segment_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
-
 
 def _build_sentence_segments(text: str) -> list[dict[str, Any]]:
     sentences = _split_sentences(text)
@@ -469,7 +473,6 @@ def _build_sentence_segments(text: str) -> list[dict[str, Any]]:
             )
         )
     return segments
-
 
 def _build_context_snapshot(context: Any | None) -> dict[str, Any] | None:
     normalized = normalize_rag_context(context)
@@ -496,7 +499,6 @@ def _build_context_snapshot(context: Any | None) -> dict[str, Any] | None:
         }
         and value not in (None, "", [], {}, ())
     }
-
 
 def _build_meeting_search_document(
     *,
@@ -541,6 +543,17 @@ def _build_meeting_search_document(
         for item in analysis_data.get("next_agenda", [])
         if _normalize_segment_text(item)
     ]
+    sections = _build_search_sections(
+        transcript=transcript,
+        masked_transcript=masked_transcript,
+        summary=_normalize_segment_text(analysis_data.get("summary")),
+        keywords=keywords,
+        keyword_items=keyword_items,
+        decisions=decisions,
+        action_items=action_items,
+        issues=issues,
+        next_agenda=next_agenda,
+    )
 
     search_chunks: list[dict[str, Any]] = []
     for index, segment in enumerate(segments):
@@ -586,22 +599,20 @@ def _build_meeting_search_document(
         title = _normalize_segment_text(context_snapshot.get("meeting_title")) or None
         project_name = _normalize_segment_text(context_snapshot.get("project_name")) or None
 
-    search_text = _join_search_parts(
+    indexed_text = _join_search_parts(
         title,
         project_name,
-        analysis_data.get("summary"),
-        keywords,
-        decisions,
-        [item["title"] for item in action_items if item.get("title")],
-        [item["description"] for item in action_items if item.get("description")],
-        issues,
-        next_agenda,
+        [section["text"] for section in sections if section.get("text")],
         [chunk["search_text"] for chunk in search_chunks],
         transcript,
         masked_transcript,
     )
 
     document = MeetingSearchDocument(
+        version="v2",
+        contract_version="v2",
+        source_text=transcript,
+        masked_source_text=masked_transcript,
         meeting_title=title,
         project_name=project_name,
         summary=_normalize_segment_text(analysis_data.get("summary")),
@@ -611,11 +622,113 @@ def _build_meeting_search_document(
         action_items=action_items,
         issues=issues,
         next_agenda=next_agenda,
+        sections=sections,
         chunks=search_chunks,
-        search_text=search_text,
+        indexed_text=indexed_text,
+        search_text=indexed_text,
     )
     return document.model_dump()
 
+
+def _build_search_sections(
+    *,
+    transcript: str,
+    masked_transcript: str,
+    summary: str,
+    keywords: list[str],
+    keyword_items: list[dict[str, Any]],
+    decisions: list[str],
+    action_items: list[dict[str, Any]],
+    issues: list[str],
+    next_agenda: list[str],
+) -> list[dict[str, Any]]:
+    sections: list[MeetingSearchSection] = []
+
+    if summary:
+        sections.append(MeetingSearchSection(section_type="summary", title="요약", text=summary, weight=1.0))
+    if keywords:
+        sections.append(
+            MeetingSearchSection(
+                section_type="keywords",
+                title="키워드",
+                text=_join_search_parts([item.get("text", "") for item in keyword_items], keywords),
+                weight=0.8,
+            )
+        )
+    for index, decision in enumerate(decisions):
+        if decision:
+            sections.append(
+                MeetingSearchSection(
+                    section_type="decision",
+                    title="결정사항",
+                    text=decision,
+                    weight=0.95,
+                )
+            )
+    for index, item in enumerate(action_items):
+        title = _normalize_segment_text(item.get("title"))
+        description = _normalize_segment_text(item.get("description"))
+        if title or description:
+            sections.append(
+                MeetingSearchSection(
+                    section_type="action_item",
+                    title=title or "액션아이템",
+                    text=_join_search_parts(title, description),
+                    weight=1.0,
+                )
+            )
+    for issue in issues:
+        if issue:
+            sections.append(
+                MeetingSearchSection(
+                    section_type="issue",
+                    title="이슈",
+                    text=issue,
+                    weight=0.85,
+                )
+            )
+    for agenda in next_agenda:
+        if agenda:
+            sections.append(
+                MeetingSearchSection(
+                    section_type="next_agenda",
+                    title="다음 안건",
+                    text=agenda,
+                    weight=0.75,
+                )
+            )
+
+    transcript_text = _join_search_parts(masked_transcript, transcript)
+    if transcript_text:
+        sections.append(
+            MeetingSearchSection(
+                section_type="transcript",
+                title="본문",
+                text=transcript_text,
+                weight=0.6,
+            )
+        )
+
+    return [section.model_dump() for section in sections]
+
+def _build_script_contract(
+    *,
+    transcript: str,
+    masked_transcript: str,
+    analysis_data: dict[str, Any],
+    segments: list[dict[str, Any]],
+    context_snapshot: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    script_segments = _build_script_segments(segments)
+    tx_rows = _build_tx_rows(script_segments)
+    search_document = _build_meeting_search_document(
+        transcript=transcript,
+        masked_transcript=masked_transcript,
+        analysis_data=analysis_data,
+        segments=script_segments,
+        context_snapshot=context_snapshot,
+    )
+    return script_segments, tx_rows, search_document
 
 def _summarize_audio_preprocessing(preprocessing: Any | None) -> dict[str, Any] | None:
     if preprocessing is None:
@@ -644,7 +757,6 @@ def _summarize_audio_preprocessing(preprocessing: Any | None) -> dict[str, Any] 
         "noisy_recording": bool(load_metadata.get("noisy_recording")),
     }
     return {key: value for key, value in summary.items() if value not in (None, "", [], {}, ())}
-
 
 def _summarize_stt_routing(segments: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
     if not segments:
@@ -701,7 +813,6 @@ def _summarize_stt_routing(segments: list[dict[str, Any]] | None) -> list[dict[s
     ]
     return routing or None
 
-
 def _augment_context_with_audio_quality(context: Any | None, preprocessing: Any | None) -> dict[str, Any] | Any | None:
     audio_summary = _summarize_audio_preprocessing(preprocessing)
     if not audio_summary:
@@ -752,7 +863,6 @@ def _extract_matched_terms(sentence: str, candidates: list[str]) -> list[str]:
                 seen.add(normalized_term)
                 matched.append(term)
     return matched
-
 
 def _build_evidence_items(
     transcript: str,
@@ -868,7 +978,6 @@ def _build_evidence_items(
 
     return evidence
 
-
 class AIEngine:
     """Thin orchestration layer for STT, masking, and meeting analysis."""
 
@@ -876,8 +985,9 @@ class AIEngine:
         self,
         stt_service: SpeechToTextService | None = None,
         llm_service: LLMAnalysisService | None = None,
+        transcription_profile: str | None = None,
     ) -> None:
-        self.stt_service = stt_service or WhisperSpeechToTextService()
+        self.stt_service = stt_service or WhisperSpeechToTextService(transcription_profile=transcription_profile)
         self.llm_service = llm_service or build_llm_analysis_service()
 
     def transcribe_audio(self, file_path: str) -> str:
@@ -903,16 +1013,17 @@ class AIEngine:
         context_snapshot = _build_context_snapshot(rag_context)
         evidence = _build_evidence_items(masked_text, analysis_data, segments, context_snapshot=context_snapshot)
         analysis = _build_analysis_payload(analysis_data, evidence=evidence)
-        script_segments = _build_script_segments(segments)
-        analysis.extra_data["script_segments"] = script_segments
-        analysis.extra_data["tx"] = _build_tx_rows(script_segments)
-        analysis.extra_data["search_document"] = _build_meeting_search_document(
+        script_segments, tx_rows, search_document = _build_script_contract(
             transcript=text,
             masked_transcript=masked_text,
             analysis_data=analysis_data,
             segments=segments,
             context_snapshot=context_snapshot,
         )
+        analysis.extra_data["script_segment_contract_version"] = SCRIPT_SEGMENT_CONTRACT_VERSION
+        analysis.extra_data["script_segments"] = script_segments
+        analysis.extra_data["tx"] = tx_rows
+        analysis.extra_data["search_document"] = search_document
         return AIProcessingResult(
             transcript=text,
             masked_transcript=masked_text,
@@ -974,16 +1085,17 @@ class AIEngine:
         stt_routing = _summarize_stt_routing(segments)
         if stt_routing:
             analysis.extra_data["stt_routing"] = stt_routing
-        script_segments = _build_script_segments(segments)
-        analysis.extra_data["script_segments"] = script_segments
-        analysis.extra_data["tx"] = _build_tx_rows(script_segments)
-        analysis.extra_data["search_document"] = _build_meeting_search_document(
+        script_segments, tx_rows, search_document = _build_script_contract(
             transcript=transcript,
             masked_transcript=masked_transcript,
             analysis_data=analysis_data,
             segments=segments,
             context_snapshot=context_snapshot,
         )
+        analysis.extra_data["script_segment_contract_version"] = SCRIPT_SEGMENT_CONTRACT_VERSION
+        analysis.extra_data["script_segments"] = script_segments
+        analysis.extra_data["tx"] = tx_rows
+        analysis.extra_data["search_document"] = search_document
         return AIProcessingResult(
             transcript=transcript,
             masked_transcript=masked_transcript,
@@ -1016,17 +1128,27 @@ class AIEngine:
             preprocessing = get_last_preprocessing()
         analysis_context = _augment_context_with_audio_quality(rag_context, preprocessing)
         segments = [
-            {
-                "index": segment.get("index", index),
-                "speaker": segment.get("speaker"),
-                "start_seconds": segment.get("start_seconds"),
-                "end_seconds": segment.get("end_seconds"),
-                "duration_seconds": segment.get("duration_seconds"),
-                "confidence": segment.get("confidence"),
-                "text": segment.get("text", ""),
-                "masked_text": mask_personal_information(segment.get("text", "")),
-                "source": "audio_chunk_parallel",
-            }
+            _build_script_segment(
+                index=segment.get("index", index),
+                text=segment.get("text", ""),
+                masked_text=mask_personal_information(segment.get("text", "")),
+                speaker=segment.get("speaker"),
+                speaker_id=segment.get("speaker_id"),
+                speaker_label=segment.get("speaker_label"),
+                participant_name=segment.get("participant_name"),
+                speaker_display_name=segment.get("speaker_display_name"),
+                speaker_kind=segment.get("speaker_kind"),
+                is_mapped=segment.get("is_mapped"),
+                start_seconds=segment.get("start_seconds"),
+                end_seconds=segment.get("end_seconds"),
+                duration_seconds=segment.get("duration_seconds"),
+                confidence=segment.get("confidence"),
+                chunk_index=segment.get("chunk_index"),
+                chunk_local_index=segment.get("chunk_local_index"),
+                model_name=segment.get("model_name"),
+                chunk_difficulty=segment.get("chunk_difficulty"),
+                source="audio_chunk_parallel",
+            )
             for index, segment in enumerate(raw_segments)
         ] or _build_sentence_segments(masked_transcript)
 
@@ -1043,6 +1165,25 @@ class AIEngine:
             if preprocessing_summary:
                 preprocessing_summary["parallel_workers"] = n_workers
                 analysis.extra_data["audio_preprocessing"] = preprocessing_summary
+        get_last_diarization = getattr(self.stt_service, "get_last_diarization", None)
+        if callable(get_last_diarization):
+            diarization_summary = get_last_diarization()
+            if diarization_summary:
+                analysis.extra_data["speaker_diarization"] = diarization_summary
+        stt_routing = _summarize_stt_routing(segments)
+        if stt_routing:
+            analysis.extra_data["stt_routing"] = stt_routing
+        script_segments, tx_rows, search_document = _build_script_contract(
+            transcript=transcript,
+            masked_transcript=masked_transcript,
+            analysis_data=analysis_data,
+            segments=segments,
+            context_snapshot=context_snapshot,
+        )
+        analysis.extra_data["script_segment_contract_version"] = SCRIPT_SEGMENT_CONTRACT_VERSION
+        analysis.extra_data["script_segments"] = script_segments
+        analysis.extra_data["tx"] = tx_rows
+        analysis.extra_data["search_document"] = search_document
         return AIProcessingResult(
             transcript=transcript,
             masked_transcript=masked_transcript,
@@ -1182,16 +1323,17 @@ class AIEngine:
         stt_routing = _summarize_stt_routing(timeline_segments)
         if stt_routing:
             analysis.extra_data["stt_routing"] = stt_routing
-        script_segments = _build_script_segments(timeline_segments)
-        analysis.extra_data["script_segments"] = script_segments
-        analysis.extra_data["tx"] = _build_tx_rows(script_segments)
-        analysis.extra_data["search_document"] = _build_meeting_search_document(
+        script_segments, tx_rows, search_document = _build_script_contract(
             transcript=combined_transcript,
             masked_transcript=combined_masked_transcript,
             analysis_data=analysis_data,
             segments=timeline_segments,
             context_snapshot=context_snapshot,
         )
+        analysis.extra_data["script_segment_contract_version"] = SCRIPT_SEGMENT_CONTRACT_VERSION
+        analysis.extra_data["script_segments"] = script_segments
+        analysis.extra_data["tx"] = tx_rows
+        analysis.extra_data["search_document"] = search_document
         return AIProcessingBatchResult(
             file_count=len(file_paths),
             files=file_results,
@@ -1201,9 +1343,7 @@ class AIEngine:
             analysis=analysis,
         )
 
-
 _DEFAULT_AI_ENGINE: AIEngine | None = None
-
 
 def get_default_ai_engine() -> AIEngine:
     global _DEFAULT_AI_ENGINE
@@ -1211,29 +1351,23 @@ def get_default_ai_engine() -> AIEngine:
         _DEFAULT_AI_ENGINE = AIEngine()
     return _DEFAULT_AI_ENGINE
 
-
 def transcribe_audio(file_path: str) -> str:
     return get_default_ai_engine().transcribe_audio(file_path)
-
 
 def prepare_audio(file_path: str) -> dict[str, Any]:
     return get_default_ai_engine().prepare_audio(file_path)
 
-
 def summarize_meeting(text: str, rag_context: Any | None = None) -> str:
     return get_default_ai_engine().summarize_meeting(text, rag_context=rag_context)
 
-
 def extract_tickets(summary: str, rag_context: Any | None = None) -> list[dict[str, Any]]:
     return get_default_ai_engine().extract_tickets(summary, rag_context=rag_context)
-
 
 def process_audio(file_path: str, rag_context: Any | None = None) -> dict[str, Any]:
     """Convenience wrapper for callers that prefer dict payloads."""
     result = get_default_ai_engine().process_audio(file_path, rag_context=rag_context)
     logger.info("AI pipeline completed for %s", file_path)
     return result.to_dict()
-
 
 def process_audio_parallel(
     file_path: str, n_workers: int = 2, rag_context: Any | None = None
@@ -1245,13 +1379,11 @@ def process_audio_parallel(
     logger.info("AI parallel pipeline completed for %s", file_path)
     return result.to_dict()
 
-
 def process_audio_batch(file_paths: list[str], rag_context: Any | None = None) -> dict[str, Any]:
     """Convenience wrapper for ordered multi-file audio inputs."""
     result = get_default_ai_engine().process_audio_batch(file_paths, rag_context=rag_context)
     logger.info("AI batch pipeline completed for %s files", len(file_paths))
     return result.to_dict()
-
 
 def process_text(text: str, rag_context: Any | None = None) -> dict[str, Any]:
     """Convenience wrapper for text-only inputs."""

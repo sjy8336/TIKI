@@ -25,10 +25,20 @@ class MeetingSearchChunk(BaseModel):
     search_text: str = ""
 
 
+class MeetingSearchSection(BaseModel):
+    section_type: str
+    title: str = ""
+    text: str = ""
+    weight: float = 1.0
+
+
 class MeetingSearchDocument(BaseModel):
-    version: str = "v1"
+    version: str = "v2"
+    contract_version: str = "v2"
     meeting_title: str | None = None
     project_name: str | None = None
+    source_text: str = ""
+    masked_source_text: str = ""
     summary: str = ""
     keywords: list[str] = Field(default_factory=list)
     keyword_items: list[dict[str, Any]] = Field(default_factory=list)
@@ -36,5 +46,7 @@ class MeetingSearchDocument(BaseModel):
     action_items: list[dict[str, Any]] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     next_agenda: list[str] = Field(default_factory=list)
+    sections: list[MeetingSearchSection] = Field(default_factory=list)
     chunks: list[MeetingSearchChunk] = Field(default_factory=list)
+    indexed_text: str = ""
     search_text: str = ""

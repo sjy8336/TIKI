@@ -15,13 +15,13 @@ from app.services.ai.stt import WhisperSpeechToTextService
 from app.services.ai_engine import AIEngine
 
 
-def _build_engine(mode: str) -> AIEngine:
+def _build_engine(mode: str, transcription_profile: str) -> AIEngine:
     if mode == "heuristic":
         return AIEngine(
-            stt_service=WhisperSpeechToTextService(),
+            stt_service=WhisperSpeechToTextService(transcription_profile=transcription_profile),
             llm_service=HeuristicLLMAnalysisService(),
         )
-    return AIEngine()
+    return AIEngine(transcription_profile=transcription_profile)
 
 
 def _print_section(title: str, value: Any) -> None:
@@ -63,9 +63,15 @@ def main() -> int:
         default=None,
         help="Optional path to write the full analysis payload as JSON.",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("light", "balanced", "premium"),
+        default="balanced",
+        help="Transcription budget profile. Large model stays fixed; only decoding and chunking soften.",
+    )
     args = parser.parse_args()
 
-    engine = _build_engine(args.mode)
+    engine = _build_engine(args.mode, args.profile)
     result = engine.process_audio(str(args.audio_path))
 
     audio_summary = result.analysis.extra_data.get("audio_preprocessing", {})
@@ -73,6 +79,7 @@ def main() -> int:
 
     print(f"FILE: {args.audio_path}")
     print(f"MODE: {args.mode}")
+    print(f"PROFILE: {args.profile}")
     print(f"TRANSCRIPT_LEN: {len(result.transcript)}")
     print(f"MODEL: {result.analysis.model_name}")
     print(f"PROMPT: {result.analysis.prompt_version}")
