@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
+import { listProjects } from '../api/apiClient';
 
 const PROJECTS = [
     {
@@ -329,6 +330,7 @@ const PARTICIPANT_COLOR_MAP = {
 };
 
 const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
+const PROJECT_CATALOG_STORAGE_KEY = 'tiki_project_catalog';
 
 const TOAST_COLORS = { info: '#0099CC', ai: '#7C3AED', success: '#10B981', warning: '#F59E0B', error: '#EF4444' };
 const TOAST_VARIANTS = {
@@ -366,9 +368,53 @@ const writeProjectOverrides = (next) => {
     }
 };
 
+const readProjectCatalog = () => {
+    try {
+        const raw = localStorage.getItem(PROJECT_CATALOG_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+
+const writeProjectCatalog = (next) => {
+    try {
+        localStorage.setItem(PROJECT_CATALOG_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+        // ignore storage write failures in local mock mode
+    }
+};
+
 function normalizeProject(project) {
     if (!project) return null;
-    const participants = Array.isArray(project.participants) ? project.participants : [];
+    const createdAtRaw = String(project.createdAt || '').trim();
+    const createdAtFromApi = project.created_at ? String(project.created_at).slice(0, 10) : '';
+    const createdAt =
+        createdAtRaw && createdAtRaw !== '-'
+            ? createdAtRaw
+            : createdAtFromApi || '-';
+
+    const teamLead = String(project.teamLead || project.team_lead || '').trim();
+    const memberCountRaw =
+        typeof project.members === 'number'
+            ? project.members
+            : typeof project.member_count === 'number'
+              ? project.member_count
+              : Array.isArray(project.participants)
+                ? project.participants.length
+                : 0;
+    const memberCount = Number.isFinite(memberCountRaw) ? Math.max(1, memberCountRaw) : 1;
+
+    let participants = Array.isArray(project.participants) ? project.participants.filter(Boolean) : [];
+    if (participants.length === 0) {
+        const leadName = teamLead || '담당자';
+        participants = [leadName];
+        for (let i = 2; i <= memberCount; i += 1) {
+            participants.push(`구성원${i}`);
+        }
+    }
     const meetings = Array.isArray(project.meetings)
         ? project.meetings.map((meeting, idx) => ({
               id: meeting.id || `m-${project.id}-${idx + 1}`,
@@ -390,9 +436,9 @@ function normalizeProject(project) {
         id: project.id,
         name: project.name || '프로젝트',
         description: project.description || '',
-        createdAt: project.createdAt || '',
+        createdAt,
         status: project.status || '진행 중',
-        teamLead: project.teamLead || participants[0] || '담당자',
+        teamLead: teamLead || participants[0] || '담당자',
         participants,
         myActionItems: Array.isArray(project.myActionItems) ? project.myActionItems : [],
         meetings,
@@ -776,6 +822,7 @@ export default function ProjectMeetings() {
     const [actionDrawerView, setActionDrawerView] = useState('detail');
     const [activeActionItemId, setActiveActionItemId] = useState(null);
     const [actionDraft, setActionDraft] = useState(null);
+    const [projectCatalog, setProjectCatalog] = useState(() => readProjectCatalog());
     const [pendingIntegrationTarget, setPendingIntegrationTarget] = useState('');
     const [isDueDateOpen, setIsDueDateOpen] = useState(false);
     const [isDrawerAssigneeOpen, setIsDrawerAssigneeOpen] = useState(false);
@@ -831,34 +878,115 @@ export default function ProjectMeetings() {
 
     const projectOverrides = useMemo(() => readProjectOverrides(), [location.key]);
 
+    useEffect(() => {
+        listProjects()
+            .then((data) => {
+                const mapped = (Array.isArray(data) ? data : []).map((p) =>
+                    normalizeProject({
+                        id: p.id,
+                        name: p.name,
+                        description: p.description,
+                        createdAt: p.created_at ? String(p.created_at).slice(0, 10) : '-',
+                        teamLead: p.team_lead,
+                        members: p.member_count,
+                    })
+                );
+
+                if (mapped.length === 0) return;
+                setProjectCatalog((prev) => {
+                    const base = Array.isArray(prev) ? prev : [];
+                    const next = [...base];
+                    mapped.forEach((item) => {
+                        const idx = next.findIndex((existing) => isSameProjectId(existing?.id, item.id));
+                        if (idx >= 0) {
+                            next[idx] = { ...next[idx], ...item };
+                        } else {
+                            next.push(item);
+                        }
+                    });
+                    writeProjectCatalog(next);
+                    return next;
+                });
+            })
+            .catch(() => {
+                // Ignore API read failures and continue with local state/mock data.
+            });
+    }, []);
+
     const project = useMemo(() => {
         const id = normalizeProjectId(projectId);
         if (!id) return null;
         const override = projectOverrides[id] || null;
+        const mergeWithOverride = (baseProject) => {
+            const safeOverride = { ...(override || {}) };
+            if (typeof safeOverride.createdAt === 'string' && safeOverride.createdAt.trim() === '-') {
+                delete safeOverride.createdAt;
+            }
+
+            return normalizeProject({
+                ...baseProject,
+                ...safeOverride,
+                participants: Array.isArray(override?.participants)
+                    ? override.participants
+                    : baseProject?.participants,
+                admins: Array.isArray(override?.admins) ? override.admins : baseProject?.admins,
+            });
+        };
+
         const byId = PROJECTS.find((p) => isSameProjectId(p.id, id));
         if (byId) {
-            return normalizeProject({
-                ...byId,
-                ...(override || {}),
-                participants: Array.isArray(override?.participants) ? override.participants : byId.participants,
-                admins: Array.isArray(override?.admins) ? override.admins : byId.admins,
-            });
+            return mergeWithOverride(byId);
         }
+
+        const byCatalog = projectCatalog.find((p) => isSameProjectId(p?.id, id));
+        if (byCatalog) {
+            return mergeWithOverride(byCatalog);
+        }
+
         const stateProject = location.state?.project;
         if (stateProject && isSameProjectId(stateProject.id, id)) {
-            return normalizeProject({
-                ...stateProject,
-                ...(override || {}),
-                participants: Array.isArray(override?.participants) ? override.participants : stateProject.participants,
-                admins: Array.isArray(override?.admins) ? override.admins : stateProject.admins,
-            });
+            return mergeWithOverride(stateProject);
         }
         if (override && isSameProjectId(override.id, id)) return normalizeProject(override);
         return null;
-    }, [projectId, location.state, projectOverrides]);
+    }, [projectId, location.state, projectCatalog, projectOverrides]);
+
+    useEffect(() => {
+        const fromState = location.state?.project;
+        if (!fromState?.id) return;
+
+        const normalized = normalizeProject(fromState);
+        if (!normalized?.id) return;
+
+        setProjectCatalog((prev) => {
+            const base = Array.isArray(prev) ? prev : [];
+            const idx = base.findIndex((item) => isSameProjectId(item?.id, normalized.id));
+
+            if (idx >= 0) {
+                const existing = normalizeProject(base[idx]);
+                if (JSON.stringify(existing) === JSON.stringify(normalized)) return prev;
+                const next = [...base];
+                next[idx] = { ...base[idx], ...normalized };
+                writeProjectCatalog(next);
+                return next;
+            }
+
+            const next = [...base, normalized];
+            writeProjectCatalog(next);
+            return next;
+        });
+    }, [location.key]);
 
     const projectCandidates = useMemo(() => {
-        const merged = PROJECTS.map((item) => {
+        const source = [...PROJECTS, ...projectCatalog];
+        const deduped = [];
+        source.forEach((item) => {
+            if (!item?.id) return;
+            if (deduped.some((existing) => isSameProjectId(existing.id, item.id))) return;
+            deduped.push(item);
+        });
+
+        const merged = deduped.map((item) => {
             const override = projectOverrides[String(item.id)];
             if (!override) return item;
             return normalizeProject({
@@ -871,7 +999,7 @@ export default function ProjectMeetings() {
         if (!project) return merged;
         const exists = merged.some((p) => isSameProjectId(p.id, project.id));
         return exists ? merged : [project, ...merged];
-    }, [project, projectOverrides]);
+    }, [project, projectCatalog, projectOverrides]);
 
     const filteredProjects = useMemo(() => {
         const q = projectSearch.trim().toLowerCase();

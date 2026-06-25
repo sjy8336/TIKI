@@ -159,7 +159,7 @@ function saveUserProjectActivity(user, map) {
 function parseCurrentUser() {
   if (typeof window === 'undefined') return null;
 
-  const candidateKeys = ['currentUser', 'user', 'authUser', 'sessionUser'];
+  const candidateKeys = ['tiki_user', 'currentUser', 'user', 'authUser', 'sessionUser'];
 
   for (const key of candidateKeys) {
     try {
@@ -398,32 +398,62 @@ export default function ProjectList() {
   const [openMenuKey, setOpenMenuKey] = useState(null);
   const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasFetchedProjects, setHasFetchedProjects] = useState(false);
   const currentUser = useMemo(() => parseCurrentUser(), []);
   const [activityByProjectId, setActivityByProjectId] = useState(() => loadUserProjectActivity(currentUser));
   const [projects, setProjects] = useState([]);
+
+  const fetchProjects = useCallback(() => {
+    return listProjects()
+      .then((data) => {
+        const mapped = (Array.isArray(data) ? data : []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          category: p.category,
+          description: p.description,
+          createdAt: p.created_at ? String(p.created_at).slice(0, 10) : '',
+          members: p.member_count,
+          teamLead: p.team_lead,
+          updatedAt: toRelativeTime(p.updated_at),
+          _updatedAt: p.updated_at,
+        }));
+
+        // In dev, keep mock data visible when backend has no projects yet.
+        setProjects(mapped.length > 0 ? mapped : PROJECTS);
+      })
+      .catch(() => {
+        // Keep existing data to avoid UI flicker when a refetch fails momentarily.
+        setProjects((prev) => (prev.length > 0 ? prev : PROJECTS));
+      })
+      .finally(() => {
+        setHasFetchedProjects(true);
+      });
+  }, []);
 
   useEffect(() => {
     setActivityByProjectId(loadUserProjectActivity(currentUser));
   }, [currentUser]);
 
   useEffect(() => {
-    listProjects()
-      .then((data) =>
-        setProjects(
-          data.map((p) => ({
-            id: p.id,
-            name: p.name,
-            category: p.category,
-            description: p.description,
-            members: p.member_count,
-            teamLead: p.team_lead,
-            updatedAt: toRelativeTime(p.updated_at),
-            _updatedAt: p.updated_at,
-          }))
-        )
-      )
-      .catch(() => {});
-  }, []);
+    fetchProjects();
+  }, [fetchProjects]);
+
+  useEffect(() => {
+    const handleRefetch = () => {
+      fetchProjects();
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') fetchProjects();
+    };
+
+    window.addEventListener('focus', handleRefetch);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', handleRefetch);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchProjects]);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -440,14 +470,16 @@ export default function ProjectList() {
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
-  const participatedProjects = projects;
+  const participatedProjects = hasFetchedProjects
+    ? (projects.length > 0 ? projects : PROJECTS)
+    : [];
 
   const searchedProjects = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
     if (!keyword) return participatedProjects;
     return participatedProjects.filter((project) =>
-      project.name.toLowerCase().includes(keyword) ||
-      project.teamLead.toLowerCase().includes(keyword)
+      String(project.name || '').toLowerCase().includes(keyword) ||
+      String(project.teamLead || '').toLowerCase().includes(keyword)
     );
   }, [participatedProjects, searchQuery]);
 
