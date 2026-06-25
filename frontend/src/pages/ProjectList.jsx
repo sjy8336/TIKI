@@ -117,6 +117,8 @@ function VisibilityBadge({ visibility }) {
 function getTimeRank(value) {
   const order = { '1시간 전': 6, '2시간 전': 5, '5시간 전': 4, 어제: 3, '3일 전': 2, '이번 주': 1 };
   return order[value] || 0;
+}
+
 function toRelativeTime(isoString) {
   const diff = Date.now() - new Date(isoString).getTime();
   const mins = Math.floor(diff / 60000);
