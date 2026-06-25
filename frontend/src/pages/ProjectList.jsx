@@ -156,6 +156,25 @@ function saveUserProjectActivity(user, map) {
   }
 }
 
+const PROJECT_LIST_VIEW_MODE_KEY = 'tiki_project_list_view_mode';
+
+function loadProjectListViewMode() {
+  try {
+    const raw = localStorage.getItem(PROJECT_LIST_VIEW_MODE_KEY);
+    return raw === 'list' ? 'list' : 'card';
+  } catch {
+    return 'card';
+  }
+}
+
+function saveProjectListViewMode(mode) {
+  try {
+    localStorage.setItem(PROJECT_LIST_VIEW_MODE_KEY, mode === 'list' ? 'list' : 'card');
+  } catch {
+    // Ignore localStorage write failures and continue with in-memory state.
+  }
+}
+
 function parseCurrentUser() {
   if (typeof window === 'undefined') return null;
 
@@ -179,9 +198,10 @@ function parseCurrentUser() {
   return null;
 }
 
-function ProjectCard({ project, onOpen, onOpenConfig, menuKey, setMenuKey, menuScope }) {
+function ProjectCard({ project, onOpen, onOpenConfig, onDelete, menuKey, setMenuKey, menuScope, menuDirectionByKey, setMenuDirectionByKey }) {
   const summary = PROJECT_SUMMARY[project.id] || '최근 회의 내용을 요약하고 있어요.';
   const currentMenuKey = `${menuScope}-${project.id}`;
+  const menuDirection = menuDirectionByKey[currentMenuKey] || 'down';
 
   return (
     <div
@@ -199,6 +219,9 @@ function ProjectCard({ project, onOpen, onOpenConfig, menuKey, setMenuKey, menuS
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
+                const rect = e.currentTarget.getBoundingClientRect();
+                const shouldOpenUp = window.innerHeight - rect.bottom < 140;
+                setMenuDirectionByKey((prev) => ({ ...prev, [currentMenuKey]: shouldOpenUp ? 'up' : 'down' }));
                 setMenuKey((prev) => (prev === currentMenuKey ? null : currentMenuKey));
               }}
               className="flex h-6 w-6 items-center justify-center rounded-full text-[#B0BFCC] transition-all hover:bg-[#F1F4F8] hover:text-[#5A6F8A]"
@@ -207,20 +230,20 @@ function ProjectCard({ project, onOpen, onOpenConfig, menuKey, setMenuKey, menuS
               <PIcon name="moreVertical" size={14} />
             </button>
             {menuKey === currentMenuKey && (
-              <div className="absolute right-0 top-full z-30 mt-1 w-36 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)]">
+              <div className={`absolute right-0 z-30 w-36 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)] ${menuDirection === 'up' ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); setMenuKey(null); onOpenConfig(project); }}
                   className="w-full px-4 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
                 >
-                  설정 페이지
+                  설정
                 </button>
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); setMenuKey(null); onOpen(project); }}
+                  onClick={(e) => { e.stopPropagation(); setMenuKey(null); onDelete(project); }}
                   className="w-full px-4 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
                 >
-                  회의 목록
+                  삭제
                 </button>
               </div>
             )}
@@ -269,9 +292,10 @@ function ProjectCardSkeleton() {
   );
 }
 
-function ProjectListItem({ project, onOpen, onOpenConfig, menuKey, setMenuKey, menuScope }) {
+function ProjectListItem({ project, onOpen, onOpenConfig, onDelete, menuKey, setMenuKey, menuScope, menuDirectionByKey, setMenuDirectionByKey }) {
   const summary = PROJECT_SUMMARY[project.id] || '최근 회의 내용을 요약하고 있어요.';
   const currentMenuKey = `${menuScope}-${project.id}`;
+  const menuDirection = menuDirectionByKey[currentMenuKey] || 'down';
 
   return (
     <div
@@ -279,7 +303,7 @@ function ProjectListItem({ project, onOpen, onOpenConfig, menuKey, setMenuKey, m
       tabIndex={0}
       onClick={() => onOpen(project)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpen(project); }}
-      className="w-full bg-white px-4 py-4 text-left transition hover:bg-[#F8FAFF]"
+      className="w-full bg-white px-4 py-4 text-left transition hover:bg-[#F8FAFF] first:rounded-t-2xl last:rounded-b-2xl"
       data-project-menu-root="true"
     >
       <div className="flex items-start justify-between gap-3 md:grid md:grid-cols-[minmax(0,1.8fr)_120px_120px_120px_56px] md:items-center md:gap-x-4">
@@ -293,6 +317,9 @@ function ProjectListItem({ project, onOpen, onOpenConfig, menuKey, setMenuKey, m
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const shouldOpenUp = window.innerHeight - rect.bottom < 140;
+                  setMenuDirectionByKey((prev) => ({ ...prev, [currentMenuKey]: shouldOpenUp ? 'up' : 'down' }));
                   setMenuKey((prev) => (prev === currentMenuKey ? null : currentMenuKey));
                 }}
                 className="-mt-0.5 flex h-6 w-6 items-center justify-center rounded-full text-[#B0BFCC] transition-all hover:bg-[#F1F4F8] hover:text-[#5A6F8A]"
@@ -301,20 +328,20 @@ function ProjectListItem({ project, onOpen, onOpenConfig, menuKey, setMenuKey, m
                 <PIcon name="moreVertical" size={14} />
               </button>
               {menuKey === currentMenuKey && (
-                <div className="absolute right-0 top-full z-30 mt-1 w-28 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)]">
+                <div className="absolute right-full top-1/2 z-30 mr-1 w-28 -translate-y-1/2 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)]">
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setMenuKey(null); onOpenConfig(project); }}
                     className="w-full px-3.5 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
                   >
-                    설정 페이지
+                    설정
                   </button>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); setMenuKey(null); onOpen(project); }}
+                    onClick={(e) => { e.stopPropagation(); setMenuKey(null); onDelete(project); }}
                     className="w-full px-3.5 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
                   >
-                    회의 목록
+                    삭제
                   </button>
                 </div>
               )}
@@ -355,6 +382,9 @@ function ProjectListItem({ project, onOpen, onOpenConfig, menuKey, setMenuKey, m
             type="button"
             onClick={(e) => {
               e.stopPropagation();
+              const rect = e.currentTarget.getBoundingClientRect();
+              const shouldOpenUp = window.innerHeight - rect.bottom < 140;
+              setMenuDirectionByKey((prev) => ({ ...prev, [currentMenuKey]: shouldOpenUp ? 'up' : 'down' }));
               setMenuKey((prev) => (prev === currentMenuKey ? null : currentMenuKey));
             }}
             className="flex h-6 w-6 items-center justify-center rounded-full text-[#B0BFCC] transition-all hover:bg-[#F1F4F8] hover:text-[#5A6F8A]"
@@ -363,20 +393,20 @@ function ProjectListItem({ project, onOpen, onOpenConfig, menuKey, setMenuKey, m
             <PIcon name="moreVertical" size={14} />
           </button>
           {menuKey === currentMenuKey && (
-            <div className="absolute right-0 top-full z-30 mt-1 w-28 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)]">
+            <div className="absolute right-full top-1/2 z-30 mr-1 w-28 -translate-y-1/2 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.13)]">
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setMenuKey(null); onOpenConfig(project); }}
                 className="w-full px-3.5 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
               >
-                설정 페이지
+                설정
               </button>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setMenuKey(null); onOpen(project); }}
+                onClick={(e) => { e.stopPropagation(); setMenuKey(null); onDelete(project); }}
                 className="w-full px-3.5 py-2.5 text-left text-sm text-[#0D1B2A] transition-colors hover:bg-[#F5F7FB]"
               >
-                회의 목록
+                삭제
               </button>
             </div>
           )}
@@ -394,14 +424,17 @@ export default function ProjectList() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortFilter, setSortFilter] = useState('최신순');
   const [isSortOpen, setIsSortOpen] = useState(false);
-  const [viewMode, setViewMode] = useState('card');
+  const [viewMode, setViewMode] = useState(() => loadProjectListViewMode());
   const [openMenuKey, setOpenMenuKey] = useState(null);
+  const [menuDirectionByKey, setMenuDirectionByKey] = useState({});
+  const [pendingDeleteProject, setPendingDeleteProject] = useState(null);
   const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [hasFetchedProjects, setHasFetchedProjects] = useState(false);
   const currentUser = useMemo(() => parseCurrentUser(), []);
   const [activityByProjectId, setActivityByProjectId] = useState(() => loadUserProjectActivity(currentUser));
   const [projects, setProjects] = useState([]);
+  const [deletedProjectIds, setDeletedProjectIds] = useState([]);
 
   const fetchProjects = useCallback(() => {
     return listProjects()
@@ -462,6 +495,10 @@ export default function ProjectList() {
   }, []);
 
   useEffect(() => {
+    saveProjectListViewMode(viewMode);
+  }, [viewMode]);
+
+  useEffect(() => {
     const handleOutsideClick = (e) => {
       if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target)) setIsSortOpen(false);
       if (!e.target.closest('[data-project-menu-root="true"]')) setOpenMenuKey(null);
@@ -470,9 +507,14 @@ export default function ProjectList() {
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
-  const participatedProjects = hasFetchedProjects
+  const sourceProjects = hasFetchedProjects
     ? (projects.length > 0 ? projects : PROJECTS)
     : [];
+
+  const participatedProjects = useMemo(() => {
+    if (deletedProjectIds.length === 0) return sourceProjects;
+    return sourceProjects.filter((project) => !deletedProjectIds.includes(String(project.id)));
+  }, [deletedProjectIds, sourceProjects]);
 
   const searchedProjects = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
@@ -544,6 +586,20 @@ export default function ProjectList() {
     markProjectActivity(project.id);
     navigate('/configuration', { state: { project } });
   }, [markProjectActivity, navigate]);
+
+  const requestDeleteProject = useCallback((project) => {
+    setPendingDeleteProject(project);
+  }, []);
+
+  const confirmDeleteProject = useCallback(() => {
+    if (!pendingDeleteProject) return;
+    const deleteId = String(pendingDeleteProject.id);
+    setDeletedProjectIds((prev) => (prev.includes(deleteId) ? prev : [...prev, deleteId]));
+    setProjects((prev) => prev.filter((project) => String(project.id) !== deleteId));
+    setOpenMenuKey(null);
+    setPendingDeleteProject(null);
+  }, [pendingDeleteProject]);
+
   const handlePageChange = useCallback((n) => { setPage(n); window.scrollTo({ top: 0, behavior: 'smooth' }); }, []);
 
   const listContainerClass = '';
@@ -590,9 +646,12 @@ export default function ProjectList() {
                     project={project}
                     onOpen={openProjectMeetings}
                     onOpenConfig={openProjectConfig}
+                    onDelete={requestDeleteProject}
                     menuKey={openMenuKey}
                     setMenuKey={setOpenMenuKey}
                     menuScope="recent"
+                    menuDirectionByKey={menuDirectionByKey}
+                    setMenuDirectionByKey={setMenuDirectionByKey}
                   />
                 ))}
               </div>
@@ -710,23 +769,29 @@ export default function ProjectList() {
                         project={project}
                         onOpen={openProjectMeetings}
                         onOpenConfig={openProjectConfig}
+                        onDelete={requestDeleteProject}
                         menuKey={openMenuKey}
                         setMenuKey={setOpenMenuKey}
                         menuScope="all"
+                        menuDirectionByKey={menuDirectionByKey}
+                        setMenuDirectionByKey={setMenuDirectionByKey}
                       />
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-2xl border border-[rgba(0,0,0,0.07)] bg-white overflow-hidden divide-y divide-[rgba(0,0,0,0.06)]">
+                  <div className="rounded-2xl border border-[rgba(0,0,0,0.07)] bg-white overflow-visible divide-y divide-[rgba(0,0,0,0.06)]">
                     {paginatedProjects.map((project) => (
                       <ProjectListItem
                         key={project.id}
                         project={project}
                         onOpen={openProjectMeetings}
                         onOpenConfig={openProjectConfig}
+                        onDelete={requestDeleteProject}
                         menuKey={openMenuKey}
                         setMenuKey={setOpenMenuKey}
                         menuScope="list"
+                        menuDirectionByKey={menuDirectionByKey}
+                        setMenuDirectionByKey={setMenuDirectionByKey}
                       />
                     ))}
                   </div>
@@ -764,6 +829,35 @@ export default function ProjectList() {
           </section>
         </div>
       </main>
+
+      {pendingDeleteProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+          <div className="absolute inset-0 bg-[#0D1B2A]/40" onClick={() => setPendingDeleteProject(null)} />
+          <div className="relative w-full max-w-sm rounded-2xl border border-[rgba(0,0,0,0.08)] bg-white p-6 shadow-2xl">
+            <p className="text-base font-bold text-[#0D1B2A]">프로젝트를 삭제할까요?</p>
+            <p className="mt-2 text-sm text-[#5A6F8A]">
+              <span className="font-semibold text-[#0D1B2A]">{pendingDeleteProject.name}</span> 프로젝트를 삭제하면
+              되돌릴 수 없습니다. 정말 삭제하시겠습니까?
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteProject(null)}
+                className="rounded-lg border border-[rgba(0,0,0,0.12)] px-3.5 py-2 text-sm text-[#5A6F8A] hover:bg-[#F8FAFF]"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteProject}
+                className="rounded-lg bg-[#EF4444] px-3.5 py-2 text-sm font-semibold text-white hover:bg-[#DC2626]"
+              >
+                삭제
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!isMobile && <Footer />}
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
