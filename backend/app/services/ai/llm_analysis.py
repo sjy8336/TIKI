@@ -241,7 +241,9 @@ MEETING_META_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 ACTION_ITEM_EXCLUDE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?:회의 시작|시작하겠습니다|마무리하겠습니다|마치겠습니다|고생 많으셨|수고하셨|감사합니다|다들 왔죠|회의 끝)"),
+    re.compile(
+        r"(?:회의 시작|시작하겠습니다|마무리하겠습니다|마치겠습니다|고생 많으셨|수고하셨|감사합니다|다들 왔죠|회의 끝|회의에서는|회의에서|목적은|정리했다|공유했다|설명했다|알겠습니다|좋습니다|동의합니다|준비됐습니다|준비됐어요|저도 준비됐습니다)"
+    ),
 )
 
 QUESTION_LIKE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -552,10 +554,7 @@ def _build_issue_sentence(text: Any) -> str:
         elif kind == "재검토 필요":
             sentence = f"{topic_object} 재검토가 필요하다."
         elif kind == "리스크":
-            if "리스크" in topic:
-                sentence = f"{topic} 관련 이슈를 확인했다."
-            else:
-                sentence = f"{topic_object} 리스크를 확인했다."
+            sentence = f"{topic} 관련 이슈를 확인했다." if "리스크" in topic else f"{topic_object} 리스크를 확인했다."
         else:
             sentence = f"{topic} {kind}"
     elif topic:
@@ -589,32 +588,35 @@ def _build_next_agenda_sentence(text: Any) -> str:
         "",
         cleaned,
     ).strip()
+    cleaned = re.sub(r"\s*다음 회의에서\s*", " ", cleaned)
+    cleaned = _collapse_repeated_phrases(cleaned)
 
     if not cleaned:
         return ""
 
     lowered = cleaned.lower()
     if "개발 일정" in cleaned and "리스크" in cleaned:
-        cleaned = "다음 회의에서 개발 일정과 예상 리스크를 논의한다."
+        cleaned = "개발 일정과 예상 리스크를 논의한다."
     elif "추가 기능 요청" in cleaned or "추가 요청" in cleaned:
-        cleaned = "다음 회의에서 추가 기능 요청 대응 방안을 논의한다."
+        cleaned = "추가 기능 요청 대응 방안을 논의한다."
     elif "후속" in cleaned and "안건" in cleaned:
-        cleaned = "다음 회의에서 후속 안건을 논의한다."
+        cleaned = "후속 안건을 논의한다."
     elif "어떻게 대응할지" in cleaned or "대응 방안" in lowered:
         topic = cleaned.split("어떻게 대응할지", 1)[0].strip()
         topic = re.sub(r"(?:이 부분|이건|추가 기능 요청|추가 기능|추가 요청|후속 안건|다음 안건)\s*$", "", topic).strip()
         if topic:
-            cleaned = f"{topic} 대응 방안을 다음 회의에서 논의한다."
+            cleaned = f"{topic} 대응 방안을 논의한다."
         else:
-            cleaned = "다음 회의에서 대응 방안을 논의한다."
-    elif not cleaned.startswith("다음 회의"):
-        cleaned = f"다음 회의에서 {cleaned}"
+            cleaned = "대응 방안을 논의한다."
 
     cleaned = _collapse_repeated_phrases(cleaned)
     cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip().rstrip(".!?。")
     if not cleaned:
         return ""
-    return cleaned if cleaned.endswith(".") else f"{cleaned}."
+    cleaned = re.sub(r"\s*다음 회의에서\s*", " ", cleaned).strip()
+    if cleaned.startswith("다음 회의에서"):
+        cleaned = cleaned[len("다음 회의에서"):].strip()
+    return _compact_next_agenda_text(cleaned, max_chars=96)
 
 
 def _build_context_block(context: Any | None) -> str:
@@ -992,11 +994,14 @@ def _normalize_issues_value(issues: Any) -> list[dict[str, str]]:
             continue
         if level not in {"high", "medium", "low"}:
             level = "medium"
-        signature = text.lower()
+        compacted = _compact_issue_text(_build_issue_sentence(text), max_chars=96)
+        if not compacted:
+            continue
+        signature = compacted.lower()
         if signature in seen:
             continue
         seen.add(signature)
-        normalized.append({"level": level, "text": _compact_issue_text(_build_issue_sentence(text), max_chars=96)})
+        normalized.append({"level": level, "text": compacted})
         if len(normalized) >= MAX_ISSUES:
             break
     return normalized
@@ -1174,6 +1179,31 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [sentence for _, _, sentence in scored[:MAX_ACTION_ITEMS]]
 
+    @staticmethod
+    def _split_action_sentence(sentence: str) -> list[str]:
+        cleaned = WHITESPACE_PATTERN.sub(" ", sentence or "").strip()
+        if not cleaned:
+            return []
+
+        pieces = [
+            part.strip()
+            for part in re.split(
+                r"(?:,|;|:|\b그리고\b|\b그 다음\b|\b그다음\b|\b다음으로\b|\b또\b|\b및\b|\b와\b|\b과\b)",
+                cleaned,
+            )
+            if part.strip()
+        ]
+        if len(pieces) <= 1:
+            return [cleaned]
+
+        normalized: list[str] = []
+        for piece in pieces:
+            piece = re.sub(r"^(?:그 다음|그다음|그리고|또|우선|일단|다음으로)\s+", "", piece).strip()
+            piece = WHITESPACE_PATTERN.sub(" ", piece).strip()
+            if piece:
+                normalized.append(piece)
+        return normalized or [cleaned]
+
     def _score_sentence(self, sentence: str) -> int:
         if self._contains_negated_action(sentence):
             return 0
@@ -1295,24 +1325,27 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         seen_titles: set[str] = set()
 
         for sentence in sentences:
-            if self._looks_like_noisy_action_candidate(sentence):
-                continue
+            for candidate in self._split_action_sentence(sentence):
+                if self._looks_like_noisy_action_candidate(candidate):
+                    continue
 
-            title = self._build_action_item_title(sentence)
-            if title in seen_titles:
-                continue
-            seen_titles.add(title)
+                title = self._build_action_item_title(candidate)
+                if not title or title in seen_titles:
+                    continue
+                seen_titles.add(title)
 
-            items.append(
-                {
-                    "title": title,
-                    "description": sentence.strip(),
-                    "status": TicketStatus.DRAFT.value,
-                    "priority": self._infer_priority(sentence).value,
-                    "assignee": self._extract_assignee(sentence, name_candidates=name_candidates),
-                    "due_at": self._extract_due_at(sentence),
-                }
-            )
+                items.append(
+                    {
+                        "title": title,
+                        "description": candidate.strip(),
+                        "status": TicketStatus.DRAFT.value,
+                        "priority": self._infer_priority(candidate).value,
+                        "assignee": self._extract_assignee(candidate, name_candidates=name_candidates),
+                        "due_at": self._extract_due_at(candidate),
+                    }
+                )
+                if len(items) >= MAX_ACTION_ITEMS:
+                    break
             if len(items) >= MAX_ACTION_ITEMS:
                 break
 
@@ -1395,7 +1428,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
             elif issue_kind == "재검토 필요":
                 title = f"{topic} 재검토가 필요하다."
             elif issue_kind == "리스크":
-                title = f"{topic} 리스크를 확인했다."
+                title = f"{topic} 관련 이슈를 확인했다." if "리스크" in topic else f"{topic} 리스크를 확인했다."
             else:
                 title = f"{topic} {issue_kind}"
         elif topic:
@@ -2033,7 +2066,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
     def _build_summary_opening(themes: list[str], analysis_text: str) -> str:
         lowered = analysis_text.lower()
         if "업무관리시스템" in lowered or "업무 관리 시스템" in lowered:
-            return "회의에서는 사내 업무관리시스템 구축을 위한 기능 우선순위와 역할 분담을 정리했다."
+            return "회의에서는 사내 업무관리시스템 구축을 위한 기능 우선순위, 역할 분담, 일정과 리스크를 정리했다."
         if "회의록" in lowered and ("jira" in lowered or "stt" in lowered or "화자 분리" in lowered):
             return "회의에서는 AI 회의록 시스템의 핵심 구성요소와 진행 현황을 공유했다."
         if themes:
@@ -2328,6 +2361,8 @@ class OpenAIAnalysisService(LLMAnalysisService):
             "- 설명은 왜 필요한지, 무엇을 해야 하는지, 의존성이 있으면 무엇인지까지 담아라.\n"
             "- issues는 짧은 리스크 카드처럼, next_agenda는 다음 회의 카드처럼 정리하라.\n"
             "- issues와 next_agenda는 한 줄 카드 문장으로 짧게 유지하고, 장황한 배경 설명은 넣지 마라.\n"
+            "- next_agenda는 '다음 회의에서' 접두어를 한 번만 쓰고, 같은 문구를 반복하지 마라.\n"
+            "- issues는 '리스크 관리 리스크'처럼 같은 단어를 반복하지 말고, 짧은 카드 문장 하나로 정리하라.\n"
             "- 우선순위는 low, medium, high, urgent 중 하나만 사용하라.\n"
             "- urgent는 명시적 긴급성, 장애, 즉시 대응, 마감 임박이 있을 때만 써라.\n"
             "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
