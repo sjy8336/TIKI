@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
+import { listProjects } from '../api/apiClient';
 
 const PROJECTS = [
     {
@@ -232,7 +233,7 @@ const ACTION_STATUS_LABEL = {
     검토대기: '검토대기',
     검토완료: '검토완료',
     연동완료: '연동완료',
-    완료히스토리: '완료히스토리',
+    완료히스토리: '완료',
 };
 
 function normalizeActionStatus(status) {
@@ -329,6 +330,7 @@ const PARTICIPANT_COLOR_MAP = {
 };
 
 const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
+const PROJECT_CATALOG_STORAGE_KEY = 'tiki_project_catalog';
 
 const TOAST_COLORS = { info: '#0099CC', ai: '#7C3AED', success: '#10B981', warning: '#F59E0B', error: '#EF4444' };
 const TOAST_VARIANTS = {
@@ -366,9 +368,53 @@ const writeProjectOverrides = (next) => {
     }
 };
 
+const readProjectCatalog = () => {
+    try {
+        const raw = localStorage.getItem(PROJECT_CATALOG_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+
+const writeProjectCatalog = (next) => {
+    try {
+        localStorage.setItem(PROJECT_CATALOG_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+        // ignore storage write failures in local mock mode
+    }
+};
+
 function normalizeProject(project) {
     if (!project) return null;
-    const participants = Array.isArray(project.participants) ? project.participants : [];
+    const createdAtRaw = String(project.createdAt || '').trim();
+    const createdAtFromApi = project.created_at ? String(project.created_at).slice(0, 10) : '';
+    const createdAt =
+        createdAtRaw && createdAtRaw !== '-'
+            ? createdAtRaw
+            : createdAtFromApi || '-';
+
+    const teamLead = String(project.teamLead || project.team_lead || '').trim();
+    const memberCountRaw =
+        typeof project.members === 'number'
+            ? project.members
+            : typeof project.member_count === 'number'
+              ? project.member_count
+              : Array.isArray(project.participants)
+                ? project.participants.length
+                : 0;
+    const memberCount = Number.isFinite(memberCountRaw) ? Math.max(1, memberCountRaw) : 1;
+
+    let participants = Array.isArray(project.participants) ? project.participants.filter(Boolean) : [];
+    if (participants.length === 0) {
+        const leadName = teamLead || '담당자';
+        participants = [leadName];
+        for (let i = 2; i <= memberCount; i += 1) {
+            participants.push(`구성원${i}`);
+        }
+    }
     const meetings = Array.isArray(project.meetings)
         ? project.meetings.map((meeting, idx) => ({
               id: meeting.id || `m-${project.id}-${idx + 1}`,
@@ -390,9 +436,9 @@ function normalizeProject(project) {
         id: project.id,
         name: project.name || '프로젝트',
         description: project.description || '',
-        createdAt: project.createdAt || '',
+        createdAt,
         status: project.status || '진행 중',
-        teamLead: project.teamLead || participants[0] || '담당자',
+        teamLead: teamLead || participants[0] || '담당자',
         participants,
         myActionItems: Array.isArray(project.myActionItems) ? project.myActionItems : [],
         meetings,
@@ -776,6 +822,8 @@ export default function ProjectMeetings() {
     const [actionDrawerView, setActionDrawerView] = useState('detail');
     const [activeActionItemId, setActiveActionItemId] = useState(null);
     const [actionDraft, setActionDraft] = useState(null);
+    const [isActionEditMode, setIsActionEditMode] = useState(false);
+    const [projectCatalog, setProjectCatalog] = useState(() => readProjectCatalog());
     const [pendingIntegrationTarget, setPendingIntegrationTarget] = useState('');
     const [isDueDateOpen, setIsDueDateOpen] = useState(false);
     const [isDrawerAssigneeOpen, setIsDrawerAssigneeOpen] = useState(false);
@@ -831,34 +879,115 @@ export default function ProjectMeetings() {
 
     const projectOverrides = useMemo(() => readProjectOverrides(), [location.key]);
 
+    useEffect(() => {
+        listProjects()
+            .then((data) => {
+                const mapped = (Array.isArray(data) ? data : []).map((p) =>
+                    normalizeProject({
+                        id: p.id,
+                        name: p.name,
+                        description: p.description,
+                        createdAt: p.created_at ? String(p.created_at).slice(0, 10) : '-',
+                        teamLead: p.team_lead,
+                        members: p.member_count,
+                    })
+                );
+
+                if (mapped.length === 0) return;
+                setProjectCatalog((prev) => {
+                    const base = Array.isArray(prev) ? prev : [];
+                    const next = [...base];
+                    mapped.forEach((item) => {
+                        const idx = next.findIndex((existing) => isSameProjectId(existing?.id, item.id));
+                        if (idx >= 0) {
+                            next[idx] = { ...next[idx], ...item };
+                        } else {
+                            next.push(item);
+                        }
+                    });
+                    writeProjectCatalog(next);
+                    return next;
+                });
+            })
+            .catch(() => {
+                // Ignore API read failures and continue with local state/mock data.
+            });
+    }, []);
+
     const project = useMemo(() => {
         const id = normalizeProjectId(projectId);
         if (!id) return null;
         const override = projectOverrides[id] || null;
+        const mergeWithOverride = (baseProject) => {
+            const safeOverride = { ...(override || {}) };
+            if (typeof safeOverride.createdAt === 'string' && safeOverride.createdAt.trim() === '-') {
+                delete safeOverride.createdAt;
+            }
+
+            return normalizeProject({
+                ...baseProject,
+                ...safeOverride,
+                participants: Array.isArray(override?.participants)
+                    ? override.participants
+                    : baseProject?.participants,
+                admins: Array.isArray(override?.admins) ? override.admins : baseProject?.admins,
+            });
+        };
+
         const byId = PROJECTS.find((p) => isSameProjectId(p.id, id));
         if (byId) {
-            return normalizeProject({
-                ...byId,
-                ...(override || {}),
-                participants: Array.isArray(override?.participants) ? override.participants : byId.participants,
-                admins: Array.isArray(override?.admins) ? override.admins : byId.admins,
-            });
+            return mergeWithOverride(byId);
         }
+
+        const byCatalog = projectCatalog.find((p) => isSameProjectId(p?.id, id));
+        if (byCatalog) {
+            return mergeWithOverride(byCatalog);
+        }
+
         const stateProject = location.state?.project;
         if (stateProject && isSameProjectId(stateProject.id, id)) {
-            return normalizeProject({
-                ...stateProject,
-                ...(override || {}),
-                participants: Array.isArray(override?.participants) ? override.participants : stateProject.participants,
-                admins: Array.isArray(override?.admins) ? override.admins : stateProject.admins,
-            });
+            return mergeWithOverride(stateProject);
         }
         if (override && isSameProjectId(override.id, id)) return normalizeProject(override);
         return null;
-    }, [projectId, location.state, projectOverrides]);
+    }, [projectId, location.state, projectCatalog, projectOverrides]);
+
+    useEffect(() => {
+        const fromState = location.state?.project;
+        if (!fromState?.id) return;
+
+        const normalized = normalizeProject(fromState);
+        if (!normalized?.id) return;
+
+        setProjectCatalog((prev) => {
+            const base = Array.isArray(prev) ? prev : [];
+            const idx = base.findIndex((item) => isSameProjectId(item?.id, normalized.id));
+
+            if (idx >= 0) {
+                const existing = normalizeProject(base[idx]);
+                if (JSON.stringify(existing) === JSON.stringify(normalized)) return prev;
+                const next = [...base];
+                next[idx] = { ...base[idx], ...normalized };
+                writeProjectCatalog(next);
+                return next;
+            }
+
+            const next = [...base, normalized];
+            writeProjectCatalog(next);
+            return next;
+        });
+    }, [location.key]);
 
     const projectCandidates = useMemo(() => {
-        const merged = PROJECTS.map((item) => {
+        const source = [...PROJECTS, ...projectCatalog];
+        const deduped = [];
+        source.forEach((item) => {
+            if (!item?.id) return;
+            if (deduped.some((existing) => isSameProjectId(existing.id, item.id))) return;
+            deduped.push(item);
+        });
+
+        const merged = deduped.map((item) => {
             const override = projectOverrides[String(item.id)];
             if (!override) return item;
             return normalizeProject({
@@ -871,7 +1000,7 @@ export default function ProjectMeetings() {
         if (!project) return merged;
         const exists = merged.some((p) => isSameProjectId(p.id, project.id));
         return exists ? merged : [project, ...merged];
-    }, [project, projectOverrides]);
+    }, [project, projectCatalog, projectOverrides]);
 
     const filteredProjects = useMemo(() => {
         const q = projectSearch.trim().toLowerCase();
@@ -1134,6 +1263,7 @@ export default function ProjectMeetings() {
         setIsDueDateOpen(false);
         setIsDrawerAssigneeOpen(false);
         setOpenActionMoreMenuId(null);
+        setIsActionEditMode(false);
         setIsActionDrawerOpen(true);
     };
 
@@ -1141,6 +1271,7 @@ export default function ProjectMeetings() {
         setIsActionDrawerOpen(false);
         setActiveActionItemId(null);
         setActionDraft(null);
+        setIsActionEditMode(false);
         setPendingIntegrationTarget('');
         setActionDrawerView('detail');
         setIsDueDateOpen(false);
@@ -1151,7 +1282,7 @@ export default function ProjectMeetings() {
         if (!actionDraft) return false;
         const nextText = String(actionDraft.text || '').trim();
         if (!nextText) {
-            showToast('액션 아이템 제목을 입력해 주세요.', 'warning');
+            showToast('해야 할 일 제목을 입력해 주세요.', 'warning');
             return false;
         }
         const normalizedStatus = nextStatus
@@ -1239,7 +1370,7 @@ export default function ProjectMeetings() {
         persistProjectActionItems(nextItems);
         if (activeActionItemId === itemId) closeActionDrawer();
         setOpenActionMoreMenuId(null);
-        showToast('액션 아이템이 삭제되었습니다.', 'success');
+        showToast('해야 할 일이 삭제되었습니다.', 'success');
     };
     const requestDeleteActionItem = (itemId) => {
         setPendingDeleteActionItemId(itemId);
@@ -1471,7 +1602,7 @@ export default function ProjectMeetings() {
                                     onClick={() => setActivePageTab('actions')}
                                     className={`flex-1 py-2 px-4 rounded-xl text-sm font-semibold transition ${activePageTab === 'actions' ? 'bg-[#EEF3FF] text-[#0099CC] shadow-sm' : 'text-[#5A6F8A] hover:text-[#0D1B2A]'}`}
                                 >
-                                    액션 아이템
+                                    해야 할 일
                                     {allActionItems.length > 0 && (
                                         <span
                                             className={`ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full font-bold ${activePageTab === 'actions' ? 'bg-[#0099CC] text-white' : 'bg-[#F0F2F5] text-[#5A6F8A]'}`}
@@ -2253,7 +2384,7 @@ export default function ProjectMeetings() {
                                                 </p>
                                             </div>
                                             <div className="rounded-xl border border-[rgba(0,100,180,0.1)] bg-[#F8FAFF] p-3">
-                                                <p className="text-[11px] text-[#5A6F8A]">완료히스토리</p>
+                                                <p className="text-[11px] text-[#5A6F8A]">업무 처리 현황</p>
                                                 <p className="text-lg font-bold text-[#10B981]">
                                                     {actionDashboardStats.history}
                                                 </p>
@@ -2554,14 +2685,27 @@ export default function ProjectMeetings() {
                                     );
                                 })()
                             )}
-                            <button
-                                type="button"
-                                onClick={closeActionDrawer}
-                                className="w-8 h-8 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] hover:text-[#0D1B2A]"
-                                aria-label="드로어 닫기"
-                            >
-                                ✕
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                                {actionDrawerView === 'detail' && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsActionEditMode((prev) => !prev)}
+                                        className={`w-8 h-8 rounded-lg transition ${isActionEditMode ? 'bg-[#EEF3FF] text-[#0099CC]' : 'text-[#5A6F8A] hover:bg-[#F8FAFF] hover:text-[#0D1B2A]'}`}
+                                        aria-label="수정 모드"
+                                        title="수정 모드"
+                                    >
+                                        ✎
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={closeActionDrawer}
+                                    className="w-8 h-8 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] hover:text-[#0D1B2A]"
+                                    aria-label="드로어 닫기"
+                                >
+                                    ✕
+                                </button>
+                            </div>
                         </div>
 
                         <div className="flex-1 overflow-y-auto">
@@ -2586,11 +2730,13 @@ export default function ProjectMeetings() {
                                         <input
                                             type="text"
                                             value={actionDraft.text}
-                                            onChange={(e) =>
-                                                setActionDraft((prev) => ({ ...prev, text: e.target.value }))
-                                            }
+                                            onChange={(e) => {
+                                                if (!isActionEditMode) return;
+                                                setActionDraft((prev) => ({ ...prev, text: e.target.value }));
+                                            }}
+                                            readOnly={!isActionEditMode}
                                             className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-[rgba(0,100,180,0.14)] bg-white focus:outline-none focus:border-[#0099CC]"
-                                            placeholder="액션 아이템 제목"
+                                            placeholder="해야 할 일 제목"
                                         />
                                     </div>
 
@@ -2599,9 +2745,11 @@ export default function ProjectMeetings() {
                                         <textarea
                                             ref={actionDescriptionRef}
                                             value={actionDraft.description || ''}
-                                            onChange={(e) =>
-                                                setActionDraft((prev) => ({ ...prev, description: e.target.value }))
-                                            }
+                                            onChange={(e) => {
+                                                if (!isActionEditMode) return;
+                                                setActionDraft((prev) => ({ ...prev, description: e.target.value }));
+                                            }}
+                                            readOnly={!isActionEditMode}
                                             rows={5}
                                             className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-[rgba(0,100,180,0.14)] bg-white resize-none focus:outline-none focus:border-[#0099CC]"
                                             placeholder="세부 설명을 입력하세요"
@@ -2614,9 +2762,11 @@ export default function ProjectMeetings() {
                                             <button
                                                 type="button"
                                                 onClick={() => {
+                                                    if (!isActionEditMode) return;
                                                     setIsDrawerAssigneeOpen(false);
                                                     setIsDueDateOpen((prev) => !prev);
                                                 }}
+                                                disabled={!isActionEditMode}
                                                 className={`w-full px-3.5 py-2.5 text-sm rounded-xl border transition flex items-center justify-between ${isDueDateOpen ? 'bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)]' : 'bg-white border-[rgba(0,100,180,0.12)] hover:border-[rgba(0,153,204,0.4)]'}`}
                                             >
                                                 <span
@@ -2651,9 +2801,11 @@ export default function ProjectMeetings() {
                                             <button
                                                 type="button"
                                                 onClick={() => {
+                                                    if (!isActionEditMode) return;
                                                     setIsDueDateOpen(false);
                                                     setIsDrawerAssigneeOpen((prev) => !prev);
                                                 }}
+                                                disabled={!isActionEditMode}
                                                 className={`w-full px-3.5 py-2.5 text-sm rounded-xl border transition flex items-center justify-between gap-2 ${isDrawerAssigneeOpen ? 'bg-[#EEF3FF] border-[#0099CC]/40 shadow-[0_0_0_3px_rgba(0,153,204,0.12)] text-[#0D1B2A]' : 'bg-white border-[rgba(0,100,180,0.14)] text-[#0D1B2A] hover:border-[rgba(0,153,204,0.4)]'}`}
                                             >
                                                 <span className="truncate text-left">
@@ -2722,10 +2874,10 @@ export default function ProjectMeetings() {
                                     {normalizeActionStatus(actionDraft.status) === '완료히스토리' && (
                                         <div className="rounded-2xl border border-[rgba(16,185,129,0.28)] bg-[#F3FBF7] px-3.5 py-3">
                                             <p className="text-sm font-semibold text-[#0D1B2A]">
-                                                완료히스토리 상태입니다.
+                                                업무 처리 현황 상태입니다.
                                             </p>
                                             <p className="text-xs text-[#5A6F8A] mt-1">
-                                                내부 기록으로 보관 중이며 필요 시 수정저장을 할 수 있습니다.
+                                                내부 기록으로 보관 중이며 필요 시 수정을 할 수 있습니다.
                                             </p>
                                         </div>
                                     )}
@@ -2735,7 +2887,7 @@ export default function ProjectMeetings() {
                                     <div>
                                         <h3 className="text-base font-bold text-[#0D1B2A]">연동 도구 선택</h3>
                                         <p className="text-sm text-[#5A6F8A] mt-1">
-                                            이 액션 아이템을 어떤 툴로 내보낼까요?
+                                            이 해야 할 일을 어떤 툴로 내보낼까요?
                                         </p>
                                     </div>
 
@@ -2886,7 +3038,7 @@ export default function ProjectMeetings() {
                                                     }}
                                                     className="px-4 py-2.5 text-sm font-semibold text-[#5A6F8A] bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 rounded-xl transition-all"
                                                 >
-                                                    수정저장
+                                                    내용 저장
                                                 </button>
                                             </>
                                         )}
@@ -2900,7 +3052,7 @@ export default function ProjectMeetings() {
                                                     }}
                                                     className="px-5 py-2.5 text-sm font-bold text-[#7C3AED] bg-white border border-[#7C3AED]/60 hover:bg-[#F6F0FF] rounded-xl shadow-sm transition-all"
                                                 >
-                                                    히스토리저장
+                                                    완료 저장
                                                 </button>
                                                 <button
                                                     type="button"
@@ -2923,7 +3075,7 @@ export default function ProjectMeetings() {
                                                     }}
                                                     className="px-4 py-2.5 text-sm font-semibold text-[#5A6F8A] bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 rounded-xl transition-all"
                                                 >
-                                                    수정저장
+                                                    내용 저장
                                                 </button>
                                                 <button
                                                     type="button"
@@ -2932,7 +3084,7 @@ export default function ProjectMeetings() {
                                                     }
                                                     className="px-4 py-2.5 text-sm font-bold text-white bg-[linear-gradient(135deg,#10B981,#0D9488)] hover:brightness-105 rounded-xl shadow-md shadow-emerald-500/25 transition-all"
                                                 >
-                                                    히스토리저장
+                                                    완료 저장
                                                 </button>
                                             </>
                                         )}
@@ -2946,7 +3098,7 @@ export default function ProjectMeetings() {
                                                 }}
                                                 className="px-4 py-2.5 text-sm font-semibold text-[#5A6F8A] bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 rounded-xl transition-all"
                                             >
-                                                수정저장
+                                                    내용 저장
                                             </button>
                                         )}
                                     </div>
@@ -3083,7 +3235,7 @@ export default function ProjectMeetings() {
                         onClick={() => setPendingDeleteActionItemId(null)}
                     />
                     <div className="relative w-full max-w-sm rounded-3xl border border-[rgba(0,100,180,0.12)] bg-white p-6 shadow-2xl">
-                        <p className="text-base font-bold text-slate-900">액션 아이템을 삭제할까요?</p>
+                        <p className="text-base font-bold text-slate-900">해야 할 일을 삭제할까요?</p>
                         <p className="mt-2 text-sm text-slate-500">
                             정말 삭제하시겠습니까? 삭제 후에는 되돌릴 수 없습니다.
                         </p>
