@@ -535,7 +535,7 @@ export default function MeetingMinutesCreate() {
                     </div>
                     <div className="space-y-1.5 max-h-[240px] overflow-y-auto pr-1">
                       {actionItems.length === 0 && (
-                        <p className="text-xs text-[#7C8EA6] px-1 py-2">추가된 액션 아이템이 없습니다.</p>
+                        <p className="text-xs text-[#7C8EA6] px-1 py-2">추가된 해야 할일이 없습니다.</p>
                       )}
                       {actionItems.map((item) => (
                         <div

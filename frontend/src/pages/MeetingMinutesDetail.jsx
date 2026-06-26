@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
@@ -131,7 +132,35 @@ function fmtTime(s) {
 }
 
 function fmtAuditTime(dateStr) {
-  return dateStr;
+  const raw = String(dateStr || "").trim();
+  if (!raw) return "";
+
+  const compactMatched = raw.match(/^(\d{2})-(\d{2})\s+\d{2}:\d{2}$/);
+  if (compactMatched) {
+    const now = new Date();
+    const month = Number(compactMatched[1]);
+    const day = Number(compactMatched[2]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${now.getFullYear()}년 ${month}월 ${day}일`;
+    }
+  }
+
+  const isoMatched = raw.match(/^(\d{4})[-.](\d{1,2})[-.](\d{1,2})(?:\s+\d{1,2}:\d{2})?$/);
+  if (isoMatched) {
+    const year = Number(isoMatched[1]);
+    const month = Number(isoMatched[2]);
+    const day = Number(isoMatched[3]);
+    if (year >= 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}년 ${month}월 ${day}일`;
+    }
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return `${parsed.getFullYear()}년 ${parsed.getMonth() + 1}월 ${parsed.getDate()}일`;
+  }
+
+  return raw;
 }
 
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -306,7 +335,6 @@ function DueDateCalendar({ value, onSelect, onClose }) {
           </svg>
         </button>
       </div>
-
       <div className="grid grid-cols-7 gap-y-1.5 w-full">
         {WEEKDAY_LABELS.map((label, idx) => (
           <div
@@ -397,7 +425,7 @@ function LucideIcon({ name, size = 14, color = "currentColor", strokeWidth = 2, 
     case "square-check":
       return <svg {...common}><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M8 12.5 10.8 15 16 9.5" /></svg>;
     case "pencil":
-      return <svg {...common}><path d="M12 20h9" /><path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" /></svg>;
+      return <svg {...common}><path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" /></svg>;
     case "play":
       return <svg {...common}><path d="m8 6 10 6-10 6V6Z" fill={color} stroke="none" /></svg>;
     case "pause":
@@ -468,7 +496,7 @@ function CollapsibleSectionHeader({ label, collapsed, onToggle, badge }) {
         {badge}
         <span
           className="flex-shrink-0 transition-transform"
-          style={{ transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)" }}
+          style={{ transform: collapsed ? "rotate(180deg)" : "rotate(0deg)" }}
         >
           <LucideIcon name="chevron-down" size={13} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
         </span>
@@ -508,7 +536,7 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
         </div>
         <div className="flex items-center gap-1">
           <div
-            className="text-[11px] leading-none font-semibold px-2.5 py-0.5 rounded-full flex items-center justify-center text-center gap-[2px]"
+            className="text-xs leading-none font-semibold px-3 py-1 rounded-full flex items-center justify-center text-center gap-[2px]"
             style={{
               color: achieved ? "#10B981" : "#0099CC",
               background: achieved ? "rgba(16,185,129,0.12)" : "rgba(0,153,204,0.1)",
@@ -576,7 +604,7 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
         {/* 구분선 (데스크탑) — 좌우 형제와의 거리는 부모의 gap-10이 동일하게 처리 */}
         <div className="hidden md:block w-px h-32 bg-slate-100 flex-shrink-0" />
 
-        {/* 우측 — 액션 아이템 카드 리스트 */}
+        {/* 우측 — 해야 할일 카드 리스트 */}
         <div className="min-w-0 w-full md:max-w-2xl">
           <div className="flex items-center justify-between mb-2.5">
             <p className="text-xs font-semibold text-slate-400">해야 할 일 상세</p>
@@ -928,7 +956,7 @@ function IndividualTicketRow({ item, index }) {
           {index + 1}
         </span>
         <p className="text-xs font-semibold text-slate-500 truncate flex-1">{item.text}</p>
-        <span className="text-xs text-slate-400 flex-shrink-0">{item.due}</span>
+        <span className="text-xs text-slate-400 flex-shrink-0">{normalizeDueLabel(item.due) || item.due}</span>
       </div>
       <div>
         <label className="text-xs font-semibold text-slate-400 block mb-1">업무 제목</label>
@@ -959,6 +987,8 @@ function IssueModal({ open, onClose, onIssued, services }) {
   const [step, setStep] = useState(1);
   const [selectedSvc, setSelectedSvc] = useState(null);
   const [checkedItems, setCheckedItems] = useState(new Set());
+  const [dueOverrides, setDueOverrides] = useState({});
+  const [editingDueIdx, setEditingDueIdx] = useState(null);
   const [issueMode, setIssueMode] = useState("merged");
   const [desc, setDesc] = useState("회의에서 논의된 항목입니다. 내용을 확인하고 처리해주세요.");
   const [priority, setPriority] = useState("보통");
@@ -967,14 +997,44 @@ function IssueModal({ open, onClose, onIssued, services }) {
 
   const [issuing, setIssuing] = useState(false);
   const [issueError, setIssueError] = useState(null);
+  const dueInputRef = useRef(null);
 
   const isMultiple = checkedItems.size > 1;
   const canIssue = issueMode !== "merged" || assignee.trim().length > 0;
+
+  useEffect(() => {
+    if (editingDueIdx === null) return;
+    dueInputRef.current?.showPicker?.();
+    dueInputRef.current?.focus();
+  }, [editingDueIdx]);
+
+  const getDueLabel = useCallback((idx) => {
+    if (Object.prototype.hasOwnProperty.call(dueOverrides, idx)) {
+      return dueOverrides[idx];
+    }
+    const baseDue = ACTION_ITEMS_FOR_ISSUE[idx]?.due;
+    return normalizeDueLabel(baseDue) || baseDue || "미정";
+  }, [dueOverrides]);
+
+  const getDueDateValue = useCallback((idx) => {
+    return parseDueToDateStr(getDueLabel(idx)) || "";
+  }, [getDueLabel]);
+
+  const handleDueChange = useCallback((idx, dateStr) => {
+    if (!dateStr) {
+      setDueOverrides((prev) => ({ ...prev, [idx]: "미정" }));
+      return;
+    }
+    const nextLabel = formatDueFromDateStr(dateStr);
+    setDueOverrides((prev) => ({ ...prev, [idx]: nextLabel || prev[idx] || "미정" }));
+  }, []);
 
   const reset = () => {
     setStep(1);
     setSelectedSvc(null);
     setCheckedItems(new Set());
+    setDueOverrides({});
+    setEditingDueIdx(null);
     setIssueMode("merged");
     setDesc("회의에서 논의된 항목입니다. 내용을 확인하고 처리해주세요.");
     setPriority("보통");
@@ -996,7 +1056,10 @@ function IssueModal({ open, onClose, onIssued, services }) {
 
   const goStep2 = () => {
     if (!selectedSvc || checkedItems.size === 0) return;
-    const items = [...checkedItems].map(i => ACTION_ITEMS_FOR_ISSUE[i]);
+    const items = [...checkedItems].map((i) => ({
+      ...ACTION_ITEMS_FOR_ISSUE[i],
+      due: getDueLabel(i),
+    }));
     const autoTitle = items.length === 1
       ? items[0].text
       : `${items[0].text} 외 ${items.length - 1}건`;
@@ -1036,7 +1099,10 @@ function IssueModal({ open, onClose, onIssued, services }) {
 
   const canNext = selectedSvc && checkedItems.size > 0;
   const selectedSvcObj = services.find(s => s.id === selectedSvc);
-  const selectedItemsList = [...checkedItems].map(i => ACTION_ITEMS_FOR_ISSUE[i]);
+  const selectedItemsList = [...checkedItems].map((i) => ({
+    ...ACTION_ITEMS_FOR_ISSUE[i],
+    due: getDueLabel(i),
+  }));
 
   return (
     <Modal
@@ -1078,7 +1144,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
               {issuing ? (
                 <>
                   <Spinner size={13} color="#fff" />
-                  <span>발행 중...</span>
+                  <span>연동 중...</span>
                 </>
               ) : (
                 `${selectedSvcObj?.name} 에 생성`
@@ -1165,7 +1231,51 @@ function IssueModal({ open, onClose, onIssued, services }) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-slate-800 leading-snug">{item.text}</p>
-                      <p className="text-xs text-slate-400 mt-0.5">{item.assignee} · {item.due}</p>
+                      <div className="mt-0.5 flex items-center justify-between gap-2">
+                        <p className="text-xs text-slate-400">{item.assignee}</p>
+                        <div className="flex items-center gap-1.5">
+                          {editingDueIdx === idx ? (
+                            <input
+                              ref={dueInputRef}
+                              type="text"
+                              value={getDueLabel(idx) === "미정" ? "" : getDueLabel(idx)}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                const raw = e.target.value.trim();
+                                if (!raw) {
+                                  setDueOverrides((prev) => ({ ...prev, [idx]: "미정" }));
+                                  return;
+                                }
+                                const dateStr = parseDueToDateStr(raw);
+                                if (dateStr) {
+                                  handleDueChange(idx, dateStr);
+                                  return;
+                                }
+                                setDueOverrides((prev) => ({ ...prev, [idx]: raw }));
+                              }}
+                              onBlur={() => setEditingDueIdx(null)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") setEditingDueIdx(null);
+                              }}
+                              placeholder="YYYY년 M월 D일"
+                              className="w-[130px] text-[11px] px-1.5 py-0.5 rounded-md border border-cyan-300 bg-cyan-50 text-cyan-700 outline-none"
+                            />
+                          ) : (
+                            <span className="text-xs text-slate-400">{getDueLabel(idx)}</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingDueIdx((prev) => (prev === idx ? null : idx));
+                            }}
+                            className="w-5 h-5 flex items-center justify-center rounded border border-slate-200 text-slate-400 hover:text-cyan-600 hover:border-cyan-300 hover:bg-cyan-50 transition-colors cursor-pointer"
+                            aria-label="마감일 수정"
+                          >
+                            <LucideIcon name="pencil" size={10} />
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1653,7 +1763,7 @@ function Divider({ label }) {
 }
 
 /* ─── AI Summary Panel ───────────────────────────────── */
-function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptVisible, onToggleTranscript, isMobile, summaryCollapsed, onToggleSummary, actions, onToggleAction }) {
+function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptVisible, onToggleTranscript, transcriptEnabled, isMobile, summaryCollapsed, onToggleSummary, actions, onToggleAction }) {
   const [decisions, setDecisions] = useState(summaryData.decisions);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -1795,26 +1905,26 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
   const doneActionsCount = actions.filter((a) => a.status === "done").length;
 
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden h-full flex flex-col">
+    <div className={`bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col ${transcriptVisible ? "h-full" : "h-auto"}`}>
       <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
         <span className="text-sm font-bold text-slate-900">AI 요약</span>
         <div className="flex items-center gap-2 relative">
-          {!isMobile && (
+          {!isMobile && transcriptEnabled && (
             <button
               onClick={onToggleTranscript}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer ${
+              className={`flex items-center gap-1 text-[5px] font-medium px-1.5 py-0.5 rounded-md border transition-all cursor-pointer leading-none ${
                 transcriptVisible
                   ? "bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100"
                   : "bg-cyan-50 text-cyan-600 border-cyan-200 hover:bg-cyan-100"
               }`}
             >
               <svg
-                width="14" height="14" viewBox="0 0 14 14" fill="none"
+                width="9" height="9" viewBox="0 0 14 14" fill="none"
                 style={{ transform: transcriptVisible ? "rotate(0deg)" : "rotate(180deg)", transition: "transform 0.3s ease" }}
               >
                 <path d="M9 2H12M9 5H12M9 8H12M2 11H12M2 2H6V8H2V2Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <span className="hidden sm:inline">{transcriptVisible ? "스크립트 접기" : "스크립트 펼치기"}</span>
+              <span className="hidden sm:inline text-[14px] leading-none">{transcriptVisible ? "스크립트 접기" : "스크립트 펼치기"}</span>
             </button>
           )}
           <div className="relative" data-more-menu-root>
@@ -1867,7 +1977,9 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
       </div>
 
       {(!isMobile || !summaryCollapsed) && (
-        <div className="px-5 py-5 space-y-6 overflow-y-auto flex-1">
+        <div
+          className={`px-5 py-5 space-y-6 ${transcriptVisible ? "overflow-y-auto flex-1" : "overflow-visible"}`}
+        >
           {isEditing ? (
             <>
               {/* 편집 모드 헤더 */}
@@ -1909,7 +2021,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
               </div>
 
               {/* 핵심 키워드 + 전체 요약 */}
-              <div className="rounded-xl p-4 space-y-4 bg-blue-50/70 border border-blue-100">
+              <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-bold text-slate-800">핵심 키워드 / 전체 요약</p>
                   <EditSaveButton onClick={() => handleSaveSection("overview")} />
@@ -1945,8 +2057,10 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                 </EditField>
               </div>
 
+              <Divider label="협업" />
+
               {/* 주요 결정 */}
-              <div className="rounded-xl border border-slate-200 p-4">
+              <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-800">주요 결정</p>
@@ -1983,7 +2097,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
               </div>
 
               {/* 해야 할 일 */}
-              <div className="rounded-xl border border-slate-200 p-4">
+              <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-800">해야 할 일</p>
@@ -2070,8 +2184,10 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                 </div>
               </div>
 
+              <Divider label="인사이트" />
+
               {/* 이슈/리스크 */}
-              <div className="rounded-xl border border-slate-200 p-4">
+              <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-800">이슈 &amp; 리스크</p>
@@ -2123,7 +2239,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
               </div>
 
               {/* 다음 회의 안건 */}
-              <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+              <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-800">다음 회의 안건</p>
@@ -2579,7 +2695,7 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
             />
             <span className="text-xs text-slate-400">
               최근 생성일:&nbsp;
-              <span className="font-semibold text-slate-600">{latestLog.time}</span>
+              <span className="font-semibold text-slate-600">{fmtAuditTime(latestLog.time)}</span>
               &nbsp;
               <span className="text-slate-400">({latestLog.user})</span>
             </span>
@@ -2600,7 +2716,7 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
       {isMobile && latestLog && (
         <p className="text-xs text-slate-400 mt-2.5 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
-          최근 생성일: <span className="font-semibold text-slate-600">{latestLog.time}</span>
+          최근 생성일: <span className="font-semibold text-slate-600">{fmtAuditTime(latestLog.time)}</span>
           &nbsp;({latestLog.user})
         </p>
       )}
@@ -2623,7 +2739,7 @@ function IssueButton({ onClick, issuingGlobal = false }) {
       {issuingGlobal ? (
         <>
           <Spinner size={12} color="#fff" />
-          <span>발행 중...</span>
+          <span>연동 중...</span>
         </>
       ) : (
         <>
@@ -2637,6 +2753,7 @@ function IssueButton({ onClick, issuingGlobal = false }) {
 
 /* ─── Main App ───────────────────────────────────────── */
 export default function TikiSprint12() {
+  const location = useLocation();
   const [curTime, setCurTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [spdIdx, setSpdIdx] = useState(0);
@@ -2670,6 +2787,7 @@ export default function TikiSprint12() {
   const [issueOpen, setIssueOpen] = useState(false);
 
   const [transcriptVisible, setTranscriptVisible] = useState(true);
+  const [transcriptLoading, setTranscriptLoading] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState("reports");
@@ -2684,6 +2802,88 @@ export default function TikiSprint12() {
   const timerRef = useRef(null);
   const isAnyModalOpen = Boolean(modal || detailSvc || issueOpen);
 
+  const uploadKind = useMemo(() => {
+    const state = location?.state || {};
+    const params = new URLSearchParams(location?.search || "");
+
+    const getExt = (value) => {
+      const raw = String(value || "").trim().toLowerCase();
+      if (!raw.includes(".")) return "";
+      return raw.split(".").pop();
+    };
+
+    const audioExt = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "webm"];
+    const textExt = ["txt", "md", "doc", "docx", "pdf", "rtf", "hwp", "hwpx"];
+
+    const directCandidates = [
+      state.uploadKind,
+      state.uploadType,
+      state.fileKind,
+      state.fileType,
+      state.sourceType,
+      params.get("uploadKind"),
+      params.get("uploadType"),
+      params.get("fileKind"),
+      params.get("fileType"),
+      params.get("sourceType"),
+    ]
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean);
+
+    const hasAudioDirect = directCandidates.some((v) => ["audio", "voice", "speech"].includes(v));
+    if (hasAudioDirect) return "audio";
+
+    const hasTextDirect = directCandidates.some((v) => ["text", "transcript", "document", "doc", "file"].includes(v));
+    if (hasTextDirect) return "text";
+
+    const mimeCandidates = [
+      state.mimeType,
+      state.contentType,
+      state.fileMime,
+      params.get("mimeType"),
+      params.get("contentType"),
+      params.get("fileMime"),
+    ]
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean);
+
+    if (mimeCandidates.some((v) => v.startsWith("audio/"))) return "audio";
+    if (mimeCandidates.some((v) => v.startsWith("text/") || v.includes("pdf") || v.includes("word") || v.includes("document"))) return "text";
+
+    const fileNameCandidates = [
+      state.fileName,
+      state.uploadedFileName,
+      state.sourceFileName,
+      params.get("fileName"),
+      params.get("uploadedFileName"),
+      params.get("sourceFileName"),
+    ]
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean);
+
+    const stateFileLists = [state.files, state.uploadedFiles, state.sourceFiles]
+      .filter(Array.isArray)
+      .flat()
+      .map((f) => {
+        if (!f) return "";
+        if (typeof f === "string") return f;
+        return f.name || f.fileName || "";
+      })
+      .filter(Boolean)
+      .map((v) => String(v).toLowerCase());
+
+    for (const fileName of [...fileNameCandidates, ...stateFileLists]) {
+      const ext = getExt(fileName);
+      if (audioExt.includes(ext)) return "audio";
+      if (textExt.includes(ext)) return "text";
+    }
+
+    return "audio";
+  }, [location?.search, location?.state]);
+
+  const transcriptEnabled = uploadKind === "audio";
+  const transcriptVisibleResolved = transcriptEnabled && transcriptVisible;
+
   const stateLabels = {
     IDLE: "대기",
     UPLOADING: "업로드 중",
@@ -2697,6 +2897,18 @@ export default function TikiSprint12() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  useEffect(() => {
+    if (!transcriptEnabled) {
+      setTranscriptVisible(false);
+      setTranscriptLoading(false);
+      return;
+    }
+
+    setTranscriptLoading(true);
+    const timer = setTimeout(() => setTranscriptLoading(false), 1800);
+    return () => clearTimeout(timer);
+  }, [transcriptEnabled]);
 
   useEffect(() => {
     const syncAuthSession = () => {
@@ -2791,7 +3003,7 @@ export default function TikiSprint12() {
     );
 
     const now = new Date();
-    const timeStr = `${String(now.getMonth() + 1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+    const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
     setAuditLog(prev => [...prev, { svcId, label, time: timeStr, user }]);
 
     showToast(`[${svcName}] ${label}`, "#10B981");
@@ -2929,7 +3141,7 @@ export default function TikiSprint12() {
           <div
             className="flex-shrink-0 transition-all duration-300"
             style={{
-              width: isMobile ? "100%" : transcriptVisible ? "clamp(420px, 60%, 820px)" : "100%",
+              width: isMobile ? "100%" : transcriptVisibleResolved ? "clamp(420px, 60%, 820px)" : "100%",
               transition: "width 0.35s cubic-bezier(0.4,0,0.2,1)",
             }}
           >
@@ -2938,8 +3150,12 @@ export default function TikiSprint12() {
               isMobile={isMobile}
               summaryCollapsed={summaryCollapsed}
               onToggleSummary={() => setSummaryCollapsed(prev => !prev)}
-              transcriptVisible={transcriptVisible}
-              onToggleTranscript={() => setTranscriptVisible(v => !v)}
+              transcriptVisible={transcriptVisibleResolved}
+              transcriptEnabled={transcriptEnabled}
+              onToggleTranscript={() => {
+                if (!transcriptEnabled) return;
+                setTranscriptVisible(v => !v);
+              }}
               onOpenRegen={() => setModal("regen")}
               onSaveSummaryEdit={(nextData) => {
                 setSummaryData(nextData);
@@ -2951,70 +3167,81 @@ export default function TikiSprint12() {
             />
           </div>
 
-          <div
-            className={`flex-1 min-w-0 ${isMobile ? "" : "overflow-hidden"}`}
-            style={{
-              maxWidth: isMobile ? "100%" : transcriptVisible ? "100%" : "0px",
-              opacity: isMobile ? 1 : transcriptVisible ? 1 : 0,
-              transition: isMobile ? "none" : "max-width 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease",
-              pointerEvents: isMobile ? "auto" : transcriptVisible ? "auto" : "none",
-            }}
-          >
-            <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-400 bg-white border border-slate-200">
-                  전체 <span className="font-bold text-slate-900">12</span>
+          {transcriptEnabled && (isMobile || transcriptVisibleResolved) && (
+            <div
+              className={`flex-1 min-w-0 ${isMobile ? "" : "overflow-hidden"}`}
+              style={{
+                maxWidth: isMobile ? "100%" : transcriptVisibleResolved ? "100%" : "0px",
+                opacity: isMobile ? 1 : transcriptVisibleResolved ? 1 : 0,
+                transition: isMobile ? "none" : "max-width 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease",
+                pointerEvents: isMobile ? "auto" : transcriptVisibleResolved ? "auto" : "none",
+              }}
+            >
+              {transcriptLoading ? (
+                <div className="rounded-2xl border border-slate-200 bg-white min-h-[320px] flex flex-col items-center justify-center gap-2.5">
+                  <Spinner size={18} color="#0099CC" />
+                  <p className="text-sm font-semibold text-slate-500">스크립트 불러오는 중...</p>
                 </div>
-                <button
-                  onClick={() => { setBmFilter(f => !f); setShownCount(PAGE_SIZE); }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors cursor-pointer ${
-                    bmFilter ? "bg-amber-50 text-amber-500 border-amber-200" : "bg-white text-slate-400 border-slate-200 hover:bg-blue-50"
-                  }`}
-                >
-                  <LucideIcon name={bmFilter ? "star-filled" : "star"} size={13} /> <span className="hidden sm:inline text-xs">북마크</span>
-                </button>
-                <button
-                  onClick={toggleAllCollapse}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors bg-white text-slate-400 border-slate-200 hover:bg-blue-50 cursor-pointer"
-                >
-                  <span style={{ transform: allCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
-                    <LucideIcon name="chevron-down" size={13} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
-                  </span>
-                  <span className="hidden sm:inline text-xs">{allCollapsed ? "전체 펼치기" : "전체 접기"}</span>
-                </button>
-              </div>
-              <input
-                type="text"
-                placeholder="스크립트 검색…"
-                value={searchQ}
-                onChange={e => { setSearchQ(e.target.value.trim()); setShownCount(PAGE_SIZE); }}
-                className="px-3 py-1.5 text-sm rounded-lg bg-white border border-slate-200 focus:border-cyan-400 outline-none w-44 md:w-56 placeholder:text-slate-300 transition-colors"
-                style={{ fontFamily: "inherit" }}
-              />
-            </div>
+              ) : (
+                <>
+                <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-400 bg-white border border-slate-200">
+                      전체 <span className="font-bold text-slate-900">12</span>
+                    </div>
+                    <button
+                      onClick={() => { setBmFilter(f => !f); setShownCount(PAGE_SIZE); }}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors cursor-pointer ${
+                        bmFilter ? "bg-amber-50 text-amber-500 border-amber-200" : "bg-white text-slate-400 border-slate-200 hover:bg-blue-50"
+                      }`}
+                    >
+                      <LucideIcon name={bmFilter ? "star-filled" : "star"} size={13} /> <span className="hidden sm:inline text-xs">북마크</span>
+                    </button>
+                    <button
+                      onClick={toggleAllCollapse}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors bg-white text-slate-400 border-slate-200 hover:bg-blue-50 cursor-pointer"
+                    >
+                      <span style={{ transform: allCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
+                        <LucideIcon name="chevron-down" size={13} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
+                      </span>
+                      <span className="hidden sm:inline text-xs">{allCollapsed ? "전체 펼치기" : "전체 접기"}</span>
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="스크립트 검색…"
+                    value={searchQ}
+                    onChange={e => { setSearchQ(e.target.value.trim()); setShownCount(PAGE_SIZE); }}
+                    className="px-3 py-1.5 text-sm rounded-lg bg-white border border-slate-200 focus:border-cyan-400 outline-none w-44 md:w-56 placeholder:text-slate-300 transition-colors"
+                    style={{ fontFamily: "inherit" }}
+                  />
+                </div>
 
-            <div className="space-y-2">
-              {visible.map(item => (
-                <TxCard
-                  key={item.idx}
-                  item={item}
-                  isActive={activeIdx === item.idx}
-                  isBookmarked={bookmarks.has(item.idx)}
-                  onSeek={seekTo}
-                  onToggleBm={toggleBm}
-                />
-              ))}
-              {remaining > 0 && (
-                <button
-                  onClick={() => setShownCount(c => c + PAGE_SIZE)}
-                  className="w-full py-3 rounded-xl text-sm font-semibold text-slate-400 hover:text-slate-700 bg-white border border-slate-200 hover:-translate-y-0.5 hover:shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <span>대화 {remaining}개 더 보기</span>
-                  <LucideIcon name="chevron-down" size={13} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
-                </button>
+                <div className="space-y-2">
+                  {visible.map(item => (
+                    <TxCard
+                      key={item.idx}
+                      item={item}
+                      isActive={activeIdx === item.idx}
+                      isBookmarked={bookmarks.has(item.idx)}
+                      onSeek={seekTo}
+                      onToggleBm={toggleBm}
+                    />
+                  ))}
+                  {remaining > 0 && (
+                    <button
+                      onClick={() => setShownCount(c => c + PAGE_SIZE)}
+                      className="w-full py-3 rounded-xl text-sm font-semibold text-slate-400 hover:text-slate-700 bg-white border border-slate-200 hover:-translate-y-0.5 hover:shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      <span>대화 {remaining}개 더 보기</span>
+                      <LucideIcon name="chevron-down" size={13} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
+                    </button>
+                  )}
+                </div>
+                </>
               )}
             </div>
-          </div>
+          )}
         </div>
       </div>
 
