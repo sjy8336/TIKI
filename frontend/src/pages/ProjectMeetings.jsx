@@ -9,7 +9,7 @@ const PROJECTS = [
     {
         id: 1,
         name: 'AI 회의록 자동화',
-        description: '회의 녹음 파일 기반으로 AI가 요약하고 Jira 액션 아이템까지 자동 매핑하는 프로젝트입니다.',
+        description: '회의 녹음 파일 기반으로 AI가 요약하고 Jira 해야 할일까지 자동 매핑하는 프로젝트입니다.',
         createdAt: '2026-06-01',
         status: '진행 중',
         teamLead: '정아름',
@@ -159,7 +159,7 @@ const PROJECTS = [
                 type: '수시',
                 tags: ['#VOC', '#기획'],
                 participants: ['김소현', '송지영', '채하율'],
-                summary: '주요 페인포인트 3개를 도출해 우선순위 액션 아이템으로 등록했습니다.',
+                summary: '주요 페인포인트 3개를 도출해 우선순위 해야 할일로 등록했습니다.',
                 actionItems: 4,
                 jiraLinked: 1,
             },
@@ -227,7 +227,7 @@ function statusBadgeClass(status) {
     return 'bg-[#FEF7E0] text-[#F59E0B]';
 }
 
-// ✅ 액션 아이템 상태 뱃지 스타일 함수 추가
+// ✅ 해야 할일 상태 뱃지 스타일 함수 추가
 const ACTION_STATUS_ORDER = ['검토대기', '검토완료', '연동완료', '완료히스토리'];
 const ACTION_STATUS_LABEL = {
     검토대기: '검토대기',
@@ -2208,7 +2208,7 @@ export default function ProjectMeetings() {
                                 </>
                             )}
 
-                            {/* 액션 아이템 탭 */}
+                            {/* 해야 할일 탭 */}
                             {activePageTab === 'actions' && (
                                 <section className="rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white overflow-visible">
                                     {/* 필터 영역 */}
@@ -2442,7 +2442,7 @@ export default function ProjectMeetings() {
                                                                 />
                                                             </div>
 
-                                                            {/* 액션 아이템 텍스트 */}
+                                                            {/* 해야 할일 텍스트 */}
                                                             <div className="flex items-center min-h-[44px] pr-0.5">
                                                                 <span className="text-sm font-medium text-[#0D1B2A] leading-snug line-clamp-2">
                                                                     {item.text}
@@ -2502,7 +2502,7 @@ export default function ProjectMeetings() {
                                                                             );
                                                                         }}
                                                                         className="w-8 h-8 flex items-center justify-center rounded-lg text-[#5A6F8A] hover:text-[#0D1B2A] hover:bg-[#F8FAFF] transition"
-                                                                        aria-label="액션 아이템 더 보기"
+                                                                        aria-label="해야 할일 더 보기"
                                                                     >
                                                                         <MoreVerticalIcon />
                                                                     </button>
@@ -2568,7 +2568,7 @@ export default function ProjectMeetings() {
                                                                             );
                                                                         }}
                                                                         className="w-7 h-7 flex items-center justify-center rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] transition"
-                                                                        aria-label="액션 아이템 더 보기"
+                                                                        aria-label="해야 할일 더 보기"
                                                                     >
                                                                         <MoreVerticalIcon />
                                                                     </button>
@@ -3223,7 +3223,7 @@ export default function ProjectMeetings() {
                 </div>
             )}
 
-            {/* 액션아이템 삭제 확인 모달 */}
+            {/* 해야 할일 삭제 확인 모달 */}
             {pendingDeleteActionItemId && (
                 <div
                     className="fixed inset-0 z-[74] flex items-center justify-center p-4"
