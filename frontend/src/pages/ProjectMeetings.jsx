@@ -282,6 +282,20 @@ function formatDueDateDisplay(value) {
     return raw;
 }
 
+function toDateLabel(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw === '-') return '';
+    const directDate = raw.match(/^(\d{4})[-./](\d{2})[-./](\d{2})/);
+    if (directDate) {
+        return `${directDate[1]}-${directDate[2]}-${directDate[3]}`;
+    }
+    const isoDate = raw.match(/^(\d{4}-\d{2}-\d{2})T/);
+    if (isoDate) {
+        return isoDate[1];
+    }
+    return raw;
+}
+
 function getKSTTimestampLabel(date = new Date()) {
     const parts = new Intl.DateTimeFormat('ko-KR', {
         timeZone: 'Asia/Seoul',
@@ -389,12 +403,14 @@ const writeProjectCatalog = (next) => {
 
 function normalizeProject(project) {
     if (!project) return null;
-    const createdAtRaw = String(project.createdAt || '').trim();
-    const createdAtFromApi = project.created_at ? String(project.created_at).slice(0, 10) : '';
     const createdAt =
-        createdAtRaw && createdAtRaw !== '-'
-            ? createdAtRaw
-            : createdAtFromApi || '-';
+        toDateLabel(project.createdAt) ||
+        toDateLabel(project.created_at) ||
+        toDateLabel(project.createdDate) ||
+        toDateLabel(project.created_date) ||
+        toDateLabel(project.createdOn) ||
+        toDateLabel(project.created_on) ||
+        '';
 
     const teamLead = String(project.teamLead || project.team_lead || '').trim();
     const memberCountRaw =
@@ -422,6 +438,8 @@ function normalizeProject(project) {
               title: meeting.title || '회의 제목 없음',
               status: meeting.status || '진행 중',
               type: meeting.type || '정기',
+              detailType: meeting.detailType || 'uploaded',
+              detailRecordId: meeting.detailRecordId || '',
               tags: Array.isArray(meeting.tags) && meeting.tags.length > 0 ? meeting.tags : ['#회의'],
               participants:
                   Array.isArray(meeting.participants) && meeting.participants.length > 0
@@ -612,6 +630,24 @@ function ArrowUpRightIcon({ className = '' }) {
         >
             <line x1="7" y1="17" x2="17" y2="7" />
             <polyline points="7 7 17 7 17 17" />
+        </svg>
+    );
+}
+
+function PencilIcon({ className = '' }) {
+    return (
+        <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={className}
+        >
+            <path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" />
         </svg>
     );
 }
@@ -887,7 +923,7 @@ export default function ProjectMeetings() {
                         id: p.id,
                         name: p.name,
                         description: p.description,
-                        createdAt: p.created_at ? String(p.created_at).slice(0, 10) : '-',
+                        createdAt: p.created_at ? String(p.created_at) : '',
                         teamLead: p.team_lead,
                         members: p.member_count,
                     })
@@ -900,7 +936,11 @@ export default function ProjectMeetings() {
                     mapped.forEach((item) => {
                         const idx = next.findIndex((existing) => isSameProjectId(existing?.id, item.id));
                         if (idx >= 0) {
-                            next[idx] = { ...next[idx], ...item };
+                            next[idx] = {
+                                ...next[idx],
+                                ...item,
+                                createdAt: toDateLabel(item.createdAt) || toDateLabel(next[idx]?.createdAt) || '',
+                            };
                         } else {
                             next.push(item);
                         }
@@ -1389,6 +1429,11 @@ export default function ProjectMeetings() {
     };
     const currentToastVariant = TOAST_VARIANTS[toast.type] || TOAST_VARIANTS.info;
     const projectDescriptionText = project.description?.trim() || '';
+    const projectCreatedAtText =
+        toDateLabel(project.createdAt) ||
+        toDateLabel(project.created_at) ||
+        toDateLabel(projectCatalog.find((item) => isSameProjectId(item?.id, project.id))?.createdAt) ||
+        new Date().toISOString().slice(0, 10);
 
     // ✅ 수정된 그리드 컬럼 비율 — 각 컬럼이 컨텐츠에 맞게 배분
     const actionTableGridStyle = {
@@ -1525,7 +1570,7 @@ export default function ProjectMeetings() {
                                 <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
                                     <div className="flex-1 min-w-0">
                                         <div className="flex flex-wrap items-center gap-2">
-                                            <span className="text-xs text-[#8A9AB0]">생성일 {project.createdAt}</span>
+                                            <span className="text-xs text-[#8A9AB0]">생성일 {projectCreatedAtText}</span>
                                         </div>
                                         <div className="mt-1 flex flex-wrap items-center gap-2">
                                             <h1 className="text-2xl font-bold text-[#0D1B2A]">{project.name}</h1>
@@ -1642,7 +1687,7 @@ export default function ProjectMeetings() {
                                                     className="w-full rounded-xl border border-[rgba(0,0,0,0.09)] bg-white py-2 pl-8 pr-3 text-sm text-[#0D1B2A] placeholder-[#B0BFCC] transition focus:border-[#0099CC] focus:outline-none focus:ring-2 focus:ring-[rgba(0,153,204,0.12)]"
                                                 />
                                             </div>
-                                            <div className="grid w-full grid-cols-2 gap-2 md:ml-auto md:flex md:w-auto md:items-center md:gap-2 md:shrink-0">
+                                            <div className="col-span-2 grid w-full grid-cols-2 gap-2 md:ml-auto md:flex md:w-auto md:items-center md:gap-2 md:shrink-0">
                                                 <div className="relative min-w-0" ref={sortDropdownRef}>
                                                     <button
                                                         type="button"
@@ -1771,7 +1816,7 @@ export default function ProjectMeetings() {
                                                                     회의 파일 업로드
                                                                 </p>
                                                                 <p className="text-xs text-[#5A6F8A] mt-0.5">
-                                                                    녹음 파일을 올려 AI 회의록을 자동 생성합니다.
+                                                                    파일을 올려 AI 회의록을 자동 생성합니다.
                                                                 </p>
                                                             </button>
                                                         </div>
@@ -1874,7 +1919,25 @@ export default function ProjectMeetings() {
                                                                 ) : (
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => navigate('/meeting-detail')}
+                                                                        onClick={() =>
+                                                                            navigate(
+                                                                                meeting.detailType === 'manual'
+                                                                                    ? '/meeting-manual-detail'
+                                                                                    : '/meeting-detail',
+                                                                                {
+                                                                                    state:
+                                                                                        meeting.detailType === 'manual'
+                                                                                            ? {
+                                                                                                  recordId: meeting.detailRecordId || meeting.id,
+                                                                                                  meetingId: meeting.id,
+                                                                                                  meeting,
+                                                                                                  projectId: project.id,
+                                                                                                  projectName: project.name,
+                                                                                              }
+                                                                                            : undefined,
+                                                                                }
+                                                                            )
+                                                                        }
                                                                         className="col-span-3 text-left text-sm font-semibold text-[#0D1B2A] hover:text-[#0099CC]"
                                                                     >
                                                                         {meeting.title}
@@ -2181,7 +2244,25 @@ export default function ProjectMeetings() {
                                                                     <>
                                                                         <button
                                                                             type="button"
-                                                                            onClick={() => navigate('/meeting-detail')}
+                                                                            onClick={() =>
+                                                                                navigate(
+                                                                                    meeting.detailType === 'manual'
+                                                                                        ? '/meeting-manual-detail'
+                                                                                        : '/meeting-detail',
+                                                                                    {
+                                                                                        state:
+                                                                                            meeting.detailType === 'manual'
+                                                                                                ? {
+                                                                                                      recordId: meeting.detailRecordId || meeting.id,
+                                                                                                      meetingId: meeting.id,
+                                                                                                      meeting,
+                                                                                                      projectId: project.id,
+                                                                                                      projectName: project.name,
+                                                                                                  }
+                                                                                                : undefined,
+                                                                                    }
+                                                                                )
+                                                                            }
                                                                             className="text-left text-sm font-semibold text-[#0D1B2A] leading-snug"
                                                                         >
                                                                             {meeting.title}
@@ -2694,7 +2775,9 @@ export default function ProjectMeetings() {
                                         aria-label="수정 모드"
                                         title="수정 모드"
                                     >
-                                        ✎
+                                        <span className="flex items-center justify-center">
+                                            <PencilIcon />
+                                        </span>
                                     </button>
                                 )}
                                 <button
@@ -2943,7 +3026,7 @@ export default function ProjectMeetings() {
                                                 <div className="min-w-0">
                                                     <p className="text-sm font-bold text-[#0D1B2A]">Jira로 연동</p>
                                                     <p className="text-[12px] text-[#5A6F8A] mt-0.5">
-                                                        Jira API를 통해 이슈 티켓을 자동 생성합니다.
+                                                        Jira API를 통해 해야 할 일을 자동 생성합니다.
                                                     </p>
                                                 </div>
                                                 <svg

@@ -10,6 +10,7 @@ import CreateProject from './pages/CreateProject';
 import ProjectList from './pages/ProjectList';
 import ProjectMeetings from './pages/ProjectMeetings';
 import MeetingMinutesCreate from './pages/MeetingMinutesCreate';
+import MeetingManualDetail from './pages/MeetingManualDetail';
 import MyPage from './pages/Mypage';
 import Landingpage from './pages/Landingpage';
 import OnboardingPage from './pages/Onboarding';
@@ -42,6 +43,7 @@ function App() {
       <Route path="/project-list" element={<ProjectList />} />
       <Route path="/project/:projectId/meetings" element={<ProjectMeetings />} />
       <Route path="/meeting-create" element={<MeetingMinutesCreate />} />
+      <Route path="/meeting-manual-detail" element={<MeetingManualDetail />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route
         path="/upload"
