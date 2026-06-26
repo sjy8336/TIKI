@@ -222,6 +222,23 @@ def retry_analysis(
     return UploadedFileResponse.model_validate(uploaded_file)
 
 
+@router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_uploaded_file(
+    file_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    uploaded_file = db.get(UploadedFile, file_id)
+    if uploaded_file is None:
+        raise AppException(detail="Uploaded file not found", status_code=404, code="not_found")
+    _assert_file_access(db, uploaded_file, current_user.id)
+
+    storage_path = Path(uploaded_file.storage_path)
+    db.delete(uploaded_file)
+    db.commit()
+    storage_path.unlink(missing_ok=True)
+
+
 @router.get("/{file_id}/analysis", response_model=AnalysisResultResponse)
 def get_analysis(
     file_id: UUID,
@@ -277,6 +294,7 @@ def list_file_tickets(
         .join(AnalysisResult, AnalysisResult.id == Ticket.analysis_result_id)
         .join(ExtractedContent, ExtractedContent.id == AnalysisResult.extracted_content_id)
         .where(ExtractedContent.uploaded_file_id == file_id)
+        .options(selectinload(Ticket.external_syncs))
         .order_by(Ticket.created_at.asc())
     ).all()
     return [TicketResponse.model_validate(t) for t in tickets]

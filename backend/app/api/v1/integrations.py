@@ -17,6 +17,7 @@ from app.models.integration import ExternalSync
 from app.models.ticket import Ticket
 from app.models.user import User
 from app.models.user_integration import UserIntegration
+from app.services.ticket_access import assert_ticket_access
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
@@ -70,8 +71,12 @@ def notion_callback(
                     bot_id=token_result.bot_id,
                 ))
             db.commit()
-        except (ValueError, Exception):
-            pass
+        except ValueError as exc:
+            db.rollback()
+            raise AppException(detail="Invalid Notion OAuth state", status_code=400, code="notion_invalid_state") from exc
+        except Exception as exc:
+            db.rollback()
+            raise AppException(detail="Failed to save Notion integration", status_code=500, code="notion_save_failed") from exc
 
     frontend_origin = settings.cors_origins[0] if settings.cors_origins else "http://localhost:5173"
     return RedirectResponse(url=f"{frontend_origin}/configuration?notion=connected")
@@ -110,6 +115,7 @@ def sync_ticket_to_jira(
     )
     if ticket is None:
         raise AppException(detail="Ticket not found", status_code=404, code="ticket_not_found")
+    assert_ticket_access(db, ticket, current_user.id)
 
     client = get_jira_client()
     if not client.is_configured():
@@ -121,6 +127,7 @@ def sync_ticket_to_jira(
             description=ticket.description,
             priority=ticket.priority,
             assignee=ticket.assignee,
+            due_at=ticket.due_at,
         )
     except Exception as exc:
         sync = ExternalSync(
@@ -159,6 +166,7 @@ def sync_ticket_to_notion(
     )
     if ticket is None:
         raise AppException(detail="Ticket not found", status_code=404, code="ticket_not_found")
+    assert_ticket_access(db, ticket, current_user.id)
 
     integration = db.scalar(
         select(UserIntegration).where(
