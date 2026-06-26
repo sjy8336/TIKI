@@ -634,6 +634,24 @@ function ArrowUpRightIcon({ className = '' }) {
     );
 }
 
+function PencilIcon({ className = '' }) {
+    return (
+        <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={className}
+        >
+            <path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" />
+        </svg>
+    );
+}
+
 const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 
 function pad2(n) {
@@ -2757,7 +2775,9 @@ export default function ProjectMeetings() {
                                         aria-label="수정 모드"
                                         title="수정 모드"
                                     >
-                                        ✎
+                                        <span className="flex items-center justify-center">
+                                            <PencilIcon />
+                                        </span>
                                     </button>
                                 )}
                                 <button
