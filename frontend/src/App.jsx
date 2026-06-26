@@ -13,6 +13,9 @@ import MeetingMinutesCreate from './pages/MeetingMinutesCreate';
 import MyPage from './pages/Mypage';
 import Landingpage from './pages/Landingpage';
 import OnboardingPage from './pages/Onboarding';
+import Subscription from './pages/Subscription';
+import SubscriptionCheckout from './pages/SubscriptionCheckout';
+import SubscriptionComplete from './pages/SubscriptionComplete';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem('tiki_access_token')));
@@ -64,6 +67,9 @@ function App() {
           )
         }
       />
+      <Route path="/subscription" element={<Subscription />} />
+      <Route path="/subscription/checkout" element={<SubscriptionCheckout />} />
+      <Route path="/subscription/complete" element={<SubscriptionComplete />} />
       <Route path="/landing" element={<Landingpage />} />
       <Route
         path="/onboarding"

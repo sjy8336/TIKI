@@ -197,7 +197,7 @@ function MobileSideMenu({ open, onClose, isLoggedIn, isSubscribed, onLogout }) {
     const authLinks = [
         { icon: 'layoutDashboard', label: '대시보드', to: '/dashboard' },
         { icon: 'layoutDashboard', label: '프로젝트', to: '/project-list' },
-        { icon: 'creditCard', label: isSubscribed ? '구독중' : '구독', to: '/mypage', preventNavigation: true },
+        { icon: 'creditCard', label: isSubscribed ? '구독중' : '구독', to: '/subscription' },
     ];
 
     const links = isLoggedIn ? authLinks : publicLinks;
@@ -341,7 +341,7 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
     const desktopLoggedInLinks = [
         { label: '대시보드', to: '/dashboard' },
         { label: '프로젝트', to: '/project-list' },
-        { label: subscribed ? '구독중' : '구독', to: '/mypage', preventNavigation: true },
+        { label: subscribed ? '구독중' : '구독', to: '/subscription' },
     ];
 
     return (

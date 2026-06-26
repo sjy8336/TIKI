@@ -74,3 +74,18 @@ export async function createProject({ name, description, category = '일반' }) 
 export async function listProjects() {
   return request('/projects');
 }
+
+export async function getSubscription() {
+  return request('/subscription/me');
+}
+
+export async function getSubscriptionPlans() {
+  return request('/subscription/plans');
+}
+
+export async function subscribePlan({ planId, billing }) {
+  return request('/subscription/subscribe', {
+    method: 'POST',
+    body: JSON.stringify({ plan_id: planId, billing }),
+  });
+}
