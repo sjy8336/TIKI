@@ -362,7 +362,7 @@ function HomeSection({ goTo, name, email, department }) {
           <Icon name="sparkles" size={13} color="#0099CC" />
           {getGreeting()}
         </p>
-        <h1 className="mt-1 text-[22px] font-extrabold tracking-[-0.4px] text-[#0D1B2A]">
+        <h1 className="mt-1 text-[22px] font-bold tracking-[-0.4px] text-[#0D1B2A]">
           {name}<span className="text-[#5A6F8A] font-bold">님,</span> 오늘의 TIKI 현황입니다
         </h1>
       </div>
@@ -380,6 +380,21 @@ function HomeSection({ goTo, name, email, department }) {
       <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
         {/* 좌측: 프로필(계정) + 구독권 */}
         <div className="space-y-5">
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <p className="text-[14px] font-black text-[#0D1B2A]">TIKI Pro</p>
+                <Badge label="이용중" variant="cyan" />
+              </div>
+              <button onClick={() => goTo("subscription")}
+                className="text-[11px] font-semibold text-[#5A6F8A] hover:text-[#0099CC]">관리</button>
+            </div>
+            <div className="space-y-2.5">
+              <UsageBar label="월간 업로드" value={42} max={100} unit="건" />
+              <UsageBar label="저장 용량" value={2.3} max={10} unit="GB" />
+            </div>
+          </div>
+
           {/* 계정 카드: 아바타·이름을 한 줄에, 이메일·부서를 보조 메타로 한 줄에 정리 */}
           <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
             <div className="flex items-center gap-3">
@@ -406,21 +421,6 @@ function HomeSection({ goTo, name, email, department }) {
               </div>
             </div>
           </div>
-
-          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <p className="text-[14px] font-black text-[#0D1B2A]">TIKI Pro</p>
-                <Badge label="이용중" variant="cyan" />
-              </div>
-              <button onClick={() => goTo("subscription")}
-                className="text-[11px] font-semibold text-[#5A6F8A] hover:text-[#0099CC]">관리</button>
-            </div>
-            <div className="space-y-2.5">
-              <UsageBar label="월간 업로드" value={42} max={100} unit="건" />
-              <UsageBar label="저장 용량" value={2.3} max={10} unit="GB" />
-            </div>
-          </div>
         </div>
 
         {/* 우측: 최근 회의 */}
@@ -441,7 +441,7 @@ function HomeSection({ goTo, name, email, department }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{m.title}</p>
-                  <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 액션 아이템 {m.done}/{m.actionItems} 완료</p>
+                  <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 해야 할일 {m.done}/{m.actionItems} 완료</p>
                 </div>
                 <Icon name="chevronRight" size={14} color="#9BAABE" />
               </div>

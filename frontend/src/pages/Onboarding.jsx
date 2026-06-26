@@ -129,7 +129,7 @@ function Hero() {
 function StatsBand() {
   const stats = [
     { value: "2~5분", label: "첫 결과까지 걸리는 시간" },
-    { value: "6종", label: "지원 오디오 포맷" },
+    { value: "6종", label: "지원 포맷" },
     { value: "3단계", label: "시작에 필요한 전부" },
     { value: "할일 자동추출", label: "회의록 기반 해야 할 일 생성" },
   ];
@@ -205,7 +205,7 @@ function ProblemSolution() {
               {[
                 { icon: "zap", color: "text-[#F59E0B]", bg: "bg-[#F59E0B]/10", text: "회의 핵심을 자동으로 요약해 드려요" },
                 { icon: "check", color: "text-[#10B981]", bg: "bg-[#10B981]/10", text: "담당자별 해야 할 일을 뽑아드려요" },
-                { icon: "share2", color: "text-[#7C3AED]", bg: "bg-[#7C3AED]/10", text: "Jira·Notion으로 바로 내보낼 수 있어요" },
+                { icon: "link2", color: "text-[#7C3AED]", bg: "bg-[#7C3AED]/10", text: "Jira·Notion으로 바로 내보낼 수 있어요" },
               ].map(({ icon, color, bg, text }) => (
                 <div
                   key={text}
@@ -312,7 +312,7 @@ function HowItWorks() {
             <span className="text-[12px] font-semibold text-white/50 self-center mr-1">
               지원 포맷
             </span>
-            {["MP3", "WAV", "M4A", "AAC", "OGG", "FLAC", "PDF", "WORD", "한글"].map((f) => (
+            {["MP3", "WAV", "M4A", "AAC", "OGG", "FLAC", "TXT", "PDF", "WORD", "한글"].map((f) => (
               <Mono
                 key={f}
                 className="px-2.5 py-1 rounded-lg bg-white/10 text-[11px] font-bold text-[#0099CC]"
