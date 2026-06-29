@@ -21,7 +21,6 @@ const CATEGORY_OPTIONS = [
   { value: "tech", label: "기술 지원 (업로드/요약 오류)" },
   { value: "integration", label: "연동 문의 (Jira / Notion)" },
   { value: "billing", label: "요금 / 결제" },
-  { value: "press", label: "언론 / 홍보" },
   { value: "other", label: "기타" },
 ];
 
@@ -219,7 +218,7 @@ const FileRow = ({ file }) => (
 
 /* ─── 사이드 정보 패널 ───────────────────────────────── */
 const InfoPanel = () => (
-  <div className="tiki-fade-up-2 h-fit rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white p-6 lg:p-7">
+  <div className="tiki-fade-up-2 h-fit p-6 lg:p-7">
     <p className="mb-[18px] text-[15px] font-bold text-[#0D1B2A]">문의 안내</p>
 
     <div className="flex flex-col gap-3.5">
@@ -308,6 +307,10 @@ export default function ContactPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
+
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
     setForm((f) => ({ ...f, [name]: type === "checkbox" ? checked : value }));
@@ -368,7 +371,7 @@ export default function ContactPage() {
 
   /* 공통 input/select/textarea 클래스 — 모든 색상은 임의값 hex로 직접 지정 */
   const fieldBase =
-    "w-full rounded-[10px] border bg-white px-3.5 py-3 font-pretendard text-[14.5px] text-[#0D1B2A] outline-none transition-colors placeholder:text-[#5A6F8A]/70";
+    "w-full rounded-[10px] border bg-[#F8FAFF] px-3.5 py-3 font-pretendard text-[14.5px] text-[#0D1B2A] outline-none transition-colors placeholder:text-[#5A6F8A]/70";
   const fieldClass = (name) =>
     `${fieldBase} ${
       errors[name]
@@ -377,7 +380,7 @@ export default function ContactPage() {
     } ${shaking[name] ? "tiki-shake" : ""}`;
 
   return (
-    <>
+    <div className="min-h-screen bg-[#F8FAFF]">
       <GlobalStyle />
       <Header isMobile={isMobile} phase="IDLE" stateLabels={stateLabels} />
 
@@ -407,7 +410,7 @@ export default function ContactPage() {
 
           {/* ── 폼 카드 ── */}
           <div
-            className={`tiki-fade-up-2 rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white ${
+            className={`tiki-fade-up-2 rounded-2xl ${
               submitted ? "p-0" : "p-5 sm:p-8"
             }`}
           >
@@ -554,6 +557,6 @@ export default function ContactPage() {
 
       {!isMobile && <Footer />}
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
-    </>
+    </div>
   );
 }

@@ -545,6 +545,10 @@ export default function TikiLandingPage() {
     const [activeBottomTab, setActiveBottomTab] = useState('home');
     const [scrollY, setScrollY] = useState(0);
 
+    useEffect(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }, []);
+
     const uploadStateLabels = {
         IDLE: '대기',
         UPLOADING: '업로드 중',
@@ -790,16 +794,12 @@ export default function TikiLandingPage() {
                                 </span>
                             </div>
 
-                            <div className="p-4 sm:p-6 bg-[#F8FAFF]">
-                                <div className="overflow-hidden rounded-xl border border-[rgba(0,100,180,0.12)] bg-white">
-                                    <img
-                                        src="/images/projectlist.png"
-                                        alt="TIKI 서비스 미리보기"
-                                        className="w-full h-auto object-cover"
-                                        loading="lazy"
-                                    />
-                                </div>
-                            </div>
+                            <img
+                                src="/images/projectlist.png"
+                                alt="TIKI 서비스 미리보기"
+                                className="block w-full h-auto object-cover"
+                                loading="lazy"
+                            />
                         </div>
                     </div>
                 </div>
@@ -1267,13 +1267,13 @@ export default function TikiLandingPage() {
                                 className="text-[#0099CC] transition-transform group-hover:translate-x-1"
                             />
                         </Link>
-                        <a
-                            href="#"
+                        <Link
+                            to="/contact"
                             className="w-full sm:w-auto px-8 py-4 text-base font-bold text-white border-2 border-white/30 hover:bg-white/15 hover:border-white/50 rounded-2xl transition-all flex items-center justify-center gap-2"
                         >
                             <Icon name="mail" size={16} className="text-white" />
                             팀에 문의하기
-                        </a>
+                        </Link>
                     </div>
 
                     <div className="mt-12 flex flex-wrap justify-center gap-6 text-white/60 text-sm">

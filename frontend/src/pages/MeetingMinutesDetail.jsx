@@ -9,12 +9,12 @@ import { clearAuthSession } from "../api/apiClient";
 const TX = [
   { time: "00:00", ts: 0,   spk: "김지훈", txt: "안녕하세요, 오늘 Sprint 12 킥오프 회의 시작하겠습니다. AI 회의록 시스템 개발 현황 공유와 이번 스프린트 목표를 논의할 예정입니다." },
   { time: "00:47", ts: 47,  spk: "박소현", txt: "화자 분리 모델 쪽 진행 상황 먼저 공유할게요. 지난주에 Whisper 기반 STT와 PyAnnote를 연동하는 PoC를 완료했습니다." },
-  { time: "01:32", ts: 92,  spk: "이민준", txt: "Jira API 연동 PoC는 저번 주 목요일에 완료했습니다. POST /issue 엔드포인트로 티켓 발행까지 잘 되는 것 확인했어요." },
+  { time: "01:32", ts: 92,  spk: "이민준", txt: "Jira API 연동 PoC는 저번 주 목요일에 완료했습니다. POST /issue 엔드포인트로 업무 발행까지 잘 되는 것 확인했어요." },
   { time: "02:15", ts: 135, spk: "최아로미", txt: "업로드 UI 드래그앤드롭 구현했고, 파일 유효성 검사(확장자/용량)도 프론트에서 처리하도록 했습니다. 사용자 피드백 수집이 다음 단계예요." },
   { time: "03:01", ts: 181, spk: "김지훈", txt: "STT 응답 속도가 현재 이슈인데, 평균 1분 오디오당 처리 시간이 8초 정도 나오고 있어요. 목표치 5초 대비 아직 최적화가 필요합니다." },
   { time: "04:10", ts: 250, spk: "박소현", txt: "화자 분리 정확도는 2명 기준 94%, 4명 이상에서 79%로 떨어지는 문제가 있어요. 추가 학습 데이터가 필요할 것 같습니다." },
   { time: "05:22", ts: 322, spk: "이민준", txt: "백엔드 task_id 폴링 방식은 현재 2초 간격으로 맞춰놨는데, 부하 테스트 결과 동시 요청 50개까지는 안정적이에요." },
-  { time: "06:45", ts: 405, spk: "최아로미", txt: "프론트엔드에서 단계별 진행 상황 UI는 완성됐습니다. 업로드 → 전처리 → AI 요약 → 티켓 연동 4단계로 사용자에게 명확하게 보여주고 있어요." },
+  { time: "06:45", ts: 405, spk: "최아로미", txt: "프론트엔드에서 단계별 진행 상황 UI는 완성됐습니다. 업로드 → 전처리 → AI 요약 → 업무 연동 4단계로 사용자에게 명확하게 보여주고 있어요." },
   { time: "07:30", ts: 450, spk: "김지훈", txt: "배포 일정 이야기 해볼게요. 현재 계획은 6월 말인데, QA 기간을 1주 확보하려면 개발 완료를 6월 20일까지는 해야 합니다." },
   { time: "08:15", ts: 495, spk: "박소현", txt: "화자 분리 정확도 개선 작업이 변수입니다. 추가 데이터 수집에 최소 3일은 걸릴 것 같아서 일정이 빠듯할 수 있어요." },
   { time: "09:00", ts: 540, spk: "이민준", txt: "저는 일정 맞출 수 있을 것 같습니다. 다만 오류 핸들링 케이스가 아직 몇 가지 남아있는데, 이번 주 내로 처리할게요." },
@@ -287,7 +287,7 @@ function formatNextAgendaItem(item) {
   return normalizeInlineAgendaDateLabel(topic);
 }
 
-function DueDateCalendar({ value, onSelect, onClose }) {
+function DueDateCalendar({ value, onSelect, onClose, placement = "bottom" }) {
   const today = new Date();
   const todayStr = toDateStr(today.getFullYear(), today.getMonth(), today.getDate());
   const parsedValue = parseDateStr(value) || parseDateStr(todayStr);
@@ -302,10 +302,11 @@ function DueDateCalendar({ value, onSelect, onClose }) {
   }, [value]);
 
   const cells = useMemo(() => buildCalendarGrid(viewYear, viewMonth), [viewYear, viewMonth]);
+  const isTop = placement === "top";
 
   return (
     <div
-      className="absolute z-20 top-full mt-2 left-0 w-[280px] max-w-[88vw] box-border overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)] p-3.5"
+      className={`absolute z-20 left-0 w-[280px] max-w-[88vw] box-border overflow-hidden rounded-xl border border-[rgba(0,100,180,0.14)] bg-white shadow-[0_10px_28px_rgba(0,100,180,0.16)] p-3.5 ${isTop ? "bottom-full mb-2" : "top-full mt-2"}`}
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between mb-2.5">
@@ -948,11 +949,28 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
   );
 }
 
-/* ─── 개별 티켓 행 ───────────────────────────────────── */
+/* ─── 개별 업무 행 ───────────────────────────────────── */
 function IndividualTicketRow({ item, index }) {
   const [title, setTitle] = useState(item.text);
   const [assignee, setAssignee] = useState(item.assignee);
   const [due, setDue] = useState(normalizeDueLabel(item.due) || item.due || "미정");
+  const [isDueCalendarOpen, setIsDueCalendarOpen] = useState(false);
+  const duePickerRef = useRef(null);
+
+  useEffect(() => {
+    const handleOutside = (event) => {
+      if (duePickerRef.current && !duePickerRef.current.contains(event.target)) {
+        setIsDueCalendarOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
+  const today = new Date();
+  const fallbackDateStr = toDateStr(today.getFullYear(), today.getMonth(), today.getDate());
+  const dueDateStr = parseDueToDateStr(due) || fallbackDateStr;
 
   return (
     <div
@@ -991,30 +1009,27 @@ function IndividualTicketRow({ item, index }) {
       </div>
       <div>
         <label className="text-xs font-semibold text-slate-400 block mb-1">마감일</label>
-        <input
-          value={due === "미정" ? "" : due}
-          onChange={e => {
-            const raw = e.target.value.trim();
-            setDue(raw || "미정");
-          }}
-          placeholder="YYYY년 M월 D일"
-          className="w-full text-xs px-2.5 py-1.5 rounded-lg border outline-none transition-colors"
-          style={{ borderColor: "rgba(0,100,180,0.12)", background: "#fff", color: "#0D1B2A", fontFamily: "inherit" }}
-          onFocus={e => (e.target.style.borderColor = "rgba(0,153,204,0.5)")}
-          onBlur={e => {
-            const raw = e.target.value.trim();
-            if (!raw) {
-              setDue("미정");
-              e.target.style.borderColor = "rgba(0,100,180,0.12)";
-              return;
-            }
-            const dateStr = parseDueToDateStr(raw);
-            if (dateStr) {
-              setDue(formatDueFromDateStr(dateStr));
-            }
-            e.target.style.borderColor = "rgba(0,100,180,0.12)";
-          }}
-        />
+        <div ref={duePickerRef} className="relative" data-due-picker-root>
+          <button
+            type="button"
+            onClick={() => setIsDueCalendarOpen((prev) => !prev)}
+            className="w-full text-xs px-2.5 py-1.5 rounded-lg border outline-none transition-colors text-left flex items-center justify-between gap-2 cursor-pointer"
+            style={{ borderColor: "rgba(0,100,180,0.12)", background: "#fff", color: "#0D1B2A", fontFamily: "inherit" }}
+          >
+            <span className={`${due && due !== "미정" ? "text-slate-700" : "text-slate-400"}`}>{due || "마감일"}</span>
+            <LucideIcon name="chevron-down" size={12} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
+          </button>
+          {isDueCalendarOpen && (
+            <DueDateCalendar
+              value={dueDateStr}
+              placement="top"
+              onSelect={(dateStr) => {
+                setDue(formatDueFromDateStr(dateStr) || "미정");
+              }}
+              onClose={() => setIsDueCalendarOpen(false)}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1031,6 +1046,8 @@ function IssueModal({ open, onClose, onIssued, services }) {
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState("");
   const [mergedDue, setMergedDue] = useState("미정");
+  const [isMergedDueCalendarOpen, setIsMergedDueCalendarOpen] = useState(false);
+  const mergedDuePickerRef = useRef(null);
 
   const [issuing, setIssuing] = useState(false);
   const [issueError, setIssueError] = useState(null);
@@ -1053,9 +1070,27 @@ function IssueModal({ open, onClose, onIssued, services }) {
     setTitle("");
     setAssignee("");
     setMergedDue("미정");
+    setIsMergedDueCalendarOpen(false);
     setIssuing(false);
     setIssueError(null);
   };
+
+  useEffect(() => {
+    const handleOutside = (event) => {
+      if (mergedDuePickerRef.current && !mergedDuePickerRef.current.contains(event.target)) {
+        setIsMergedDueCalendarOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
+  useEffect(() => {
+    if (step !== 2 || issueMode !== "merged") {
+      setIsMergedDueCalendarOpen(false);
+    }
+  }, [step, issueMode]);
 
   const handleClose = () => { reset(); onClose(); };
 
@@ -1125,7 +1160,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
     if (issueMode === "merged") {
       onIssued(svcName, `"${title.slice(0, 18)}${title.length > 18 ? "…" : ""}" 발행됨`, assignee || "미지정");
     } else {
-      onIssued(svcName, `개별 티켓 ${checkedItems.size}건 발행됨`, "복수 담당자");
+      onIssued(svcName, `개별 업무 ${checkedItems.size}건 발행됨`, "복수 담당자");
     }
     setIssuing(false);
     handleClose();
@@ -1137,6 +1172,9 @@ function IssueModal({ open, onClose, onIssued, services }) {
     ...ACTION_ITEMS_FOR_ISSUE[i],
     due: getDueLabel(i),
   }));
+  const today = new Date();
+  const fallbackDateStr = toDateStr(today.getFullYear(), today.getMonth(), today.getDate());
+  const mergedDueDateStr = parseDueToDateStr(mergedDue) || fallbackDateStr;
 
   return (
     <Modal
@@ -1144,7 +1182,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
       onClose={issuing ? undefined : handleClose}
       title="업무 보내기"
       maxWidth={500}
-      bodyOverflowY={step === 1 ? "hidden" : issueMode === "individual" ? "hidden" : "auto"}
+      bodyOverflowY={step === 1 ? "hidden" : "auto"}
       footer={
         step === 1 ? (
           <>
@@ -1353,7 +1391,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
               <span className="text-xs font-bold" style={{ color: "#0099CC" }}>
                 {selectedSvcObj?.name} 생성 예정 · {checkedItems.size}건
                 {issueMode === "individual" && (
-                  <span className="ml-1.5 text-purple-500">→ {checkedItems.size}개 티켓</span>
+                  <span className="ml-1.5 text-purple-500">→ {checkedItems.size}개 업무</span>
                 )}
               </span>
             </div>
@@ -1424,38 +1462,35 @@ function IssueModal({ open, onClose, onIssued, services }) {
                 </div>
                 <div className="min-w-0 sm:col-span-2">
                   <label className="text-xs font-semibold text-slate-400 block mb-1.5">마감일</label>
-                  <input
-                    value={mergedDue}
-                    onChange={e => {
-                      const raw = e.target.value.trim();
-                      setMergedDue(raw || "미정");
-                    }}
-                    disabled={issuing}
-                    placeholder="YYYY년 M월 D일"
-                    className="w-full text-sm px-3 py-2.5 rounded-lg border outline-none transition-colors disabled:opacity-50"
-                    style={{ borderColor: "rgba(0,100,180,0.12)", background: "#F8FAFF", color: "#0D1B2A", fontFamily: "inherit" }}
-                    onFocus={e => (e.target.style.borderColor = "rgba(0,153,204,0.5)")}
-                    onBlur={e => {
-                      const raw = e.target.value.trim();
-                      if (!raw) {
-                        setMergedDue("미정");
-                        e.target.style.borderColor = "rgba(0,100,180,0.12)";
-                        return;
-                      }
-                      const dateStr = parseDueToDateStr(raw);
-                      if (dateStr) {
-                        setMergedDue(formatDueFromDateStr(dateStr));
-                      }
-                      e.target.style.borderColor = "rgba(0,100,180,0.12)";
-                    }}
-                  />
+                  <div ref={mergedDuePickerRef} className="relative" data-due-picker-root>
+                    <button
+                      type="button"
+                      onClick={() => !issuing && setIsMergedDueCalendarOpen((prev) => !prev)}
+                      disabled={issuing}
+                      className="w-full text-sm px-3 py-2.5 rounded-lg border outline-none transition-colors disabled:opacity-50 text-left flex items-center justify-between gap-2 cursor-pointer"
+                      style={{ borderColor: "rgba(0,100,180,0.12)", background: "#F8FAFF", color: "#0D1B2A", fontFamily: "inherit" }}
+                    >
+                      <span className={`${mergedDue && mergedDue !== "미정" ? "text-slate-700" : "text-slate-400"}`}>{mergedDue || "마감일"}</span>
+                      <LucideIcon name="chevron-down" size={12} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
+                    </button>
+                    {isMergedDueCalendarOpen && !issuing && (
+                      <DueDateCalendar
+                        value={mergedDueDateStr}
+                        placement="top"
+                        onSelect={(dateStr) => {
+                          setMergedDue(formatDueFromDateStr(dateStr) || "미정");
+                        }}
+                        onClose={() => setIsMergedDueCalendarOpen(false)}
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
           {issueMode === "individual" && (
-            <div className="space-y-2.5 max-h-64 overflow-y-auto pr-0.5">
+            <div className="space-y-2.5 overflow-visible pr-0.5">
               <p className="text-xs text-slate-400 leading-relaxed">
                 각 항목의 제목과 담당자를 확인하세요. 수정 후 한 번에 발행됩니다.
               </p>
@@ -2924,6 +2959,10 @@ export default function TikiSprint12() {
   };
 
   useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
+
+  useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -3424,7 +3463,7 @@ export default function TikiSprint12() {
             const contentKeywordPairs = [
               { pattern: /STT|음성|처리 속도/i, keyword: "STT" },
               { pattern: /화자 분리|정확도/i, keyword: "화자 분리" },
-              { pattern: /Jira|티켓/i, keyword: "Jira" },
+              { pattern: /Jira|업무|티켓/i, keyword: "Jira" },
               { pattern: /QA|테스트/i, keyword: "QA" },
               { pattern: /배포|릴리스/i, keyword: "배포" },
               { pattern: /일정|마일스톤/i, keyword: "일정" },
