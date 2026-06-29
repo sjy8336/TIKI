@@ -111,11 +111,11 @@ function Hero() {
             </div>
 
             {/* result preview — image */}
-            <div className="relative min-h-[280px] sm:min-h-[340px] overflow-hidden">
+            <div className="relative h-auto sm:h-[340px] overflow-hidden">
               <img
                 src="/images/hero-card.png"
                 alt="회의 결과 미리보기"
-                className="w-full h-full object-cover"
+                className="block w-full h-auto sm:h-full object-contain sm:object-cover"
               />
             </div>
           </div>
