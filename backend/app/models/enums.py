@@ -40,5 +40,11 @@ class SyncStatus(StrEnum):
     FAILED = "failed"
 
 
+class PlanId(StrEnum):
+    FREE = "free"
+    PRO = "pro"
+    TEAM = "team"
+
+
 def enum_values(enum_cls: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_cls]

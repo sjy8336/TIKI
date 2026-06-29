@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import json
@@ -73,6 +74,7 @@ class JiraClient:
         description: str,
         priority: str = "medium",
         assignee: str | None = None,
+        due_at: datetime | None = None,
     ) -> JiraIssueResult:
         jira_priority = PRIORITY_MAP.get(priority.lower(), "Medium")
 
@@ -97,6 +99,8 @@ class JiraClient:
 
         if assignee:
             body["fields"]["assignee"] = {"accountId": assignee}
+        if due_at:
+            body["fields"]["duedate"] = due_at.date().isoformat()
 
         result = self._request("POST", "issue", body)
         issue_key = result["key"]

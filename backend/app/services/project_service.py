@@ -4,11 +4,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.exceptions import AppException
+from app.models.analysis import AnalysisResult
+from app.models.file import ExtractedContent, UploadedFile
 from app.models.project import Meeting, Project, ProjectMember
+from app.models.ticket import Ticket
 from app.models.user import User
 from app.schemas.project import (
     MeetingCreate,
     MeetingUpdate,
+    MemberInvite,
     ProjectCreate,
     ProjectUpdate,
 )
@@ -92,6 +96,13 @@ def create_project(db: Session, payload: ProjectCreate, user_id: UUID) -> Projec
         category=payload.category,
         color=payload.color,
         description=payload.description,
+        visibility=payload.visibility,
+        meeting_template=payload.meeting_template,
+        jira_domain=payload.jira_domain,
+        jira_email=payload.jira_email,
+        jira_token=payload.jira_token,
+        notion_database_id=payload.notion_database_id,
+        notion_token=payload.notion_token,
         owner_id=user_id,
     )
     db.add(project)
@@ -202,3 +213,102 @@ def delete_meeting(db: Session, project_id: UUID, meeting_id: UUID, user_id: UUI
     meeting = _get_meeting_or_404(db, project_id, meeting_id)
     db.delete(meeting)
     db.commit()
+
+
+# ── Member 관리 ───────────────────────────────────────────────────────────────
+
+def invite_member(
+    db: Session, project_id: UUID, payload: MemberInvite, user_id: UUID
+) -> ProjectMember:
+    project = _get_project_or_404(db, project_id)
+    _assert_owner(project, user_id)
+
+    email = payload.email.lower().strip()
+
+    already = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.email == email,
+        )
+    )
+    if already is not None:
+        raise AppException(
+            detail="이미 초대된 멤버입니다",
+            status_code=409,
+            code="already_member",
+        )
+
+    # 가입된 유저면 user_id 연결
+    existing_user = db.scalar(select(User).where(User.email == email))
+
+    member = ProjectMember(
+        project_id=project_id,
+        user_id=existing_user.id if existing_user else None,
+        email=email,
+        name=payload.name or (existing_user.name if existing_user else None),
+        role=payload.role,
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def remove_member(
+    db: Session, project_id: UUID, member_id: UUID, user_id: UUID
+) -> None:
+    project = _get_project_or_404(db, project_id)
+    _assert_owner(project, user_id)
+
+    member = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.id == member_id,
+            ProjectMember.project_id == project_id,
+        )
+    )
+    if member is None:
+        raise AppException(detail="멤버를 찾을 수 없습니다", status_code=404, code="not_found")
+    if member.user_id == user_id:
+        raise AppException(detail="프로젝트 소유자는 제거할 수 없습니다", status_code=400, code="cannot_remove_owner")
+
+    db.delete(member)
+    db.commit()
+
+
+# ── 프로젝트 전체 티켓 조회 ────────────────────────────────────────────────────
+
+def list_project_tickets(
+    db: Session,
+    project_id: UUID,
+    user_id: UUID,
+    *,
+    status: str | None = None,
+    assignee: str | None = None,
+    file_id: UUID | None = None,
+) -> list[Ticket]:
+    project = _get_project_or_404(db, project_id)
+    _assert_member(project, user_id)
+
+    stmt = (
+        select(Ticket)
+        .join(AnalysisResult, AnalysisResult.id == Ticket.analysis_result_id)
+        .join(ExtractedContent, ExtractedContent.id == AnalysisResult.extracted_content_id)
+        .join(UploadedFile, UploadedFile.id == ExtractedContent.uploaded_file_id)
+        .where(UploadedFile.project_id == project_id)
+        .options(
+            selectinload(Ticket.external_syncs),
+            selectinload(Ticket.analysis_result)
+                .selectinload(AnalysisResult.extracted_content)
+                .selectinload(ExtractedContent.uploaded_file),
+        )
+        .order_by(Ticket.created_at.asc())
+    )
+
+    if status:
+        stmt = stmt.where(Ticket.status == status)
+    if assignee:
+        stmt = stmt.where(Ticket.assignee == assignee)
+    if file_id:
+        stmt = stmt.where(UploadedFile.id == file_id)
+
+    return list(db.scalars(stmt).all())

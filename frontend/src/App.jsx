@@ -14,6 +14,9 @@ import MeetingManualDetail from './pages/MeetingManualDetail';
 import MyPage from './pages/Mypage';
 import Landingpage from './pages/Landingpage';
 import OnboardingPage from './pages/Onboarding';
+import Subscription from './pages/Subscription';
+import SubscriptionCheckout from './pages/SubscriptionCheckout';
+import SubscriptionComplete from './pages/SubscriptionComplete';
 import ContactPage from './pages/Contact';
 
 function App() {
@@ -68,6 +71,9 @@ function App() {
           )
         }
       />
+      <Route path="/subscription" element={<Subscription />} />
+      <Route path="/subscription/checkout" element={<SubscriptionCheckout />} />
+      <Route path="/subscription/complete" element={<SubscriptionComplete />} />
       <Route path="/landing" element={<Landingpage />} />
       <Route
         path="/onboarding"

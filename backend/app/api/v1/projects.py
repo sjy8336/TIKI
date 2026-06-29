@@ -25,6 +25,7 @@ from app.schemas.project import (
     ProjectUpdate,
     UploadStatusBreakdown,
 )
+from app.schemas.ticket import ExternalSyncResponse, ProjectTicketItem
 from app.schemas.upload import UploadedFileResponse
 from app.services import project_service
 
@@ -38,6 +39,13 @@ def _to_project_response(project: Project) -> ProjectResponse:
         category=project.category,
         color=project.color,
         description=project.description,
+        visibility=project.visibility,
+        meeting_template=project.meeting_template,
+        jira_domain=project.jira_domain,
+        jira_email=project.jira_email,
+        jira_token_configured=bool(project.jira_token),
+        notion_database_id=project.notion_database_id,
+        notion_token_configured=bool(project.notion_token),
         owner_id=project.owner_id,
         team_lead=project.owner.name if project.owner else "알 수 없음",
         member_count=len(project.members) + 1,
@@ -64,6 +72,8 @@ def _to_list_item(project: Project) -> ProjectListItem:
         category=project.category,
         color=project.color,
         description=project.description,
+        visibility=project.visibility,
+        meeting_template=project.meeting_template,
         owner_id=project.owner_id,
         team_lead=project.owner.name if project.owner else "알 수 없음",
         member_count=len(project.members) + 1,
@@ -236,3 +246,68 @@ def delete_meeting(
     db: Session = Depends(get_db),
 ) -> None:
     project_service.delete_meeting(db, project_id, meeting_id, current_user.id)
+
+
+# ── Project Tickets ───────────────────────────────────────────────────────────
+
+def _to_project_ticket_item(ticket) -> ProjectTicketItem:
+    uploaded_file = ticket.analysis_result.extracted_content.uploaded_file
+    return ProjectTicketItem(
+        id=ticket.id,
+        title=ticket.title,
+        description=ticket.description,
+        status=ticket.status,
+        priority=ticket.priority,
+        assignee=ticket.assignee,
+        due_at=ticket.due_at,
+        file_id=uploaded_file.id,
+        file_name=uploaded_file.original_filename,
+        external_syncs=[ExternalSyncResponse.model_validate(s) for s in ticket.external_syncs],
+        created_at=ticket.created_at,
+        updated_at=ticket.updated_at,
+    )
+
+
+@router.get("/{project_id}/tickets", response_model=list[ProjectTicketItem])
+def list_project_tickets(
+    project_id: UUID,
+    status: str | None = None,
+    assignee: str | None = None,
+    file_id: UUID | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ProjectTicketItem]:
+    tickets = project_service.list_project_tickets(
+        db, project_id, current_user.id,
+        status=status,
+        assignee=assignee,
+        file_id=file_id,
+    )
+    return [_to_project_ticket_item(t) for t in tickets]
+
+
+# ── Project Members ───────────────────────────────────────────────────────────
+
+@router.post(
+    "/{project_id}/members",
+    response_model=MemberResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def invite_member(
+    project_id: UUID,
+    payload: MemberInvite,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MemberResponse:
+    member = project_service.invite_member(db, project_id, payload, current_user.id)
+    return MemberResponse.model_validate(member)
+
+
+@router.delete("/{project_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_member(
+    project_id: UUID,
+    member_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    project_service.remove_member(db, project_id, member_id, current_user.id)
