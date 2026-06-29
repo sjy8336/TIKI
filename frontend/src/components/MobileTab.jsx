@@ -31,11 +31,18 @@ function Icon({ name, size = 20, color = 'currentColor', sw = 1.8 }) {
     );
 }
 
-const TABS = [
+const LOGGED_IN_TABS = [
     { id: 'home', icon: 'home', label: '홈', to: '/dashboard' },
     { id: 'projects', icon: 'folder', label: '프로젝트', to: '/project-list' },
     { id: 'upload', icon: 'plus', label: '업로드', to: '/upload' },
     { id: 'mypage', icon: 'user', label: '마이페이지', to: '/mypage' },
+];
+
+const LOGGED_OUT_TABS = [
+    { id: 'home', icon: 'home', label: '홈', to: '/onboarding', matchPaths: ['/onboarding'] },
+    { id: 'intro', icon: 'folder', label: '기능소개', to: '/landing', matchPaths: ['/landing'] },
+    { id: 'pricing', icon: 'plus', label: '요금제', to: '/subscription' },
+    { id: 'auth', icon: 'user', label: '로그인/회원가입', to: '/login', matchPaths: ['/login', '/signup'] },
 ];
 
 /**
@@ -47,25 +54,31 @@ export default function MobileTab({ active, onChange }) {
     const navigate = useNavigate();
     const location = useLocation();
     const isLoggedIn = Boolean(localStorage.getItem('tiki_access_token'));
+    const tabs = isLoggedIn ? LOGGED_IN_TABS : LOGGED_OUT_TABS;
 
-    const routeActiveTab = TABS.find((tab) => location.pathname.startsWith(tab.to))?.id;
+    const routeActiveTab = tabs.find((tab) => {
+        if (tab.matchPaths && tab.matchPaths.length > 0) {
+            return tab.matchPaths.some((path) => location.pathname.startsWith(path));
+        }
+        return location.pathname.startsWith(tab.to);
+    })?.id;
     const isUploadRoute = location.pathname.startsWith('/upload');
-    const activeTab = isUploadRoute && active === 'home'
+    const activeTab = isLoggedIn && isUploadRoute && active === 'home'
         ? 'home'
-        : (routeActiveTab ?? active ?? 'home');
+        : (routeActiveTab ?? active ?? (isLoggedIn ? 'home' : 'intro'));
 
     return (
         <div
             className="fixed inset-x-0 bottom-0 z-[100] border-t border-[rgba(0,100,180,0.12)] bg-[rgba(248,250,255,0.94)] backdrop-blur-[16px]"
             style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
         >
-            <div className="grid grid-cols-4">
-                {TABS.map((tab) => {
+            <div className="grid" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
+                {tabs.map((tab) => {
                     const isActive = activeTab === tab.id;
                     const isUpload = tab.id === 'upload';
-                    const targetPath = tab.id === 'home'
+                    const targetPath = tab.id === 'home' && isLoggedIn
                         ? '/upload'
-                        : (isLoggedIn ? tab.to : '/login');
+                        : tab.to;
 
                     return (
                         <button
