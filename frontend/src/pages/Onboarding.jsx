@@ -312,7 +312,7 @@ function HowItWorks() {
             <span className="text-[12px] font-semibold text-white/50 self-center mr-1">
               지원 포맷
             </span>
-            {["MP3", "WAV", "M4A", "AAC", "OGG", "FLAC", "TXT", "PDF", "WORD", "한글"].map((f) => (
+              {["MP3", "WAV", "M4A", "AAC", "OGG", "FLAC", "TXT", "PDF", "DOCX", "HWP"].map((f) => (
               <Mono
                 key={f}
                 className="px-2.5 py-1 rounded-lg bg-white/10 text-[11px] font-bold text-[#0099CC]"
