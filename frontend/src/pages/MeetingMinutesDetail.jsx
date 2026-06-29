@@ -1304,7 +1304,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-slate-800 leading-snug">{item.text}</p>
                       <div className="mt-0.5 flex items-center justify-between gap-2">
-                        <p className="text-xs text-slate-400">{item.assignee}</p>
+                        <p className="text-xs text-slate-400">{item.assignee || "미정"}</p>
                         <span className="text-xs text-slate-400">{getDueLabel(idx)}</span>
                       </div>
                     </div>
@@ -1400,7 +1400,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                 <p key={i} className="text-xs text-slate-500 flex items-center gap-1.5">
                   <span className="text-cyan-400">·</span>
                   {item.text}
-                  <span className="text-slate-400">({item.assignee})</span>
+                  <span className="text-slate-400">({item.assignee || "미정"})</span>
                 </p>
               ))}
             </div>
@@ -1736,7 +1736,7 @@ function ActionItem({ item, checked, onToggle }) {
           {item.text}
         </p>
         <p className="text-xs text-slate-400 mt-0.5">
-          {item.assignee}{checked ? " · 완료" : item.due ? ` · ${normalizeDueLabel(item.due) || item.due}` : ""}
+          {item.assignee || "미정"}{checked ? " · 완료" : item.due ? ` · ${normalizeDueLabel(item.due) || item.due}` : ""}
         </p>
       </div>
       {checked && (
