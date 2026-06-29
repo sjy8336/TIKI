@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
@@ -105,26 +105,63 @@ function useIsMobile() {
   return mobile;
 }
 
-const CATEGORY_PALETTE = {
-  개발: { bg: "#EEF3FF", text: "#0099CC", border: "rgba(0,153,204,0.28)" },
-  디자인: { bg: "#F3E8FF", text: "#7C3AED", border: "rgba(124,58,237,0.28)" },
-  기획: { bg: "#E6F4EA", text: "#10B981", border: "rgba(16,185,129,0.28)" },
-  마케팅: { bg: "#FCE8E6", text: "#EF4444", border: "rgba(239,68,68,0.28)" },
-  기타: { bg: "#FEF7E0", text: "#F59E0B", border: "rgba(245,158,11,0.28)" },
+const PROJECT_OVERRIDE_STORAGE_KEY = "tiki_project_overrides";
+
+const ACTION_ITEM_TEMPLATES = [
+  { text: "핵심 의사결정 사항 정리 및 공유", dueDays: 2 },
+  { text: "후속 해야 할일 우선순위 확정", dueDays: 4 },
+  { text: "Jira 연동 결과 검증", dueDays: 6 },
+];
+
+const readProjectOverrides = () => {
+  try {
+    const raw = localStorage.getItem(PROJECT_OVERRIDE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeProjectOverride = (projectId, projectData) => {
+  if (!projectId) return;
+  const next = readProjectOverrides();
+  next[String(projectId)] = projectData;
+  localStorage.setItem(PROJECT_OVERRIDE_STORAGE_KEY, JSON.stringify(next));
+};
+
+const getTodayYMD = (date = new Date()) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}.${m}.${d}`;
+};
+
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const createMeetingTitle = ({ projectName, preferredTitle }) => {
+  const normalizedPreferred = String(preferredTitle || "").trim();
+  if (normalizedPreferred) return normalizedPreferred;
+  return `${projectName || "프로젝트"} 회의`;
 };
 
 const PROJECTS = [
-  { id: "proj-1", name: "TIKI 앱 개발", category: "개발" },
-  { id: "proj-2", name: "마케팅 캠페인 Q3", category: "마케팅" },
-  { id: "proj-3", name: "데이터 인프라 구축", category: "개발" },
-  { id: "proj-4", name: "운영 자동화", category: "기타" },
+  { id: 1, name: "AI 회의록 자동화" },
+  { id: 2, name: "디자인 시스템 구축" },
+  { id: 3, name: "사용자 인터뷰 분석" },
+  { id: 4, name: "분기별 기획안" },
 ];
 
 const STEPS = [
   { label: "파일 업로드 중...", pct: 25, duration: 1800, icon: "uploadCloud", sub: "서버로 파일을 전송하고 있습니다..." },
   { label: "화자 분리 처리 중...", pct: 55, duration: 2500, icon: "users", sub: "STT 변환 및 화자 diarization 진행 중..." },
-  { label: "AI 요약 및 티켓 추출 중...", pct: 80, duration: 3000, icon: "box", sub: "LLM이 핵심 항목을 분석하고 있습니다..." },
-  { label: "Jira 티켓 연동 완료!", pct: 100, duration: 1200, icon: "checkCircle", sub: "추출된 액션 아이템을 Jira에 생성했습니다." },
+  { label: "AI 요약 및 연동 항목 추출 중...", pct: 80, duration: 3000, icon: "box", sub: "LLM이 핵심 항목을 분석하고 있습니다..." },
+  { label: "Jira 연동 완료!", pct: 100, duration: 1200, icon: "checkCircle", sub: "추출된 해야 할일을 Jira에 연동했습니다." },
 ];
 
 const DOT_FRAMES = ["", ".", "..", "..."];
@@ -194,30 +231,23 @@ function StepItem({ step, status, isLast }) {
   );
 }
 
-// 프로젝트 배지
-function ProjectBadge({ project, size = "sm" }) {
-  const isSmall = size === "sm";
-  const palette = CATEGORY_PALETTE[project?.category] || CATEGORY_PALETTE.기타;
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center justify-center rounded-full font-bold shrink-0 border",
-        isSmall ? "h-5 min-w-[46px] px-2 text-[10px]" : "h-6 min-w-[56px] px-2.5 text-[11px]",
-      )}
-      style={{
-        backgroundColor: palette.bg,
-        color: palette.text,
-        borderColor: palette.border,
-      }}
-    >
-      {project.category || "기타"}
-    </span>
-  );
-}
-
 export default function TikiApp() {
+  const location = useLocation();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
+
+  const projectIdFromState = Number(location.state?.projectId);
+  const preselectedProject = Number.isFinite(projectIdFromState)
+    ? PROJECTS.find((project) => project.id === projectIdFromState)
+      || {
+        id: projectIdFromState,
+        name: String(location.state?.projectName || `프로젝트 ${projectIdFromState}`),
+      }
+    : null;
 
   const [activeTab, setActiveTab] = useState("home");
   const [phase, setPhase] = useState("IDLE");
@@ -235,7 +265,7 @@ export default function TikiApp() {
   const [dragOverIndex, setDragOverIndex] = useState(null);
 
   // 프로젝트 선택 상태
-  const [selectedProject, setSelectedProject] = useState(null);
+  const [selectedProject, setSelectedProject] = useState(preselectedProject);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
 
   const uploadNum = useAnimatedNumber(Math.round(uploadPct));
@@ -282,7 +312,7 @@ export default function TikiApp() {
   };
 
   const handleFiles = (selectedFiles) => {
-    const allowed = ["mp3", "wav", "m4a", "aac", "ogg", "flac"];
+    const allowed = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "txt"];
     const acceptedFiles = [];
     let skippedCount = 0;
     let skippedMessage = "";
@@ -291,7 +321,7 @@ export default function TikiApp() {
       const extension = selectedFile.name.split(".").pop().toLowerCase();
       if (!allowed.includes(extension)) {
         skippedCount += 1;
-        skippedMessage ||= `허용되는 형식: MP3, WAV, M4A, AAC, OGG, FLAC (${extension.toUpperCase()})`;
+        skippedMessage ||= `허용되는 형식: MP3, WAV, M4A, AAC, OGG, FLAC, TXT (${extension.toUpperCase()})`;
         return;
       }
       if (selectedFile.size > 1024 * 1024 * 1024) {
@@ -364,6 +394,54 @@ export default function TikiApp() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const persistUploadResultToProject = () => {
+    if (!selectedProject?.id) return;
+
+    const now = new Date();
+    const meetingTitle = createMeetingTitle({
+      projectName: selectedProject.name,
+      preferredTitle: location.state?.meetingTitle,
+    });
+    const meetingId = `m-${Date.now()}`;
+    const current = readProjectOverrides()[String(selectedProject.id)] || {};
+    const existingMeetings = Array.isArray(current.meetings) ? current.meetings : [];
+    const existingActionItems = Array.isArray(current.myActionItems) ? current.myActionItems : [];
+
+    const meetingRecord = {
+      id: meetingId,
+      date: getTodayYMD(now),
+      title: meetingTitle,
+      status: "완료",
+      type: "수시",
+      tags: ["#업로드", "#AI분석"],
+      participants: Array.isArray(current.participants) ? current.participants : [],
+      summary: `${meetingTitle}에서 추출된 핵심 내용을 기반으로 해야 할일을 생성했습니다.`,
+      actionItems: ACTION_ITEM_TEMPLATES.length,
+      jiraLinked: ACTION_ITEM_TEMPLATES.length,
+    };
+
+    const generatedActionItems = ACTION_ITEM_TEMPLATES.map((template, index) => {
+      const dueDate = getTodayYMD(addDays(now, template.dueDays));
+      return {
+        id: `ai-${Date.now()}-${index + 1}`,
+        text: template.text,
+        due: dueDate,
+        assignee: current.teamLead || "담당자 미지정",
+        status: "검증 전",
+        source: meetingTitle,
+        meeting: { id: meetingId, title: meetingTitle },
+      };
+    });
+
+    writeProjectOverride(selectedProject.id, {
+      ...current,
+      id: selectedProject.id,
+      name: selectedProject.name,
+      meetings: [meetingRecord, ...existingMeetings],
+      myActionItems: [...generatedActionItems, ...existingActionItems],
+    });
+  };
+
   const startUpload = () => {
     if (files.length === 0 || !selectedProject) return;
     analyzingRef.current = true;
@@ -400,6 +478,7 @@ export default function TikiApp() {
     setProgressPct(100);
     setProgressLabel("모든 처리 완료!");
     analyzingRef.current = false;
+    persistUploadResultToProject();
     const elapsed = performance.now() - startTimeRef.current;
     const minutes = Math.floor(elapsed / 60000);
     const seconds = Math.floor((elapsed % 60000) / 1000);
@@ -457,6 +536,22 @@ export default function TikiApp() {
   };
 
   const canAnalyze = files.length > 0 && !!selectedProject;
+  const moveToMeetingResult = () => {
+    const firstFile = files[0];
+    const firstFileName = String(firstFile?.name || "");
+    const ext = firstFileName.includes(".") ? firstFileName.split(".").pop().toLowerCase() : "";
+    const audioExt = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "webm"];
+    const textExt = ["txt", "md", "doc", "docx", "pdf", "rtf", "hwp", "hwpx"];
+
+    const uploadKind = audioExt.includes(ext) ? "audio" : textExt.includes(ext) ? "text" : "audio";
+
+    navigate("/meeting-detail", {
+      state: {
+        uploadKind,
+        fileName: firstFileName,
+      },
+    });
+  };
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-[#F8FAFF] text-[#0D1B2A] [font-family:'Pretendard',-apple-system,sans-serif]">
@@ -471,11 +566,11 @@ export default function TikiApp() {
           AI-Powered · STT + LLM + Jira 자동화
         </div>
         <h1 className={cn("mb-3.5 font-bold leading-[1.1] tracking-[-1.5px]", isMobile ? "text-[26px]" : "text-[clamp(28px,5vw,60px)]")}>
-          회의 녹음을 올리면<br />
+          회의 파일을 올리면<br />
           <em className="not-italic bg-[linear-gradient(90deg,#0099CC,#7C3AED)] bg-clip-text text-transparent">완성되는 자동 회의록</em>
         </h1>
         <p className={cn("mx-auto mb-8 max-w-[42rem] text-balance leading-[1.45] text-[#5A6F8A] sm:leading-8", isMobile ? "text-[14px]" : "text-[17px]")}>
-          <span className="block">음성을 업로드하면 화자 분리, AI 요약, Jira 티켓 생성까지</span>
+          <span className="block">회의 파일을 업로드하면 화자 분리, AI 요약, Jira 연동까지</span>
           <span className="block">회의가 끝나는 순간 모든 게 정리됩니다.</span>
         </p>
       </section>
@@ -505,7 +600,6 @@ export default function TikiApp() {
               >
                 {selectedProject ? (
                   <span className="flex items-center gap-2.5">
-                    <ProjectBadge project={selectedProject} />
                     <span className="font-medium text-[#0D1B2A]">{selectedProject.name}</span>
                   </span>
                 ) : (
@@ -537,7 +631,6 @@ export default function TikiApp() {
                           setProjectDropdownOpen(false);
                         }}
                       >
-                        <ProjectBadge project={project} />
                         <span className={cn("flex-1 text-left", isSelected ? "font-semibold text-[#0D1B2A]" : "text-[#0D1B2A]")}>
                           {project.name}
                         </span>
@@ -552,7 +645,7 @@ export default function TikiApp() {
             {/* 프로젝트 미선택 안내 */}
             {!selectedProject && (
               <p className="mt-2 text-[12px] text-[#5A6F8A]">
-                Jira 티켓을 생성할 프로젝트를 먼저 선택해야 분석을 시작할 수 있습니다.
+                Jira 연동할 프로젝트를 먼저 선택해야 분석을 시작할 수 있습니다.
               </p>
             )}
           </div>
@@ -594,7 +687,7 @@ export default function TikiApp() {
             >
               <IIcon name="uploadCloud" size={isMobile ? 28 : 36} color="#0099CC" sw={1.5} />
             </div>
-            <div className={cn("mb-2 font-semibold tracking-[-0.3px]", isMobile ? "text-base" : "text-[20px]")}>음성 파일을 여기에 드래그하세요</div>
+            <div className={cn("mb-2 font-semibold tracking-[-0.3px]", isMobile ? "text-base" : "text-[20px]")}>회의 파일을 여기에 드래그하세요</div>
             <div className="mb-5 text-[14px] leading-[1.5] text-[#5A6F8A]">
               또는 <span className="font-semibold text-[#0099CC]">파일 선택</span>을 눌러 탐색하세요<br />최대 파일 크기: 1GB
             </div>
@@ -609,7 +702,7 @@ export default function TikiApp() {
               파일 선택
             </button>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC"].map((format) => (
+              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".TXT", ".HWP", ".DOCX", ".PDF"].map((format) => (
                 <span
                   key={format}
                   className={cn(
@@ -621,12 +714,12 @@ export default function TikiApp() {
                 </span>
               ))}
             </div>
-            <div className="mt-2.5 text-xs text-[#5A6F8A]">최대 업로드 용량 1GB · 오디오 파일만 지원</div>
+            <div className="mt-2.5 text-xs text-[#5A6F8A]">최대 업로드 용량 1GB</div>
             <input
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".mp3,.wav,.m4a,.aac,.ogg,.flac"
+              accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.txt"
               className="hidden"
               onChange={(event) => {
                 if (event.target.files.length) handleFiles(event.target.files);
@@ -643,7 +736,7 @@ export default function TikiApp() {
               <div>
                 <div className="text-sm font-semibold">{files.length}개 파일이 선택됐어요</div>
                 <div className="mt-0.5 text-xs text-[#5A6F8A]">총 용량 {formatBytes(totalSize)}</div>
-                <div className="mt-1 text-[11px] text-[#0099CC]">파일을 드래그해서 분석 순서를 바꿀 수 있어요</div>
+                <div className="mt-1 text-[11px] text-[#0099CC]">파일을 드래그해 순서를 바꾸면 위쪽부터 차례대로 분석됩니다.</div>
               </div>
               <button
                 className="rounded-[7px] border border-[rgba(0,0,0,.08)] bg-[rgba(0,0,0,.03)] px-3 py-1.5 text-xs font-semibold text-[#5A6F8A]"
@@ -816,11 +909,10 @@ export default function TikiApp() {
               <div className="flex flex-col gap-2.5">
                 {selectedProject && (
                   <div className="inline-flex items-center gap-1.5">
-                    <ProjectBadge project={selectedProject} size="sm" />
                     <span className="text-[12px] text-[#5A6F8A]">{selectedProject.name}</span>
                   </div>
                 )}
-                <div className={cn("flex items-center gap-2.5", selectedProject && "ml-3")}>
+                <div className="flex items-center gap-2.5">
                   <div className="flex items-end gap-[1px] shrink-0">
                     {["T", "I", "K", "I"].map((ch, index) => (
                       <span
@@ -870,13 +962,13 @@ export default function TikiApp() {
               <IIcon name="checkCircle" size={36} color="#10B981" sw={1.8} />
             </div>
             <div className="mb-2 text-[22px] font-bold tracking-[-0.3px]">분석이 완료됐습니다!</div>
-            <div className="mb-1 text-sm text-[#5A6F8A]">회의록이 생성되고 Jira 티켓이 자동으로 등록됐습니다.</div>
+            <div className="mb-1 text-sm text-[#5A6F8A]">회의록이 생성되고 Jira 연동이 자동으로 완료됐습니다.</div>
 
             <div className="mb-6 inline-flex flex-wrap justify-center gap-4 rounded-[10px] border border-[rgba(16,185,129,.15)] bg-[rgba(16,185,129,.06)] px-5 py-[10px]">
               {[
                 { icon: "clock", text: "처리 시간", val: elapsedTime },
                 { icon: "mic", text: "화자", val: "3명 감지" },
-                { icon: "checkCircle", text: "Jira 티켓", val: `${selectedProject?.category ?? "기타"} · 3개 생성` },
+                { icon: "checkCircle", text: "Jira 연동", val: "3건 완료" },
               ].map(({ icon, text, val }) => (
                 <div key={text} className="inline-flex items-center gap-1 text-[13px] text-[#5A6F8A]">
                   <IIcon name={icon} size={13} color="#10B981" />
@@ -887,7 +979,7 @@ export default function TikiApp() {
             <div className="flex flex-wrap justify-center gap-2.5">
               <button
                 className="inline-flex items-center gap-1.5 rounded-[9px] border-0 bg-[linear-gradient(135deg,#10B981,#0D9488)] px-[22px] py-[11px] text-sm font-bold text-white"
-                onClick={() => navigate("/meeting-detail")}
+                onClick={moveToMeetingResult}
               >
                 <IIcon name="fileText" size={15} color="#fff" />
                 회의록 보기

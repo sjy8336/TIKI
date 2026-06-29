@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-import urllib.request
-import urllib.parse
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from app.core.config import settings
 
@@ -58,8 +60,13 @@ class JiraClient:
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            logger.error("Jira API error %s: %s", exc.code, body_text)
+            raise RuntimeError(f"Jira API {exc.code}: {body_text}") from exc
 
     def create_issue(
         self,
@@ -67,6 +74,7 @@ class JiraClient:
         description: str,
         priority: str = "medium",
         assignee: str | None = None,
+        due_at: datetime | None = None,
     ) -> JiraIssueResult:
         jira_priority = PRIORITY_MAP.get(priority.lower(), "Medium")
 
@@ -90,7 +98,9 @@ class JiraClient:
         }
 
         if assignee:
-            body["fields"]["assignee"] = {"displayName": assignee}
+            body["fields"]["assignee"] = {"accountId": assignee}
+        if due_at:
+            body["fields"]["duedate"] = due_at.date().isoformat()
 
         result = self._request("POST", "issue", body)
         issue_key = result["key"]

@@ -140,7 +140,7 @@ function ProfileDropdown({ user, onLogout }) {
                     <div className="py-1.5">
                         {[
                             { icon: 'user', label: '마이페이지', to: '/mypage' },
-                            { icon: 'helpCircle', label: '고객센터 / 문서', to: '/docs', disabled: true },
+                            { icon: 'helpCircle', label: '고객센터 / 문서', to: '/contact' },
                         ].map(({ icon, label, to, disabled }) => (
                             <Link
                                 key={label}
@@ -190,14 +190,14 @@ function MobileSideMenu({ open, onClose, isLoggedIn, isSubscribed, onLogout }) {
 
     const publicLinks = [
         { icon: 'zap', label: '기능 소개', to: '/landing' },
-        { icon: 'creditCard', label: '요금제', to: '#pricing' },
+        { icon: 'creditCard', label: '요금제', to: '/subscription' },
         { icon: 'user', label: '로그인/회원가입', to: '/login' },
     ];
 
     const authLinks = [
         { icon: 'layoutDashboard', label: '대시보드', to: '/dashboard' },
         { icon: 'layoutDashboard', label: '프로젝트', to: '/project-list' },
-        { icon: 'creditCard', label: isSubscribed ? '구독중' : '구독', to: '/mypage', preventNavigation: true },
+        { icon: 'creditCard', label: isSubscribed ? '구독중' : '구독', to: '/subscription' },
     ];
 
     const links = isLoggedIn ? authLinks : publicLinks;
@@ -286,18 +286,16 @@ function MobileSideMenu({ open, onClose, isLoggedIn, isSubscribed, onLogout }) {
     );
 }
 
-// ── Main Header ───────────────────────────────────────────────────────────────
-/**
- * Props:
- *   isMobile   boolean
- *   isLoggedIn boolean
- *   phase      'IDLE' | 'UPLOADING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
- *   stateLabels { UPLOADING: string, ... }
- *   user        { name: string, email: string }
- *   isSubscribed boolean
- *   onLogout    () => void
- */
-export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user, isSubscribed, onLogout }) {
+export default function Header({
+    isMobile,
+    isLoggedIn,
+    phase,
+    stateLabels,
+    user,
+    isSubscribed,
+    onLogout,
+    hideMobileMenu = false,
+}) {
     const { pathname } = useLocation();
     const navigate = useNavigate();
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -333,26 +331,26 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
     const effectiveLoggedIn = typeof isLoggedIn === 'boolean' ? isLoggedIn : authState;
     const effectiveUser = user ?? sessionUser;
     const subscribed = typeof isSubscribed === 'boolean' ? isSubscribed : Boolean(effectiveUser?.isSubscribed);
-    const logoDestination = effectiveLoggedIn ? '/upload' : '/dashboard';
+    const logoDestination = effectiveLoggedIn ? '/upload' : '/onboarding';
     const handleLogout = () => {
         clearAuthSession();
-        if (pathname !== '/dashboard') {
+        if (pathname !== '/onboarding') {
             sessionStorage.setItem('tiki_flash_toast', '로그아웃 되었습니다.');
         }
         onLogout?.();
-        navigate('/dashboard', { replace: true });
+        navigate('/onboarding', { replace: true });
     };
 
     const desktopLoggedOutLinks = [
         { label: '기능 소개', to: '/landing' },
-        { label: '요금제', to: '#pricing' },
+        { label: '요금제', to: '/subscription' },
         { label: '로그인/회원가입', to: '/login' },
     ];
 
     const desktopLoggedInLinks = [
         { label: '대시보드', to: '/dashboard' },
         { label: '프로젝트', to: '/project-list' },
-        { label: subscribed ? '구독중' : '구독', to: '/mypage', preventNavigation: true },
+        { label: subscribed ? '구독중' : '구독', to: '/subscription' },
     ];
 
     return (
@@ -364,10 +362,7 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
                 )}
             >
                 {/* ── Logo ── */}
-                <Link
-                    to={logoDestination}
-                    className="flex items-center gap-2.5 text-[#0D1B2A] no-underline"
-                >
+                <Link to={logoDestination} className="flex items-center gap-2.5 text-[#0D1B2A] no-underline">
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[linear-gradient(135deg,#0099CC,#7C3AED)]">
                         <Icon name="fileAudio" size={20} color="#fff" sw={2} />
                     </div>
@@ -380,17 +375,19 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
                 <nav className="flex items-center gap-1">
                     {!isMobile && (
                         <>
-                            {(effectiveLoggedIn ? desktopLoggedInLinks : desktopLoggedOutLinks).map(({ label, to, disabled, preventNavigation }) => (
-                                <Link
-                                    key={label}
-                                    to={to}
-                                    onClick={disabled || preventNavigation ? (e) => e.preventDefault() : undefined}
-                                    aria-disabled={disabled ? 'true' : undefined}
-                                    className="rounded-[6px] px-[14px] py-[6px] text-sm text-[#5A6F8A] no-underline transition-colors duration-200 hover:bg-[#EEF3FF] hover:text-[#0D1B2A]"
-                                >
-                                    {label}
-                                </Link>
-                            ))}
+                            {(effectiveLoggedIn ? desktopLoggedInLinks : desktopLoggedOutLinks).map(
+                                ({ label, to, disabled, preventNavigation }) => (
+                                    <Link
+                                        key={label}
+                                        to={to}
+                                        onClick={disabled || preventNavigation ? (e) => e.preventDefault() : undefined}
+                                        aria-disabled={disabled ? 'true' : undefined}
+                                        className="rounded-[6px] px-[14px] py-[6px] text-sm text-[#5A6F8A] no-underline transition-colors duration-200 hover:bg-[#EEF3FF] hover:text-[#0D1B2A]"
+                                    >
+                                        {label}
+                                    </Link>
+                                )
+                            )}
                         </>
                     )}
 
@@ -400,32 +397,8 @@ export default function Header({ isMobile, isLoggedIn, phase, stateLabels, user,
                             <ProfileDropdown user={effectiveUser} onLogout={handleLogout} />
                         </div>
                     )}
-
-                    {/* Mobile: hamburger */}
-                    {isMobile && (
-                        <>
-                            <button
-                                onClick={() => setMobileOpen(true)}
-                                className="ml-1 flex h-9 w-9 items-center justify-center rounded-[8px] text-[#0D1B2A] transition-colors hover:bg-[#EEF3FF]"
-                                aria-label="메뉴 열기"
-                            >
-                                <Icon name="menu" size={22} />
-                            </button>
-                        </>
-                    )}
                 </nav>
             </header>
-
-            {/* Mobile drawer */}
-            {isMobile && (
-                <MobileSideMenu
-                    open={mobileOpen}
-                    onClose={() => setMobileOpen(false)}
-                    isLoggedIn={effectiveLoggedIn}
-                    isSubscribed={subscribed}
-                    onLogout={handleLogout}
-                />
-            )}
         </>
     );
 }

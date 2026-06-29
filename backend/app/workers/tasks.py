@@ -6,7 +6,7 @@ from uuid import UUID
 
 from app.db.database import SessionLocal
 from app.models.analysis import AnalysisResult
-from app.models.enums import ProcessingStatus
+from app.models.enums import FileKind, ProcessingStatus
 from app.models.file import ExtractedContent, UploadedFile
 from app.models.ticket import Ticket
 from app.services.ai_engine import get_default_ai_engine
@@ -34,13 +34,25 @@ def _run_pipeline(db, file_id: UUID) -> None:
     uploaded_file.started_at = datetime.now(UTC)
     db.commit()
 
-    result = get_default_ai_engine().process_audio(uploaded_file.storage_path)
+    engine = get_default_ai_engine()
+    if uploaded_file.file_kind == FileKind.AUDIO:
+        result = engine.process_audio_parallel(uploaded_file.storage_path, n_workers=2)
+        extraction_method = "whisper"
+    elif uploaded_file.file_kind in {FileKind.DOCUMENT, FileKind.TEXT}:
+        result = engine.process_document(uploaded_file.storage_path)
+        extraction_method = result.analysis.extra_data.get("document_extraction", {}).get(
+            "extraction_method",
+            "document",
+        )
+        uploaded_file.page_count = result.analysis.extra_data.get("document_extraction", {}).get("page_count")
+    else:
+        raise ValueError(f"Unsupported file kind: {uploaded_file.file_kind}")
 
     extracted_content = ExtractedContent(
         uploaded_file_id=uploaded_file.id,
         raw_text=result.transcript,
         masked_text=result.masked_transcript,
-        extraction_method="whisper",
+        extraction_method=extraction_method,
     )
     db.add(extracted_content)
     db.flush()
@@ -59,14 +71,15 @@ def _run_pipeline(db, file_id: UUID) -> None:
     for item in result.analysis.action_items:
         due_at = None
         if item.get("due_at"):
-            due_at = datetime.fromisoformat(item["due_at"]).replace(tzinfo=UTC)
+            raw = datetime.fromisoformat(item["due_at"])
+            due_at = raw.astimezone(UTC) if raw.tzinfo else raw.replace(tzinfo=UTC)
 
         db.add(Ticket(
             analysis_result_id=analysis_result.id,
-            title=item["title"],
-            description=item["description"],
-            priority=item["priority"],
-            status=item["status"],
+            title=item.get("title", "제목 없음"),
+            description=item.get("description", ""),
+            priority=item.get("priority", "medium"),
+            status=item.get("status", "draft"),
             assignee=item.get("assignee"),
             due_at=due_at,
         ))

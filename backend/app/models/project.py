@@ -1,8 +1,8 @@
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Date, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -19,6 +19,13 @@ class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     category: Mapped[str] = mapped_column(String(50), nullable=False)
     color: Mapped[str] = mapped_column(String(20), nullable=False, default="#EEF3FF")
     description: Mapped[str | None] = mapped_column(Text)
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="members")
+    meeting_template: Mapped[str] = mapped_column(String(50), nullable=False, default="basic")
+    jira_domain: Mapped[str | None] = mapped_column(String(255))
+    jira_email: Mapped[str | None] = mapped_column(String(255))
+    jira_token: Mapped[str | None] = mapped_column(Text)
+    notion_database_id: Mapped[str | None] = mapped_column(String(255))
+    notion_token: Mapped[str | None] = mapped_column(Text)
     owner_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,

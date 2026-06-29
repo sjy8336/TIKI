@@ -73,6 +73,13 @@ class ProjectCreate(BaseModel):
     category: str = Field(min_length=1, max_length=50)
     color: str = Field(default="#EEF3FF", max_length=20)
     description: str | None = None
+    visibility: str = Field(default="members", pattern="^(private|members|org|project)$")
+    meeting_template: str = Field(default="basic", max_length=50)
+    jira_domain: str | None = Field(default=None, max_length=255)
+    jira_email: str | None = Field(default=None, max_length=255)
+    jira_token: str | None = None
+    notion_database_id: str | None = Field(default=None, max_length=255)
+    notion_token: str | None = None
     members: list[MemberInvite] = Field(default_factory=list)
 
 
@@ -81,6 +88,13 @@ class ProjectUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=50)
     color: str | None = Field(default=None, max_length=20)
     description: str | None = None
+    visibility: str | None = Field(default=None, pattern="^(private|members|org|project)$")
+    meeting_template: str | None = Field(default=None, max_length=50)
+    jira_domain: str | None = Field(default=None, max_length=255)
+    jira_email: str | None = Field(default=None, max_length=255)
+    jira_token: str | None = None
+    notion_database_id: str | None = Field(default=None, max_length=255)
+    notion_token: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -89,6 +103,13 @@ class ProjectResponse(BaseModel):
     category: str
     color: str
     description: str | None
+    visibility: str
+    meeting_template: str
+    jira_domain: str | None
+    jira_email: str | None
+    jira_token_configured: bool = False
+    notion_database_id: str | None
+    notion_token_configured: bool = False
     owner_id: UUID
     team_lead: str
     member_count: int
@@ -106,6 +127,8 @@ class ProjectListItem(BaseModel):
     category: str
     color: str
     description: str | None
+    visibility: str
+    meeting_template: str
     owner_id: UUID
     team_lead: str
     member_count: int
@@ -114,3 +137,20 @@ class ProjectListItem(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Project Stats ─────────────────────────────────────────────────────────────
+
+class UploadStatusBreakdown(BaseModel):
+    pending: int = 0
+    processing: int = 0
+    completed: int = 0
+    failed: int = 0
+
+
+class ProjectStats(BaseModel):
+    total_uploads: int
+    uploads_by_status: UploadStatusBreakdown
+    total_meetings: int
+    total_tickets: int
+    member_count: int

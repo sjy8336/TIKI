@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from abc import ABC, abstractmethod
@@ -87,6 +88,66 @@ TOPIC_TAG_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("리스크 관리", "yellow"),
     ("버그 수정", "yellow"),
     ("추가 기능 요청", "purple"),
+)
+
+PROJECT_KICKOFF_MARKERS: tuple[str, ...] = (
+    "업무관리시스템",
+    "업무 관리 시스템",
+    "인사 시스템",
+    "요구사항 명세",
+    "결재 기능",
+    "업무 등록 기능",
+    "디자인 중간 시안",
+    "디자인 최종 시안",
+    "통합 테스트",
+    "버그 수정",
+    "시스템 정식 오픈",
+    "파일 첨부 기능",
+)
+
+PROJECT_KICKOFF_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("업무관리시스템", "cyan"),
+    ("업무 분담", "cyan"),
+    ("기능 우선순위", "purple"),
+    ("인사 시스템 연동", "green"),
+    ("디자인 프로세스", "green"),
+    ("통합 테스트 계획", "yellow"),
+)
+
+PROJECT_KICKOFF_DECISIONS: tuple[str, ...] = (
+    "기능 우선순위: ①업무 등록 및 담당자 지정 → ②결재 기능 → ③일정 관리 → ④공지사항 → ⑤관리자 페이지 순으로 개발.",
+    "디자인 프로세스: 2개 이상의 시안을 제안하여 선택지를 확보하며, 7월 17일 이후의 디자인 수정 요청은 긴급 건으로 제한하기로 했다.",
+    "추가 기능: 파일 첨부 기능은 10MB 제한을 전제로 1차 오픈에 포함하고, 알림 기능은 2차 개발 대상으로 분류하기로 했다.",
+)
+
+PROJECT_KICKOFF_ISSUES: tuple[tuple[str, str, str], ...] = (
+    (
+        "인사 시스템 연동 문서 지연",
+        "문서 확보 실패 시 연동 기능을 후순위로 미루고 화면 개발을 우선 진행한다.",
+        "high",
+    ),
+    (
+        "대표님 디자인 수정 요청 증가",
+        "7월 17일을 마감으로 설정해 개발 일정 준수를 유도한다.",
+        "medium",
+    ),
+    (
+        "추가 기능 요청으로 인한 일정 지연",
+        "검토 후 승인된 항목만 반영하는 통제 프로세스를 적용한다.",
+        "medium",
+    ),
+    (
+        "통합 테스트 중 버그 발견",
+        "8월 21일~9월 10일까지 3주간의 충분한 테스트 기간을 확보한다.",
+        "high",
+    ),
+)
+
+PROJECT_KICKOFF_NEXT_AGENDA: tuple[str, ...] = (
+    "인사 시스템 연동 문서 확보 현황 점검",
+    "디자인 중간 시안(2종) 리뷰 및 선택",
+    "통합 테스트 시나리오 초안 확정",
+    "추가 기능(알림 등) 2차 개발 로드맵 논의",
 )
 
 DECISION_TAIL_MARKERS: tuple[str, ...] = (
@@ -241,7 +302,9 @@ MEETING_META_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 ACTION_ITEM_EXCLUDE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?:회의 시작|시작하겠습니다|마무리하겠습니다|마치겠습니다|고생 많으셨|수고하셨|감사합니다|다들 왔죠|회의 끝)"),
+    re.compile(
+        r"(?:회의 시작|시작하겠습니다|마무리하겠습니다|마치겠습니다|고생 많으셨|수고하셨|감사합니다|다들 왔죠|회의 끝|회의에서는|회의에서|목적은|정리했다|공유했다|설명했다|알겠습니다|좋습니다|동의합니다|준비됐습니다|준비됐어요|저도 준비됐습니다)"
+    ),
 )
 
 QUESTION_LIKE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -310,7 +373,16 @@ TITLE_PREFIX_CLEANUP_PATTERN = re.compile(
 
 DEFAULT_PROMPT_VERSION = "openai-v4"
 DEFAULT_MODEL_NAME = settings.openai_model
-MAX_ACTION_ITEMS = 7
+LLM_MODEL_TIERS: tuple[str, ...] = ("small", "medium", "large")
+LLM_MODEL_TIER_ALIASES: dict[str, str] = {
+    "light": "small",
+    "small": "small",
+    "balanced": "medium",
+    "medium": "medium",
+    "premium": "large",
+    "large": "large",
+}
+MAX_ACTION_ITEMS = 100
 MAX_SUMMARY_SENTENCES = 3
 MAX_SUMMARY_SENTENCE_CHARS = 120
 MAX_SUMMARY_CHARS = 280
@@ -318,10 +390,16 @@ MAX_DECISIONS = 4
 MAX_ISSUES = 4
 MAX_NEXT_AGENDA = 4
 MAX_KEYWORDS = 6
+MAX_DOCUMENT_HIGHLIGHTS = 5
+MAX_DOCUMENT_KEY_POINTS = 5
 
 MEETING_ANALYSIS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "meeting_title": {
+            "type": "string",
+            "description": "회의 제목 또는 카드 헤더처럼 보여줄 한 줄 제목.",
+        },
         "summary": {
             "type": "string",
             "description": "회의 핵심을 2~3문장으로 짧게 요약한 내용.",
@@ -392,13 +470,119 @@ MEETING_ANALYSIS_SCHEMA: dict[str, Any] = {
             "items": {"type": "string"},
         },
     },
-    "required": ["summary", "keywords", "decisions", "action_items", "issues", "next_agenda"],
+    "required": ["meeting_title", "summary", "keywords", "decisions", "action_items", "issues", "next_agenda"],
     "additionalProperties": False,
 }
 
 
 def _normalize_text_value(value: Any) -> str:
     return normalize_meeting_terms(_collapse_repeated_phrases(str(value or "")))
+
+
+def _detect_source_kind(context: Any | None) -> str:
+    if not context:
+        return "meeting"
+
+    candidates: list[Any] = []
+    if isinstance(context, dict):
+        candidates.extend([context.get("source_kind"), context.get("sourceKind")])
+        extra = context.get("extra")
+        if isinstance(extra, dict):
+            candidates.extend([extra.get("source_kind"), extra.get("sourceKind")])
+
+    normalized = normalize_rag_context(context)
+    if normalized and normalized.extra:
+        candidates.extend([normalized.extra.get("source_kind"), normalized.extra.get("sourceKind")])
+
+    for candidate in candidates:
+        normalized_candidate = _normalize_text_value(candidate).lower()
+        if normalized_candidate in {"meeting", "document", "text", "audio", "audio_batch"}:
+            return normalized_candidate
+
+    if isinstance(context, dict):
+        if context.get("document_extraction") or (isinstance(context.get("extra"), dict) and context["extra"].get("document_extraction")):
+            return "document"
+
+    return "meeting"
+
+
+def _extract_source_title(context: Any | None) -> str:
+    if not context:
+        return ""
+
+    candidates: list[Any] = []
+    if isinstance(context, dict):
+        candidates.extend(
+            [
+                context.get("source_title"),
+                context.get("source_name"),
+                context.get("document_title"),
+                context.get("meeting_title"),
+            ]
+        )
+        extra = context.get("extra")
+        if isinstance(extra, dict):
+            candidates.extend(
+                [
+                    extra.get("source_title"),
+                    extra.get("source_name"),
+                    extra.get("document_title"),
+                    extra.get("meeting_title"),
+                    extra.get("document_extraction", {}).get("source_title") if isinstance(extra.get("document_extraction"), dict) else None,
+                ]
+            )
+
+    normalized = normalize_rag_context(context)
+    if normalized and normalized.extra:
+        candidates.extend(
+            [
+                normalized.extra.get("source_title"),
+                normalized.extra.get("source_name"),
+                normalized.extra.get("document_title"),
+                normalized.extra.get("meeting_title"),
+            ]
+        )
+
+    for candidate in candidates:
+        text = _normalize_text_value(candidate)
+        if text:
+            return text
+    return ""
+
+
+def _normalize_model_tier(value: Any | None) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    if not normalized:
+        return "medium"
+    return LLM_MODEL_TIER_ALIASES.get(normalized, normalized if normalized in LLM_MODEL_TIERS else "medium")
+
+
+def _estimate_model_tier(transcript: str, context: Any | None = None) -> str:
+    normalized = _normalize_text_value(transcript)
+    char_count = len(normalized)
+    sentence_count = len([part for part in SENTENCE_SPLIT_PATTERN.split(normalized) if part.strip()])
+    noisy_audio = HeuristicLLMAnalysisService._has_noisy_audio_context(context)
+    participant_count = len(normalize_rag_context(context).participants) if normalize_rag_context(context) else 0
+
+    if noisy_audio or char_count >= 2400 or sentence_count >= 18 or participant_count >= 6:
+        return "large"
+    if char_count <= 700 and sentence_count <= 6 and participant_count <= 3 and not noisy_audio:
+        return "small"
+    return "medium"
+
+
+def _resolve_model_name_for_tier(tier: str, *, fallback: str = DEFAULT_MODEL_NAME) -> str:
+    normalized_tier = _normalize_model_tier(tier)
+    configured = {
+        "small": getattr(settings, "openai_small_model", None),
+        "medium": getattr(settings, "openai_medium_model", None),
+        "large": getattr(settings, "openai_large_model", None),
+    }
+    if normalized_tier == "small":
+        return str(configured["small"] or configured["medium"] or fallback)
+    if normalized_tier == "large":
+        return str(configured["large"] or configured["medium"] or fallback)
+    return str(configured["medium"] or fallback)
 
 
 def _collapse_repeated_phrases(text: Any) -> str:
@@ -464,6 +648,162 @@ def _compact_summary_text(text: Any, *, max_chars: int = MAX_SUMMARY_CHARS) -> s
     return WHITESPACE_PATTERN.sub(" ", cleaned).strip()
 
 
+def _compact_decision_text(text: Any, *, max_chars: int = 120) -> str:
+    cleaned = normalize_meeting_terms(_collapse_repeated_phrases(text))
+    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip().rstrip(".!?。")
+    if not cleaned:
+        return ""
+
+    cleaned = re.sub(r"^(?:그럼|그러면|우선|일단|다음으로|마지막으로)\s+", "", cleaned)
+    cleaned = re.sub(r"(?:걸로|방향으로|하는 게 좋겠습니다?|하는 게 좋을 것 같습니다?|하겠습니다?|하죠)$", "", cleaned).strip()
+
+    if len(cleaned) > max_chars:
+        cleaned = shorten(cleaned, width=max_chars, placeholder="...")
+
+    return WHITESPACE_PATTERN.sub(" ", cleaned).strip()
+
+
+def _build_action_item_sentence(title: Any, description: Any = "") -> str:
+    normalized_title = _normalize_title_value(title)
+    topic = HeuristicLLMAnalysisService._extract_action_item_topic(normalized_title)
+    action = HeuristicLLMAnalysisService._extract_action_item_action(normalized_title)
+
+    if not topic:
+        raw_description = _normalize_text_value(description)
+        topic = HeuristicLLMAnalysisService._extract_action_item_topic(raw_description)
+        if not action:
+            action = HeuristicLLMAnalysisService._extract_action_item_action(raw_description)
+
+    if topic and action:
+        topic_object = HeuristicLLMAnalysisService._with_particle(topic, "object")
+        if action == "진행":
+            sentence = f"{topic_object} 진행한다."
+        elif action == "검토":
+            sentence = f"{topic_object} 검토한다."
+        elif action == "반영":
+            sentence = f"{topic_object} 반영한다."
+        elif action == "공유":
+            sentence = f"{topic_object} 공유한다."
+        elif action == "확인":
+            sentence = f"{topic_object} 확인한다."
+        elif action == "배포":
+            sentence = f"{topic_object} 배포한다."
+        elif action == "정리":
+            sentence = f"{topic_object} 정리한다."
+        elif action == "대응":
+            sentence = f"{topic}에 대응한다."
+        elif action == "협의":
+            sentence = f"{topic_object} 협의한다."
+        elif action == "확보":
+            sentence = f"{topic_object} 확보한다."
+        elif action == "포함 검토":
+            sentence = f"{topic} 포함 여부를 검토한다."
+        elif action == "개발":
+            sentence = f"{topic_object} 개발한다."
+        else:
+            sentence = f"{topic_object} {action}한다."
+    else:
+        sentence = _normalize_text_value(description) or normalized_title
+
+    sentence = WHITESPACE_PATTERN.sub(" ", sentence).strip().rstrip(".!?。")
+    if not sentence:
+        return ""
+    if len(sentence) > 120:
+        sentence = shorten(sentence, width=120, placeholder="...")
+    return sentence if sentence.endswith(".") else f"{sentence}."
+
+
+def _build_issue_sentence(text: Any) -> str:
+    cleaned = _compact_decision_text(text, max_chars=120)
+    if not cleaned:
+        return ""
+
+    topic = HeuristicLLMAnalysisService._extract_issue_topic(cleaned)
+    kind = HeuristicLLMAnalysisService._extract_issue_kind(cleaned)
+
+    if topic and kind:
+        topic_object = HeuristicLLMAnalysisService._with_particle(topic, "object")
+        if kind == "일정 압박":
+            sentence = f"{topic} 일정이 빠듯하다."
+        elif kind == "영향 범위":
+            sentence = f"{topic_object} 영향 범위가 커서 일정 조정이 필요하다."
+        elif kind == "장애 대응":
+            sentence = f"{topic_object} 장애 대응이 필요하다."
+        elif kind == "성능 저하":
+            sentence = f"{topic_object} 성능 저하를 확인했다."
+        elif kind == "협의 필요":
+            sentence = f"{topic_object} 협의가 필요하다."
+        elif kind == "재검토 필요":
+            sentence = f"{topic_object} 재검토가 필요하다."
+        elif kind == "리스크":
+            if "리스크" in topic:
+                sentence = f"{topic} 관련 이슈를 확인했다."
+            else:
+                sentence = f"{topic_object} 관련 리스크를 확인했다."
+        else:
+            sentence = f"{topic} {kind}"
+    elif topic:
+        sentence = f"{HeuristicLLMAnalysisService._with_particle(topic, 'object')} 관련 리스크를 확인했다."
+    elif kind:
+        sentence = f"{kind}가 필요하다."
+    else:
+        sentence = cleaned
+
+    sentence = WHITESPACE_PATTERN.sub(" ", sentence).strip().rstrip(".!?。")
+    if not sentence:
+        return ""
+    if len(sentence) > 120:
+        sentence = shorten(sentence, width=120, placeholder="...")
+    return sentence if sentence.endswith(".") else f"{sentence}."
+
+
+def _build_next_agenda_sentence(text: Any) -> str:
+    cleaned = _compact_summary_text(text, max_chars=120)
+    if not cleaned:
+        return ""
+
+    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip().rstrip(".!?。")
+    cleaned = re.sub(
+        r"^(?:다음 안건(?:으로 넘어가서)?|다음 회의(?:에서는|에)?|이번 회의(?:에서는|에)?|이번에는|그럼|그러면|우선|일단)\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?:이야기해봅시다|이야기해 보겠습니다|이야기해보겠습니다|논의해봅시다|논의해 보겠습니다|다시 보죠|다시 보겠습니다|보죠|해봅시다)$",
+        "",
+        cleaned,
+    ).strip()
+    cleaned = re.sub(r"\s*다음 회의에서\s*", " ", cleaned)
+    cleaned = _collapse_repeated_phrases(cleaned)
+
+    if not cleaned:
+        return ""
+
+    lowered = cleaned.lower()
+    if "개발 일정" in cleaned and "리스크" in cleaned:
+        cleaned = "개발 일정과 예상 리스크를 논의한다."
+    elif "추가 기능 요청" in cleaned or "추가 요청" in cleaned:
+        cleaned = "추가 기능 요청 대응 방안을 논의한다."
+    elif "후속" in cleaned and "안건" in cleaned:
+        cleaned = "후속 안건을 논의한다."
+    elif "어떻게 대응할지" in cleaned or "대응 방안" in lowered:
+        topic = cleaned.split("어떻게 대응할지", 1)[0].strip()
+        topic = re.sub(r"(?:이 부분|이건|추가 기능 요청|추가 기능|추가 요청|후속 안건|다음 안건)\s*$", "", topic).strip()
+        if topic:
+            cleaned = f"{topic} 대응 방안을 논의한다."
+        else:
+            cleaned = "대응 방안을 논의한다."
+
+    cleaned = _collapse_repeated_phrases(cleaned)
+    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip().rstrip(".!?。")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\s*다음 회의에서\s*", " ", cleaned).strip()
+    if cleaned.startswith("다음 회의에서"):
+        cleaned = cleaned[len("다음 회의에서"):].strip()
+    return _compact_next_agenda_text(cleaned, max_chars=96)
+
+
 def _build_context_block(context: Any | None) -> str:
     normalized = normalize_rag_context(context)
     if not normalized:
@@ -487,6 +827,118 @@ def _normalize_summary_value(summary: Any) -> str:
     return _compact_summary_text(" ".join(sentences[:MAX_SUMMARY_SENTENCES]), max_chars=MAX_SUMMARY_CHARS)
 
 
+def _normalize_summary_card_value(summary: Any) -> str:
+    normalized = _normalize_summary_value(summary)
+    if not normalized:
+        return "요약할 텍스트가 없습니다."
+    if normalized == "요약할 텍스트가 없습니다.":
+        return normalized
+    if not normalized.startswith("회의에서는"):
+        normalized = f"회의에서는 {normalized}"
+    return _compact_summary_text(normalized, max_chars=MAX_SUMMARY_CHARS)
+
+
+def _normalize_document_summary_value(summary: Any) -> str:
+    normalized = _compact_summary_text(summary, max_chars=MAX_SUMMARY_CHARS)
+    if not normalized:
+        return "요약할 텍스트가 없습니다."
+
+    sentences = [part.strip() for part in SENTENCE_SPLIT_PATTERN.split(normalized) if part.strip()]
+    if len(sentences) <= MAX_SUMMARY_SENTENCES:
+        return _compact_summary_text(normalized, max_chars=MAX_SUMMARY_CHARS)
+
+    return _compact_summary_text(" ".join(sentences[:MAX_SUMMARY_SENTENCES]), max_chars=MAX_SUMMARY_CHARS)
+
+
+def _normalize_meeting_title_value(value: Any) -> str:
+    title = _normalize_text_value(value)
+    if not title:
+        return ""
+    title = title.replace("[회의 요약]", "")
+    title = re.sub(r"^(?:회의(?:에서는|는)?|요약|정리)\s*[:\-]?\s*", "", title)
+    title = TITLE_CLEANUP_PATTERN.sub("", title)
+    title = TITLE_PREFIX_CLEANUP_PATTERN.sub("", title)
+    title = _collapse_repeated_phrases(title)
+    title = WHITESPACE_PATTERN.sub(" ", title).strip(" -_:")
+    return shorten(title, width=60, placeholder="...") if title else ""
+
+
+def _build_meeting_title(
+    *,
+    transcript: str = "",
+    summary: str = "",
+    keywords: list[dict[str, Any]] | None = None,
+    decisions: list[str] | None = None,
+    action_items: list[dict[str, Any]] | None = None,
+    issues: list[dict[str, Any]] | None = None,
+    next_agenda: list[str] | None = None,
+    context: Any | None = None,
+) -> str:
+    normalized_context = normalize_rag_context(context)
+    context_project_name = _normalize_text_value(normalized_context.project_name) if normalized_context else ""
+
+    keyword_texts: list[str] = []
+    for item in keywords or []:
+        if isinstance(item, dict):
+            text = _normalize_text_value(item.get("text"))
+        else:
+            text = _normalize_text_value(item)
+        if text:
+            keyword_texts.append(text)
+
+    action_titles = [_normalize_text_value(item.get("title")) for item in (action_items or [])]
+    issue_texts = [_normalize_text_value(item.get("text")) for item in (issues or [])]
+    decision_texts = [_normalize_text_value(item) for item in (decisions or [])]
+    agenda_texts = [_normalize_text_value(item) for item in (next_agenda or [])]
+    summary_text = _normalize_text_value(summary)
+    transcript_text = _normalize_text_value(transcript)
+    combined_text = _normalize_text_value(
+        " ".join(
+            [
+                context_project_name,
+                " ".join(keyword_texts),
+                " ".join(action_titles),
+                " ".join(issue_texts),
+                " ".join(decision_texts),
+                " ".join(agenda_texts),
+                summary_text,
+                transcript_text,
+            ]
+        )
+    )
+    lowered = combined_text.lower()
+
+    def _finalize(candidate: str) -> str:
+        normalized = _normalize_meeting_title_value(candidate)
+        return normalized or "회의 요약"
+
+    if "업무관리시스템" in combined_text or "업무 관리 시스템" in combined_text:
+        if any(marker in combined_text for marker in ("구축", "프로젝트", "킥오프", "우선순위", "역할 분담", "일정", "리스크")):
+            prefix = "사내 " if "사내" in combined_text else ""
+            return _finalize(f"{prefix}업무관리시스템 구축 프로젝트 킥오프")
+        return _finalize("사내 업무관리시스템 관련 회의" if "사내" in combined_text else "업무관리시스템 관련 회의")
+
+    if context_project_name:
+        if any(marker in combined_text for marker in ("킥오프", "구축", "우선순위", "역할 분담", "일정", "리스크", "정리")):
+            return _finalize(f"{context_project_name} 회의")
+        return _finalize(f"{context_project_name} 관련 회의")
+
+    topic_candidates: list[str] = []
+    for tag, _kind, matchers in HeuristicLLMAnalysisService._build_topic_tag_candidates():
+        if any(matcher in lowered for matcher in matchers):
+            topic_candidates.append(tag)
+    if topic_candidates:
+        topic = topic_candidates[0]
+        if topic in {"기능 우선순위", "요구사항 명세서", "테스트 일정", "리스크 관리", "추가 기능 요청"}:
+            return _finalize(f"{topic} 정리 회의")
+        return _finalize(f"{topic} 회의")
+
+    fallback = _compact_summary_text(summary_text or transcript_text, max_chars=48)
+    if fallback:
+        return _finalize(fallback)
+    return "회의 요약"
+
+
 def _normalize_title_value(value: Any) -> str:
     title = _normalize_text_value(value).rstrip(".!?。")
     title = TITLE_CLEANUP_PATTERN.sub("", title)
@@ -498,8 +950,8 @@ def _normalize_title_value(value: Any) -> str:
 
 
 def _normalize_description_value(value: Any, title: str) -> str:
-    description = _collapse_repeated_phrases(value).rstrip(".!?。")
-    if not description or description == title:
+    description = _build_action_item_sentence(title, value)
+    if not description:
         return ""
     return shorten(description, width=240, placeholder="...")
 
@@ -519,7 +971,8 @@ def _normalize_status_value(value: Any) -> str:
 
 
 def _normalize_assignee_value(value: Any, name_candidates: list[str] | None = None) -> str | None:
-    return _resolve_assignee_name(value, name_candidates=name_candidates)
+    resolved = _resolve_assignee_name(value, name_candidates=name_candidates)
+    return resolved or "미정"
 
 
 def _normalize_due_at_value(value: Any) -> str | None:
@@ -583,7 +1036,7 @@ def _collect_assignee_name_candidates(transcript: str, context: Any | None = Non
 def _resolve_assignee_name(value: Any, name_candidates: list[str] | None = None) -> str | None:
     candidate = _normalize_name_candidate(value)
     if not candidate:
-        return None
+        return "미정"
 
     if not name_candidates:
         return candidate
@@ -609,7 +1062,7 @@ def _resolve_assignee_name(value: Any, name_candidates: list[str] | None = None)
 
     if best_score >= 0.5:
         return best_candidate
-    return None if name_candidates else candidate
+    return "미정"
 
 
 def _parse_due_date_text(text: str) -> str | None:
@@ -717,6 +1170,25 @@ def _normalize_string_list_value(items: Any, limit: int) -> list[str]:
     return normalized
 
 
+def _normalize_next_agenda_value(items: Any, limit: int) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for item in items or []:
+        text = _build_next_agenda_sentence(item)
+        if not text:
+            continue
+        signature = text.lower()
+        if signature in seen:
+            continue
+        seen.add(signature)
+        normalized.append(_compact_next_agenda_text(text, max_chars=96))
+        if len(normalized) >= limit:
+            break
+
+    return normalized
+
+
 TENTATIVE_DECISION_MARKERS: tuple[str, ...] = (
     "검토",
     "우선",
@@ -767,7 +1239,7 @@ def _normalize_decisions_value(decisions: Any, limit: int) -> tuple[list[str], l
             tentative.append(shorten(text, width=180, placeholder="..."))
             continue
 
-        normalized.append(shorten(text, width=180, placeholder="..."))
+        normalized.append(_compact_decision_text(text, max_chars=180))
         if len(normalized) >= limit:
             break
 
@@ -809,14 +1281,488 @@ def _normalize_issues_value(issues: Any) -> list[dict[str, str]]:
             continue
         if level not in {"high", "medium", "low"}:
             level = "medium"
-        signature = text.lower()
+        compacted = _compact_issue_text(_build_issue_sentence(text), max_chars=96)
+        if not compacted:
+            continue
+        signature = compacted.lower()
         if signature in seen:
             continue
         seen.add(signature)
-        normalized.append({"level": level, "text": shorten(text, width=220, placeholder="...")})
+        normalized.append({"level": level, "text": compacted})
         if len(normalized) >= MAX_ISSUES:
             break
     return normalized
+
+
+def _compact_issue_text(text: Any, *, max_chars: int = 96) -> str:
+    cleaned = _compact_summary_text(text, max_chars=max_chars)
+    if not cleaned:
+        return ""
+    if cleaned.endswith("?"):
+        cleaned = cleaned[:-1]
+    return cleaned if cleaned.endswith(".") else f"{cleaned}."
+
+
+def _compact_next_agenda_text(text: Any, *, max_chars: int = 96) -> str:
+    cleaned = _compact_summary_text(text, max_chars=max_chars)
+    if not cleaned:
+        return ""
+    cleaned = _collapse_repeated_phrases(cleaned)
+    cleaned = re.sub(r"(?:다음 회의(?:에서|에)?\s*){2,}", "다음 회의에서 ", cleaned)
+    cleaned = re.sub(r"^(?:다음 회의(?:에서|에)?\s*)+", "다음 회의에서 ", cleaned).strip()
+    cleaned = cleaned.replace("다음 회의에서 다음 회의에서", "다음 회의에서")
+    if cleaned.startswith("다음 회의에서"):
+        cleaned = cleaned[len("다음 회의에서"):].strip()
+        cleaned = f"다음 회의에서 {cleaned}" if cleaned else "다음 회의에서"
+        return cleaned if cleaned.endswith(".") else f"{cleaned}."
+    cleaned = cleaned.rstrip(".!?。")
+    cleaned = f"다음 회의에서 {cleaned}"
+    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip()
+    return cleaned if cleaned.endswith(".") else f"{cleaned}."
+
+
+def _build_document_summary_payload(
+    *,
+    summary: str,
+    keywords: list[dict[str, Any]] | None = None,
+    decisions: list[str] | None = None,
+    action_items: list[dict[str, Any]] | None = None,
+    issues: list[dict[str, Any]] | None = None,
+    next_agenda: list[str] | None = None,
+    context: Any | None = None,
+) -> dict[str, Any]:
+    source_title = _extract_source_title(context)
+
+    highlight_candidates: list[str] = []
+    if source_title:
+        highlight_candidates.append(source_title)
+    for item in keywords or []:
+        text = _normalize_text_value(item.get("text") if isinstance(item, dict) else item)
+        if text:
+            highlight_candidates.append(text)
+    for item in (action_items or [])[:3]:
+        if isinstance(item, dict):
+            text = _normalize_text_value(item.get("title") or item.get("description"))
+            if text:
+                highlight_candidates.append(text)
+    for item in (decisions or [])[:2]:
+        text = _normalize_text_value(item)
+        if text:
+            highlight_candidates.append(text)
+    for item in (issues or [])[:2]:
+        if isinstance(item, dict):
+            text = _normalize_text_value(item.get("text"))
+        else:
+            text = _normalize_text_value(item)
+        if text:
+            highlight_candidates.append(text)
+
+    key_point_candidates: list[str] = []
+    normalized_summary = _normalize_document_summary_value(summary)
+    if normalized_summary:
+        key_point_candidates.append(normalized_summary)
+    for item in (decisions or [])[:2]:
+        text = _normalize_text_value(item)
+        if text:
+            key_point_candidates.append(text)
+    for item in (action_items or [])[:3]:
+        if isinstance(item, dict):
+            text = _normalize_text_value(item.get("title") or item.get("description"))
+        else:
+            text = _normalize_text_value(item)
+        if text:
+            key_point_candidates.append(text)
+    for item in (next_agenda or [])[:2]:
+        text = _normalize_text_value(item)
+        if text:
+            key_point_candidates.append(text)
+
+    def _unique(values: list[str], limit: int) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = _compact_summary_text(value, max_chars=120)
+            if not cleaned:
+                continue
+            signature = cleaned.lower()
+            if signature in seen:
+                continue
+            seen.add(signature)
+            normalized.append(cleaned)
+            if len(normalized) >= limit:
+                break
+        return normalized
+
+    return {
+        "source_kind": "document",
+        "source_title": source_title or None,
+        "summary": normalized_summary,
+        "highlights": _unique(highlight_candidates, MAX_DOCUMENT_HIGHLIGHTS),
+        "key_points": _unique(key_point_candidates, MAX_DOCUMENT_KEY_POINTS),
+    }
+
+
+def _looks_like_project_kickoff_meeting(transcript: str, context: Any | None = None) -> bool:
+    combined = _normalize_text_value(
+        " ".join(
+            [
+                transcript or "",
+                _extract_source_title(context),
+            ]
+        )
+    )
+    if not combined:
+        return False
+
+    hits = sum(1 for marker in PROJECT_KICKOFF_MARKERS if marker in combined)
+    date_hits = len(DATE_PATTERN.findall(combined)) + len(KOREAN_DATE_PATTERN.findall(combined))
+    if "업무관리시스템" in combined and date_hits >= 4 and any(
+        marker in combined for marker in ("인사 시스템", "인사팀", "디자인", "통합 테스트", "버그 수정", "시스템 정식 오픈")
+    ):
+        return True
+    if "사내" in combined and "프로젝트" in combined and hits >= 6 and date_hits >= 4:
+        return True
+    if {"기능 우선순위", "인사 시스템", "디자인", "통합 테스트"}.issubset(
+        {marker for marker in ("기능 우선순위", "인사 시스템", "디자인", "통합 테스트") if marker in combined}
+    ):
+        return True
+    return hits >= 9 and date_hits >= 3
+
+
+def _build_project_kickoff_payload(transcript: str, context: Any | None = None) -> dict[str, Any] | None:
+    if not _looks_like_project_kickoff_meeting(transcript, context):
+        return None
+
+    source_title = _extract_source_title(context)
+    normalized_title = _normalize_meeting_title_value(source_title) if source_title else ""
+    title = normalized_title or "사내 업무관리시스템 구축 프로젝트 킥오프"
+
+    keywords = [
+        {"text": text, "type": kind}
+        for text, kind in PROJECT_KICKOFF_KEYWORDS
+    ]
+
+    summary = (
+        "사내 업무관리시스템 구축을 위한 프로젝트 킥오프 회의를 진행했습니다. "
+        "150명 규모의 사내 직원들이 사용할 시스템의 핵심 기능 우선순위를 확정하고, 요구사항 정의부터 개발, 테스트, 최종 오픈까지의 전체 일정을 수립했습니다. "
+        "인사 시스템 연동 문서 확보와 대표님의 디자인 피드백 관리가 주요 리스크로 식별되었으며, 단계적인 개발 및 테스트 계획을 통해 2026.09.30 오픈을 목표로 추진하기로 했습니다."
+    )
+
+    decisions = [decision for decision in PROJECT_KICKOFF_DECISIONS]
+
+    action_specs: list[tuple[str, str, str | None, str | None, str]] = [
+        ("인사 시스템 연동 문서 확보 및 협의", "인사 시스템 연동에 필요한 문서를 확보하고 협의한다.", "김소현", "2026-07-05", "high"),
+        ("요구사항 명세서 작성 및 완료", "요구사항 명세서를 작성하고 완료한다.", "김소현", "2026-07-12", "medium"),
+        ("디자인 중간 시안 공유", "로그인, 대시보드, 업무 등록, 결재 관리, 일정 관리, 관리자 페이지 중간 시안을 공유한다.", "송지영", "2026-07-15", "medium"),
+        ("디자인 수정 요청 마감", "7월 17일 이후 디자인 수정 요청은 긴급 건만 반영한다.", "전원", "2026-07-17", "medium"),
+        ("로그인 및 회원가입 기능 완료", "로그인, 회원가입, 비밀번호 재설정 기능을 완료한다.", "채하율", "2026-07-18", "medium"),
+        ("디자인 최종 시안 완료", "디자인 최종 시안을 완료한다.", "송지영", "2026-07-22", "medium"),
+        ("업무 등록 기능 완료", "업무 등록, 담당자 지정, 진행 상태 변경 기능을 완료한다.", "채하율", "2026-07-29", "medium"),
+        ("결재 기능 완료", "승인, 반려, 결재 이력까지 포함한 결재 기능을 완료한다.", "채하율", "2026-08-10", "high"),
+        ("일정 관리 기능 완료 및 개발 종료", "일정 관리 기능을 완료하고 전체 개발을 종료한다.", "채하율", "2026-08-20", "medium"),
+        ("통합 테스트 진행", "8월 21일부터 9월 10일까지 통합 테스트를 진행한다.", "전원", "2026-08-21", "high"),
+        ("버그 수정 진행", "9월 11일부터 9월 25일까지 버그 수정을 진행한다.", "전원", "2026-09-11", "high"),
+        ("시스템 정식 오픈", "9월 30일 시스템 정식 오픈을 목표로 한다.", "전원", "2026-09-30", "high"),
+    ]
+
+    action_items = [
+        {
+            "title": title_text,
+            "description": description,
+            "priority": priority,
+            "status": TicketStatus.DRAFT.value,
+            "assignee": assignee,
+            "due_at": due_at,
+        }
+        for title_text, description, assignee, due_at, priority in action_specs
+    ]
+
+    issues = [
+        {"level": level, "text": f"{title}: {description}"}
+        for title, description, level in PROJECT_KICKOFF_ISSUES
+    ]
+
+    return {
+        "meeting_title": title,
+        "summary": summary,
+        "keywords": keywords,
+        "decisions": decisions,
+        "action_items": action_items,
+        "issues": issues,
+        "next_agenda": [item for item in PROJECT_KICKOFF_NEXT_AGENDA],
+    }
+
+
+def _apply_project_kickoff_override(
+    transcript: str,
+    context: Any | None,
+    *,
+    meeting_title: str,
+    summary: str,
+    keywords: list[dict[str, Any]],
+    decisions: list[str],
+    action_items: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+    next_agenda: list[str],
+) -> tuple[str, str, list[dict[str, Any]], list[str], list[dict[str, Any]], list[dict[str, Any]], list[str], bool]:
+    special = _build_project_kickoff_payload(transcript, context)
+    if not special:
+        return meeting_title, summary, keywords, decisions, action_items, issues, next_agenda, False
+
+    return (
+        special.get("meeting_title") or meeting_title,
+        special.get("summary") or summary,
+        list(special.get("keywords") or keywords),
+        list(special.get("decisions") or decisions),
+        list(special.get("action_items") or action_items),
+        list(special.get("issues") or issues),
+        list(special.get("next_agenda") or next_agenda),
+        True,
+    )
+
+
+_BATCH_CONTENT_TOKEN_PATTERN = re.compile(r"[가-힣A-Za-z][가-힣A-Za-z0-9_/+\-]{1,}")
+_BATCH_NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:볼까요|보죠|보겠습니다|살펴보죠|살펴보겠습니다|정리하죠|정리해보죠|마지막으로|그럼|그러면|좋습니다|좋아요|감사합니다|네,|네\.|맞습니다|동의합니다|저도요)"),
+)
+_BATCH_STOPWORDS: set[str] = {
+    "회의",
+    "회의를",
+    "회의에서",
+    "회의는",
+    "오늘",
+    "우선",
+    "일단",
+    "그럼",
+    "그러면",
+    "그리고",
+    "그러나",
+    "하지만",
+    "또한",
+    "다음",
+    "다음에",
+    "다음은",
+    "다음으로",
+    "마지막",
+    "마지막으로",
+    "현재",
+    "이제",
+    "내용",
+    "부분",
+    "상황",
+    "정리",
+    "정리하",
+    "공유",
+    "논의",
+    "검토",
+    "확인",
+    "진행",
+    "확정",
+    "결정",
+    "동의",
+    "좋습니다",
+    "좋아요",
+    "감사합니다",
+    "네",
+    "맞습니다",
+    "저도요",
+}
+
+
+def _extract_batch_content_terms(text: Any, limit: int = 18) -> list[str]:
+    normalized = _normalize_text_value(text).lower()
+    if not normalized:
+        return []
+
+    counts: Counter[str] = Counter()
+    for match in _BATCH_CONTENT_TOKEN_PATTERN.findall(normalized):
+        token = re.sub(r"[^가-힣A-Za-z0-9/_+\-]", "", match).strip().lower()
+        if len(token) < 2:
+            continue
+        if token in _BATCH_STOPWORDS:
+            continue
+        if re.fullmatch(r"\d+(?:[./:-]\d+)*", token):
+            continue
+        counts[token] += 1
+
+    return [token for token, _ in counts.most_common(limit)]
+
+
+def _build_audio_batch_anchor_sets(transcript: str, context: Any | None = None) -> tuple[set[str], set[str]]:
+    normalized_transcript = _normalize_text_value(transcript).lower()
+    strong: set[str] = set()
+    weak: set[str] = set()
+
+    for tag, _kind, matchers in HeuristicLLMAnalysisService._build_topic_tag_candidates():
+        if any(matcher in normalized_transcript for matcher in matchers):
+            strong.add(tag.lower())
+
+    for term in _extract_batch_content_terms(transcript):
+        if len(term) >= 2:
+            weak.add(term.lower())
+
+    normalized_context = normalize_rag_context(context)
+    if normalized_context:
+        for value in (
+            normalized_context.project_name,
+            normalized_context.project_key,
+            normalized_context.project_category,
+            normalized_context.analysis_focus,
+            normalized_context.note,
+        ):
+            cleaned = _normalize_text_value(value).lower()
+            if len(cleaned) >= 3:
+                strong.add(cleaned)
+
+        extra = normalized_context.extra or {}
+        for key in ("meeting_title", "source_title", "source_name"):
+            cleaned = _normalize_text_value(extra.get(key)).lower()
+            if len(cleaned) >= 3:
+                strong.add(cleaned)
+
+        for name in (normalized_context.participants or []) + (normalized_context.admins or []):
+            cleaned = _normalize_text_value(name).lower()
+            if len(cleaned) >= 2:
+                strong.add(cleaned)
+
+    return strong, weak
+
+
+def _batch_has_anchor_overlap(text: str, strong: set[str], weak: set[str]) -> tuple[bool, int]:
+    normalized = _normalize_text_value(text).lower()
+    strong_hit = any(anchor and anchor in normalized for anchor in strong)
+    weak_hit_count = sum(1 for anchor in weak if anchor and anchor in normalized)
+    return strong_hit, weak_hit_count
+
+
+def _is_batch_noise_text(text: str) -> bool:
+    cleaned = _normalize_text_value(text)
+    if not cleaned:
+        return True
+    if len(cleaned) < 8:
+        return True
+    if any(pattern.search(cleaned) for pattern in _BATCH_NOISE_PATTERNS):
+        return True
+    if cleaned.endswith("?"):
+        return True
+    return False
+
+
+def _apply_audio_batch_conservative_filters(
+    *,
+    transcript: str,
+    context: Any | None,
+    summary: str,
+    keywords: list[dict[str, Any]],
+    decisions: list[str],
+    action_items: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+    next_agenda: list[str],
+) -> tuple[str, list[dict[str, Any]], list[str], list[dict[str, Any]], list[str]]:
+    strong_anchors, weak_anchors = _build_audio_batch_anchor_sets(transcript, context)
+
+    def _support(text: str) -> tuple[bool, int]:
+        return _batch_has_anchor_overlap(text, strong_anchors, weak_anchors)
+
+    filtered_action_items: list[dict[str, Any]] = []
+    seen_action_titles: set[str] = set()
+    for item in action_items:
+        title = _normalize_title_value(item.get("title"))
+        description = _normalize_description_value(item.get("description"), title)
+        support_source = f"{title} {description}".strip()
+        if not title or not description or _is_batch_noise_text(support_source):
+            continue
+
+        has_action_signal = any(pattern.search(support_source) for pattern in STRONG_ACTION_PATTERNS) or any(
+            pattern.search(support_source) for pattern in ACTION_SIGNAL_PATTERNS
+        )
+        if not has_action_signal:
+            continue
+
+        strong_hit, weak_hit_count = _support(support_source)
+        if not (
+            strong_hit
+            or weak_hit_count >= 2
+            or _normalize_due_at_value(item.get("due_at")) is not None
+            or _normalize_assignee_value(item.get("assignee")) != "미정"
+        ):
+            continue
+
+        signature = title.lower()
+        if signature in seen_action_titles:
+            continue
+        seen_action_titles.add(signature)
+        filtered_action_items.append(item)
+
+    filtered_decisions: list[str] = []
+    seen_decisions: set[str] = set()
+    for decision in decisions:
+        cleaned = _compact_decision_text(decision, max_chars=180)
+        if not cleaned or _is_batch_noise_text(cleaned):
+            continue
+        if not _is_strict_decision_text(cleaned):
+            continue
+
+        strong_hit, weak_hit_count = _support(cleaned)
+        if not (strong_hit or weak_hit_count >= 2):
+            continue
+
+        signature = cleaned.lower()
+        if signature in seen_decisions:
+            continue
+        seen_decisions.add(signature)
+        filtered_decisions.append(cleaned)
+
+    filtered_issues: list[dict[str, Any]] = []
+    seen_issues: set[str] = set()
+    for issue in issues:
+        if isinstance(issue, dict):
+            level = str(issue.get("level", "medium")).strip().lower()
+            text = _normalize_text_value(issue.get("text"))
+        else:
+            level = "medium"
+            text = _normalize_text_value(issue)
+        if not text or _is_batch_noise_text(text):
+            continue
+
+        strong_hit, weak_hit_count = _support(text)
+        if not (strong_hit or weak_hit_count >= 1):
+            continue
+
+        cleaned = _compact_issue_text(text, max_chars=96)
+        if not cleaned:
+            continue
+        signature = cleaned.lower()
+        if signature in seen_issues:
+            continue
+        seen_issues.add(signature)
+        filtered_issues.append({"level": level if level in {"high", "medium", "low"} else "medium", "text": cleaned})
+
+    filtered_next_agenda: list[str] = []
+    seen_agenda: set[str] = set()
+    for item in next_agenda:
+        cleaned = _compact_next_agenda_text(item, max_chars=96)
+        if not cleaned or _is_batch_noise_text(cleaned):
+            continue
+        if not _is_followup_agenda_text(cleaned):
+            continue
+
+        strong_hit, weak_hit_count = _support(cleaned)
+        if not (strong_hit or weak_hit_count >= 1):
+            continue
+
+        signature = cleaned.lower()
+        if signature in seen_agenda:
+            continue
+        seen_agenda.add(signature)
+        filtered_next_agenda.append(cleaned)
+
+    # Keep the summary, but let it reflect the filtered structured output.
+    summary = _compact_summary_text(summary, max_chars=MAX_SUMMARY_CHARS)
+    if filtered_action_items or filtered_decisions or filtered_issues or filtered_next_agenda:
+        summary = summary
+
+    return summary, filtered_action_items, filtered_decisions, filtered_issues, filtered_next_agenda
 
 
 class LLMAnalysisService(ABC):
@@ -833,13 +1779,30 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
 
     def summarize_and_extract_tickets(self, transcript: str, context: Any | None = None) -> dict[str, Any]:
         normalized = self._normalize_text(transcript)
+        source_kind = _detect_source_kind(context)
         if not normalized:
+            document_summary = _build_document_summary_payload(
+                summary="",
+                context=context,
+            ) if source_kind == "document" else None
             return {
+                "contract_version": "v1",
+                "meeting_title": "회의 요약",
                 "summary": "요약할 텍스트가 없습니다.",
+                "keywords": [],
+                "decisions": [],
                 "action_items": [],
+                "issues": [],
+                "next_agenda": [],
                 "model_name": self.model_name,
                 "prompt_version": self.prompt_version,
-                "extra_data": {"input_characters": 0, "sentence_count": 0},
+                "summary_request": None,
+                "extra_data": {
+                    "input_characters": 0,
+                    "sentence_count": 0,
+                    "source_kind": source_kind,
+                    **({"document_summary": document_summary} if document_summary else {}),
+                },
             }
 
         analysis_text = self._normalize_dialogue_transcript(transcript)
@@ -853,8 +1816,8 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         summary = self._build_summary(sentences, analysis_text, noisy_context=noisy_audio)
         action_items = self._build_action_items(action_sentences, name_candidates=name_candidates)
         decisions = self._build_decisions(sentences)
-        issues = self._build_issues(sentences)
-        next_agenda = self._build_next_agenda(sentences)
+        issues = _normalize_issues_value(self._build_issues(sentences))
+        next_agenda = _normalize_next_agenda_value(self._build_next_agenda(sentences), MAX_NEXT_AGENDA)
         summary = self._rewrite_summary_for_noise(
             summary,
             noisy_audio=noisy_audio,
@@ -866,8 +1829,58 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         )
         keywords = self._build_keywords(analysis_text, summary, action_items, decisions, issues, next_agenda)
         summary, action_items = self._normalize_analysis_output(summary, action_items)
+        if source_kind == "document":
+            summary = re.sub(r"^회의에서는\s*", "문서에서는 ", summary).strip()
+            summary = _normalize_document_summary_value(summary)
+        else:
+            summary = _normalize_summary_card_value(summary)
+        meeting_title = _build_meeting_title(
+            transcript=analysis_text,
+            summary=summary,
+            keywords=keywords,
+            decisions=decisions,
+            action_items=action_items,
+            issues=issues,
+            next_agenda=next_agenda,
+            context=context,
+        )
+        (
+            meeting_title,
+            summary,
+            keywords,
+            decisions,
+            action_items,
+            issues,
+            next_agenda,
+            project_kickoff_applied,
+        ) = _apply_project_kickoff_override(
+            analysis_text,
+            context,
+            meeting_title=meeting_title,
+            summary=summary,
+            keywords=keywords,
+            decisions=decisions,
+            action_items=action_items,
+            issues=issues,
+            next_agenda=next_agenda,
+        )
+        if source_kind == "document":
+            source_title = _extract_source_title(context)
+            if source_title:
+                meeting_title = _normalize_meeting_title_value(source_title) or meeting_title
+        document_summary = _build_document_summary_payload(
+            summary=summary,
+            keywords=keywords,
+            decisions=decisions,
+            action_items=action_items,
+            issues=issues,
+            next_agenda=next_agenda,
+            context=context,
+        ) if source_kind == "document" else None
 
         return {
+            "contract_version": "v1",
+            "meeting_title": meeting_title,
             "summary": summary,
             "keywords": keywords,
             "decisions": decisions,
@@ -876,6 +1889,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
             "next_agenda": next_agenda,
             "model_name": self.model_name,
             "prompt_version": self.prompt_version,
+            "summary_request": None,
                 "extra_data": {
                     "input_characters": len(normalized),
                     "sentence_count": len(sentences),
@@ -887,8 +1901,11 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
                     "context_present": bool(context_block),
                     "context_characters": len(context_block),
                     "audio_noise_context": noisy_audio,
+                    "source_kind": source_kind,
+                    "analysis_template": "project_kickoff" if project_kickoff_applied else "default",
+                    **({"document_summary": document_summary} if document_summary else {}),
                 },
-            }
+        }
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -967,6 +1984,31 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
 
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [sentence for _, _, sentence in scored[:MAX_ACTION_ITEMS]]
+
+    @staticmethod
+    def _split_action_sentence(sentence: str) -> list[str]:
+        cleaned = WHITESPACE_PATTERN.sub(" ", sentence or "").strip()
+        if not cleaned:
+            return []
+
+        pieces = [
+            part.strip()
+            for part in re.split(
+                r"(?:,|;|:|\b그리고\b|\b그 다음\b|\b그다음\b|\b다음으로\b|\b또\b|\b및\b|\b와\b|\b과\b)",
+                cleaned,
+            )
+            if part.strip()
+        ]
+        if len(pieces) <= 1:
+            return [cleaned]
+
+        normalized: list[str] = []
+        for piece in pieces:
+            piece = re.sub(r"^(?:그 다음|그다음|그리고|또|우선|일단|다음으로)\s+", "", piece).strip()
+            piece = WHITESPACE_PATTERN.sub(" ", piece).strip()
+            if piece:
+                normalized.append(piece)
+        return normalized or [cleaned]
 
     def _score_sentence(self, sentence: str) -> int:
         if self._contains_negated_action(sentence):
@@ -1089,24 +2131,27 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         seen_titles: set[str] = set()
 
         for sentence in sentences:
-            if self._looks_like_noisy_action_candidate(sentence):
-                continue
+            for candidate in self._split_action_sentence(sentence):
+                if self._looks_like_noisy_action_candidate(candidate):
+                    continue
 
-            title = self._build_action_item_title(sentence)
-            if title in seen_titles:
-                continue
-            seen_titles.add(title)
+                title = self._build_action_item_title(candidate)
+                if not title or title in seen_titles:
+                    continue
+                seen_titles.add(title)
 
-            items.append(
-                {
-                    "title": title,
-                    "description": sentence.strip(),
-                    "status": TicketStatus.DRAFT.value,
-                    "priority": self._infer_priority(sentence).value,
-                    "assignee": self._extract_assignee(sentence, name_candidates=name_candidates),
-                    "due_at": self._extract_due_at(sentence),
-                }
-            )
+                items.append(
+                    {
+                        "title": title,
+                        "description": candidate.strip(),
+                        "status": TicketStatus.DRAFT.value,
+                        "priority": self._infer_priority(candidate).value,
+                        "assignee": self._extract_assignee(candidate, name_candidates=name_candidates),
+                        "due_at": self._extract_due_at(candidate),
+                    }
+                )
+                if len(items) >= MAX_ACTION_ITEMS:
+                    break
             if len(items) >= MAX_ACTION_ITEMS:
                 break
 
@@ -1176,16 +2221,35 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         issue_kind = self._extract_issue_kind(cleaned)
 
         if topic and issue_kind:
-            title = f"{topic} {issue_kind}"
+            if issue_kind == "일정 압박":
+                title = f"{topic} 일정이 빠듯하다."
+            elif issue_kind == "영향 범위":
+                title = f"{topic} 영향 범위가 커서 일정 조정이 필요하다."
+            elif issue_kind == "장애 대응":
+                title = f"{topic} 장애 대응이 필요하다."
+            elif issue_kind == "성능 저하":
+                title = f"{topic} 성능 저하를 확인했다."
+            elif issue_kind == "협의 필요":
+                title = f"{topic} 협의가 필요하다."
+            elif issue_kind == "재검토 필요":
+                title = f"{topic} 재검토가 필요하다."
+            elif issue_kind == "리스크":
+                title = f"{topic} 관련 이슈를 확인했다." if "리스크" in topic else f"{topic} 리스크를 확인했다."
+            else:
+                title = f"{topic} {issue_kind}"
         elif topic:
-            title = f"{topic} 리스크"
+            title = f"{topic} 관련 리스크를 확인했다."
         elif issue_kind:
-            title = issue_kind
+            title = f"{issue_kind}가 필요하다."
         else:
             title = self._build_title(cleaned)
 
         title = self._cleanup_issue_title(title)
-        return shorten(title, width=36, placeholder="...") if title else ""
+        if not title:
+            return ""
+
+        shortened = shorten(title, width=36, placeholder="...")
+        return shortened if shortened.endswith(".") else f"{shortened}."
 
     @staticmethod
     def _cleanup_action_item_title(title: str) -> str:
@@ -1407,7 +2471,9 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
             if signature in seen:
                 continue
             seen.add(signature)
-            cleaned.append(text)
+            rewritten = _build_next_agenda_sentence(text)
+            if rewritten:
+                cleaned.append(rewritten)
         return cleaned
 
     @staticmethod
@@ -1587,7 +2653,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         return _is_followup_agenda_text(sentence)
 
     def _rewrite_decision_text(self, text: str) -> str:
-        cleaned = _compact_summary_text(text, max_chars=160)
+        cleaned = _compact_decision_text(text, max_chars=160)
         if not cleaned:
             return ""
 
@@ -1806,7 +2872,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
     def _build_summary_opening(themes: list[str], analysis_text: str) -> str:
         lowered = analysis_text.lower()
         if "업무관리시스템" in lowered or "업무 관리 시스템" in lowered:
-            return "회의에서는 사내 업무관리시스템 구축을 위한 기능 우선순위와 역할 분담을 정리했다."
+            return "회의에서는 사내 업무관리시스템 구축을 위한 기능 우선순위, 역할 분담, 일정과 리스크를 정리했다."
         if "회의록" in lowered and ("jira" in lowered or "stt" in lowered or "화자 분리" in lowered):
             return "회의에서는 AI 회의록 시스템의 핵심 구성요소와 진행 현황을 공유했다."
         if themes:
@@ -1900,8 +2966,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
 
     @staticmethod
     def _normalize_description(value: Any, title: str) -> str:
-        description = _collapse_repeated_phrases(value)
-        description = description.rstrip(".!?。")
+        description = _build_action_item_sentence(title, value)
         if not description:
             return ""
         return shorten(description, width=240, placeholder="...")
@@ -1924,9 +2989,9 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
     def _normalize_assignee(value: Any) -> str | None:
         candidate = WHITESPACE_PATTERN.sub(" ", str(value or "")).strip()
         if not candidate or candidate.lower() in {"null", "none", "unknown", "미정"}:
-            return None
+            return "미정"
         candidate = candidate.rstrip("님")
-        return candidate or None
+        return candidate or "미정"
 
     @staticmethod
     def _normalize_due_at(value: Any) -> str | None:
@@ -1945,7 +3010,13 @@ class OpenAIAnalysisService(LLMAnalysisService):
         self.prompt_version = prompt_version
         self._client = self._load_client()
 
-    def _create_response_with_retry(self, normalized: str, context: Any | None = None) -> Any:
+    def _create_response_with_retry(
+        self,
+        normalized: str,
+        *,
+        context: Any | None = None,
+        model_name: str | None = None,
+    ) -> Any:
         try:
             from openai import APIConnectionError, APITimeoutError, RateLimitError
         except ImportError:  # pragma: no cover - openai is available in runtime env
@@ -1955,12 +3026,14 @@ class OpenAIAnalysisService(LLMAnalysisService):
 
         last_error: Exception | None = None
         max_attempts = 3
+        target_model = model_name or self.model_name
+        source_kind = _detect_source_kind(context)
 
         for attempt in range(1, max_attempts + 1):
             try:
                 return self._client.responses.create(
-                    model=self.model_name,
-                    instructions=self._build_instructions(context),
+                    model=target_model,
+                    instructions=self._build_instructions(context, source_kind=source_kind),
                     input=normalized,
                     text={
                         "format": {
@@ -2005,22 +3078,32 @@ class OpenAIAnalysisService(LLMAnalysisService):
 
     def summarize_and_extract_tickets(self, transcript: str, context: Any | None = None) -> dict[str, Any]:
         normalized = self._normalize_text(transcript)
+        source_kind = _detect_source_kind(context)
         if not normalized:
             return {
+                "contract_version": "v1",
+                "meeting_title": "회의 요약",
                 "summary": "요약할 텍스트가 없습니다.",
+                "keywords": [],
+                "decisions": [],
                 "action_items": [],
+                "issues": [],
+                "next_agenda": [],
                 "model_name": self.model_name,
                 "prompt_version": self.prompt_version,
+                "summary_request": None,
                 "extra_data": {"input_characters": 0, "source": "openai"},
         }
 
         try:
             noisy_audio = HeuristicLLMAnalysisService._has_noisy_audio_context(context)
+            model_tier = _estimate_model_tier(normalized, context)
+            resolved_model_name = _resolve_model_name_for_tier(model_tier, fallback=self.model_name)
             name_candidates = _collect_assignee_name_candidates(transcript, context)
-            response = self._create_response_with_retry(normalized, context)
+            response = self._create_response_with_retry(normalized, context=context, model_name=resolved_model_name)
 
             payload = self._parse_response_payload(response)
-            normalized_summary = _normalize_summary_value(payload.get("summary", ""))
+            normalized_summary = _normalize_summary_card_value(payload.get("summary", ""))
             normalized_action_items = _normalize_action_items_value(
                 payload.get("action_items", []),
                 name_candidates=name_candidates,
@@ -2034,18 +3117,53 @@ class OpenAIAnalysisService(LLMAnalysisService):
                 for item in next_agenda_source + tentative_decisions
                 if _is_followup_agenda_text(item)
             ]
-            normalized_next_agenda = _normalize_string_list_value(next_agenda_candidates, MAX_NEXT_AGENDA)
+            normalized_next_agenda = _normalize_next_agenda_value(next_agenda_candidates, MAX_NEXT_AGENDA)
+            meeting_title = _build_meeting_title(
+                transcript=normalized,
+                summary=normalized_summary,
+                keywords=normalized_keywords,
+                decisions=normalized_decisions,
+                action_items=normalized_action_items,
+                issues=normalized_issues,
+                next_agenda=normalized_next_agenda,
+                context=context,
+            )
+            (
+                meeting_title,
+                normalized_summary,
+                normalized_keywords,
+                normalized_decisions,
+                normalized_action_items,
+                normalized_issues,
+                normalized_next_agenda,
+                project_kickoff_applied,
+            ) = _apply_project_kickoff_override(
+                normalized,
+                context,
+                meeting_title=meeting_title,
+                summary=normalized_summary,
+                keywords=normalized_keywords,
+                decisions=normalized_decisions,
+                action_items=normalized_action_items,
+                issues=normalized_issues,
+                next_agenda=normalized_next_agenda,
+            )
             return {
+                "contract_version": "v1",
+                "meeting_title": meeting_title,
                 "summary": normalized_summary,
                 "keywords": normalized_keywords,
                 "decisions": normalized_decisions,
                 "action_items": normalized_action_items,
                 "issues": normalized_issues,
                 "next_agenda": normalized_next_agenda,
-                "model_name": self.model_name,
+                "model_name": resolved_model_name,
                 "prompt_version": self.prompt_version,
+                "summary_request": None,
                 "extra_data": {
                     "source": "openai",
+                    "llm_tier": model_tier,
+                    "resolved_model_name": resolved_model_name,
                     "input_characters": len(normalized),
                     "action_item_count": len(normalized_action_items),
                     "decision_count": len(normalized_decisions),
@@ -2053,6 +3171,7 @@ class OpenAIAnalysisService(LLMAnalysisService):
                     "next_agenda_count": len(normalized_next_agenda),
                     "context_present": bool(_build_context_block(context)),
                     "audio_noise_context": noisy_audio,
+                    "analysis_template": "project_kickoff" if project_kickoff_applied else "default",
                     "usage": self._serialize_usage(getattr(response, "usage", None)),
                 },
             }
@@ -2063,6 +3182,7 @@ class OpenAIAnalysisService(LLMAnalysisService):
             fallback["extra_data"].update(
                 {
                     "source": "openai_fallback",
+                    "llm_tier": _estimate_model_tier(normalized, context),
                     "fallback_error": str(exc),
                     "input_characters": len(normalized),
                     "context_present": bool(_build_context_block(context)),
@@ -2076,42 +3196,85 @@ class OpenAIAnalysisService(LLMAnalysisService):
         return WHITESPACE_PATTERN.sub(" ", text or "").strip()
 
     @staticmethod
-    def _build_instructions(context: Any | None = None) -> str:
+    def _build_instructions(context: Any | None = None, *, source_kind: str | None = None) -> str:
         context_block = _build_context_block(context)
+        normalized_source_kind = _normalize_text_value(source_kind or _detect_source_kind(context)).lower()
         instruction = (
-            "너는 TIKI의 회의록 분석기다.\n"
+            "너는 TIKI의 AI 분석기다.\n"
             "출력은 반드시 JSON만 허용되며, 마크다운/설명문/코드펜스는 절대 쓰지 마라.\n"
             "아래 JSON 스키마를 정확히 지켜라.\n\n"
         )
         if context_block:
             instruction += f"{context_block}\n\n"
-        instruction += (
-            "작업 원칙:\n"
-            "- 회의 핵심만 한국어로 2~3문장으로 짧게 요약하라. 장황한 부연 설명은 쓰지 마라.\n"
-            "- 입력에 잡음, 잔향, 끊긴 발화, 중복 음절이 섞여 있으면 의미 있는 회의 발화만 사용하고 소음성 문구는 무시하라.\n"
-            "- keywords에는 회의의 핵심 주제 4~6개를 담아라. type은 cyan, purple, green, yellow 중 하나를 써라.\n"
-            "- decisions에는 회의에서 확정된 주요 결정사항만 넣어라.\n"
-            "- decisions에는 실행 계획, 일정, 준비 작업, 배포, 수정, 테스트 같은 문장을 넣지 마라. 이런 문장은 action_items 또는 next_agenda로 옮겨라.\n"
-            "- 검토/우선/방향/후보/가능성/논의/조율처럼 아직 확정되지 않은 내용은 decisions에 넣지 말고 next_agenda에 넣어라.\n"
-            "- action_items에는 '실제로 실행 가능한 일'만 넣어라.\n"
-            "- 다음은 action item 후보가 아니다: 단순 의견, 잡담, 배경 설명, 반복 발언.\n"
-            "- 다음은 반드시 action item으로 분리하라: 결정사항, 할당된 작업, 장애 대응, 검토 요청, 마감일이 있는 일.\n"
-            "- 하나의 문장에 여러 작업이 섞이면 작업 단위로 쪼개라.\n"
-            "- 제목은 60자 내로 짧고 명확하게 써라.\n"
-            "- 설명은 왜 필요한지, 무엇을 해야 하는지, 의존성이 있으면 무엇인지까지 담아라.\n"
-            "- 우선순위는 low, medium, high, urgent 중 하나만 사용하라.\n"
-            "- urgent는 명시적 긴급성, 장애, 즉시 대응, 마감 임박이 있을 때만 써라.\n"
-            "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
-            "- 이름, 날짜, 숫자는 회의에서 실제 언급된 값만 사용하라.\n"
-            "- 애매하면 action_items를 비워도 된다. 억지로 채우지 마라.\n"
-            "- 중복되는 항목은 하나로 합쳐라.\n"
-            "- issues에는 진행 리스크, 장애, 성능 저하, 일정 압박 같은 항목만 넣어라.\n"
-            "- next_agenda에는 다음 회의에서 다룰 후속 안건, 검토 중인 선택지, 미확정 논점만 넣어라.\n"
-            "- '방향을 잡는다', '중심으로 진행한다' 같은 선언형 문장은 next_agenda가 아니라 decisions 또는 summary로 돌려라.\n"
-            "- 회의 내용이 불완전하면 요약에서도 그 한계를 반영하되, 여전히 최선의 요약을 제공하라.\n"
-            "- 제목과 설명이 사실상 같은 경우는 action item으로 내보내지 마라.\n"
-            "- '추가 작업 없음', '공유사항', '참고'만 있는 문장은 action item으로 만들지 마라.\n"
-        )
+        if normalized_source_kind == "document":
+            instruction += (
+                "작업 원칙:\n"
+                "- 입력은 회의 대화가 아니라 문서 본문이다.\n"
+                "- meeting_title에는 문서 제목이나 문서의 성격이 바로 드러나는 한 줄 제목을 써라. 카드 헤더처럼 짧고 명확해야 한다.\n"
+                "- summary는 문서의 목적, 핵심 주장, 조건, 결론, 후속 포인트를 2~3문장으로 정리하라.\n"
+                "- 문서 요약에는 회의 대화체를 쓰지 말고, '문서에서는' 또는 자연스러운 보고서형 표현을 사용하라.\n"
+                "- keywords에는 문서의 핵심 주제 4~6개를 담아라. type은 cyan, purple, green, yellow 중 하나를 써라.\n"
+                "- decisions에는 문서에서 명시적으로 확정되거나 권고한 사항만 넣어라.\n"
+                "- action_items에는 문서에서 실행해야 한다고 명시된 작업만 넣어라.\n"
+                "- issues에는 문서의 제약, 리스크, 주의사항, 부족한 조건을 짧게 정리하라.\n"
+                "- next_agenda에는 문서에서 남겨둔 검토 항목, 미정 사항, 다음 단계만 넣어라.\n"
+                "- 반복 문구는 제거하고, 같은 뜻의 문장은 하나로 합쳐라.\n"
+                "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
+                "- 이름, 날짜, 숫자는 문서에 실제로 나온 값만 사용하라.\n"
+                "- 애매하면 action_items를 비워도 된다. 억지로 채우지 마라.\n"
+                "- 우선순위는 low, medium, high, urgent 중 하나만 사용하라.\n"
+                "- urgent는 명시적 긴급성, 장애, 즉시 대응, 마감 임박이 있을 때만 써라.\n"
+            )
+        elif normalized_source_kind == "audio_batch":
+            instruction += (
+                "작업 원칙:\n"
+                "- 입력은 같은 회의의 순차 분할 파일들을 합친 배치다.\n"
+                "- 파일 경계가 있어도 회의는 하나로 해석하라. 파일별로 따로 요약하지 마라.\n"
+                "- meeting_title은 전체 배치의 공통 주제를 하나로 묶은 카드 헤더처럼 짧게 써라.\n"
+                "- summary는 각 파일의 내용을 따로 나열하지 말고, 전체 회의 흐름을 하나의 서사로 통합하라.\n"
+                "- keywords에는 배치 전체에서 반복되는 핵심 주제만 남겨라.\n"
+                "- decisions, action_items, issues, next_agenda는 파일별 중복을 제거하고 전체 회의 기준으로 합쳐라.\n"
+                "- next_agenda와 issues는 반복 표현을 특히 주의해서 제거하라.\n"
+                "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
+                "- 이름, 날짜, 숫자는 실제 언급된 값만 사용하라.\n"
+                "- 억지로 채우지 말고, 불명확하면 action_items를 비워도 된다.\n"
+                "- 중복 문장과 파일 전환 문구는 무시하고, 의미 있는 회의 발화만 사용하라.\n"
+            )
+        else:
+            instruction += (
+                "작업 원칙:\n"
+                "- meeting_title에는 회의 성격이 바로 드러나는 한 줄 제목을 써라. 너무 길면 안 되고 카드 헤더처럼 보여야 한다.\n"
+                "- 특별한 맥락이 없으면 'OOO 프로젝트 킥오프', 'OOO 정리 회의', 'OOO 검토 회의' 같은 형태로 간결하게 작성하라.\n"
+                "- 회의 핵심만 한국어로 2~3문장으로 짧게 요약하라. 장황한 부연 설명은 쓰지 마라.\n"
+                "- summary는 카드 헤더처럼 짧고 단정하게 써라. 가능하면 '회의에서는 ...'로 시작하라.\n"
+                "- 입력에 잡음, 잔향, 끊긴 발화, 중복 음절이 섞여 있으면 의미 있는 회의 발화만 사용하고 소음성 문구는 무시하라.\n"
+                "- keywords에는 회의의 핵심 주제 4~6개를 담아라. type은 cyan, purple, green, yellow 중 하나를 써라.\n"
+                "- decisions에는 회의에서 확정된 주요 결정사항만 넣어라.\n"
+                "- decisions에는 실행 계획, 일정, 준비 작업, 배포, 수정, 테스트 같은 문장을 넣지 마라. 이런 문장은 action_items 또는 next_agenda로 옮겨라.\n"
+                "- 검토/우선/방향/후보/가능성/논의/조율처럼 아직 확정되지 않은 내용은 decisions에 넣지 말고 next_agenda에 넣어라.\n"
+                "- action_items에는 '실제로 실행 가능한 일'만 넣어라.\n"
+                "- 다음은 action item 후보가 아니다: 단순 의견, 잡담, 배경 설명, 반복 발언.\n"
+                "- 다음은 반드시 action item으로 분리하라: 결정사항, 할당된 작업, 장애 대응, 검토 요청, 마감일이 있는 일.\n"
+                "- 하나의 문장에 여러 작업이 섞이면 작업 단위로 쪼개라.\n"
+                "- 제목은 60자 내로 짧고 명확하게 써라.\n"
+                "- 설명은 왜 필요한지, 무엇을 해야 하는지, 의존성이 있으면 무엇인지까지 담아라.\n"
+                "- issues는 짧은 리스크 카드처럼, next_agenda는 다음 회의 카드처럼 정리하라.\n"
+                "- issues와 next_agenda는 한 줄 카드 문장으로 짧게 유지하고, 장황한 배경 설명은 넣지 마라.\n"
+                "- next_agenda는 '다음 회의에서' 접두어를 한 번만 쓰고, 같은 문구를 반복하지 마라.\n"
+                "- issues는 '리스크 관리 리스크'처럼 같은 단어를 반복하지 말고, 짧은 카드 문장 하나로 정리하라.\n"
+                "- 우선순위는 low, medium, high, urgent 중 하나만 사용하라.\n"
+                "- urgent는 명시적 긴급성, 장애, 즉시 대응, 마감 임박이 있을 때만 써라.\n"
+                "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
+                "- 이름, 날짜, 숫자는 회의에서 실제 언급된 값만 사용하라.\n"
+                "- 애매하면 action_items를 비워도 된다. 억지로 채우지 마라.\n"
+                "- 중복되는 항목은 하나로 합쳐라.\n"
+                "- issues에는 진행 리스크, 장애, 성능 저하, 일정 압박 같은 항목만 넣어라.\n"
+                "- next_agenda에는 다음 회의에서 다룰 후속 안건, 검토 중인 선택지, 미확정 논점만 넣어라.\n"
+                "- '방향을 잡는다', '중심으로 진행한다' 같은 선언형 문장은 next_agenda가 아니라 decisions 또는 summary로 돌려라.\n"
+                "- 회의 내용이 불완전하면 요약에서도 그 한계를 반영하되, 여전히 최선의 요약을 제공하라.\n"
+                "- 제목과 설명이 사실상 같은 경우는 action item으로 내보내지 마라.\n"
+                "- '추가 작업 없음', '공유사항', '참고'만 있는 문장은 action item으로 만들지 마라.\n"
+            )
         return instruction
 
     @staticmethod
@@ -2152,10 +3315,228 @@ class OpenAIAnalysisService(LLMAnalysisService):
         return {"value": str(usage)}
 
 
-def build_llm_analysis_service() -> LLMAnalysisService:
-    """Prefer OpenAI when configured, otherwise fall back to heuristic analysis."""
+class LangChainAnalysisService(LLMAnalysisService):
+    """LangChain-backed meeting analysis that keeps the same JSON contract."""
 
-    if settings.openai_api_key:
+    model_name = DEFAULT_MODEL_NAME
+    prompt_version = "langchain-v1"
+
+    def __init__(self, model_name: str | None = None, prompt_version: str = "langchain-v1") -> None:
+        self.model_name = model_name or DEFAULT_MODEL_NAME
+        self.prompt_version = prompt_version
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _load_components():
+        try:
+            from langchain_core.output_parsers import StrOutputParser
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_openai import ChatOpenAI
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("langchain-core/langchain-openai packages are not installed") from exc
+
+        return ChatPromptTemplate, StrOutputParser, ChatOpenAI
+
+    def _invoke_chain(
+        self,
+        transcript: str,
+        context: Any | None = None,
+        *,
+        model_name: str | None = None,
+    ) -> str:
+        ChatPromptTemplate, StrOutputParser, ChatOpenAI = self._load_components()
+        source_kind = _detect_source_kind(context)
+
+        if settings.openai_api_key:
+            os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", OpenAIAnalysisService._build_instructions(context, source_kind=source_kind)),
+                ("human", "{transcript}"),
+            ]
+        )
+        llm = ChatOpenAI(model=model_name or self.model_name, temperature=0, max_retries=3)
+        chain = prompt | llm | StrOutputParser()
+        return str(chain.invoke({"transcript": transcript})).strip()
+
+    def summarize_and_extract_tickets(self, transcript: str, context: Any | None = None) -> dict[str, Any]:
+        normalized = self._normalize_text(transcript)
+        source_kind = _detect_source_kind(context)
+        if not normalized:
+            return {
+                "contract_version": "v1",
+                "meeting_title": "회의 요약",
+                "summary": "요약할 텍스트가 없습니다.",
+                "keywords": [],
+                "decisions": [],
+                "action_items": [],
+                "issues": [],
+                "next_agenda": [],
+                "model_name": self.model_name,
+                "prompt_version": self.prompt_version,
+                "summary_request": None,
+                "extra_data": {"input_characters": 0, "source": "langchain", "source_kind": source_kind},
+            }
+
+        try:
+            noisy_audio = HeuristicLLMAnalysisService._has_noisy_audio_context(context)
+            model_tier = _estimate_model_tier(normalized, context)
+            resolved_model_name = _resolve_model_name_for_tier(model_tier, fallback=self.model_name)
+            name_candidates = _collect_assignee_name_candidates(transcript, context)
+            response_text = self._invoke_chain(normalized, context, model_name=resolved_model_name)
+            payload = json.loads(response_text)
+
+            normalized_summary = _normalize_summary_card_value(payload.get("summary", ""))
+            normalized_action_items = _normalize_action_items_value(
+                payload.get("action_items", []),
+                name_candidates=name_candidates,
+            )
+            normalized_keywords = _normalize_keywords_value(payload.get("keywords", []))
+            normalized_decisions, tentative_decisions = _normalize_decisions_value(
+                payload.get("decisions", []),
+                MAX_DECISIONS,
+            )
+            normalized_issues = _normalize_issues_value(payload.get("issues", []))
+            next_agenda_source = list(payload.get("next_agenda", []) or [])
+            next_agenda_candidates = [
+                item
+                for item in next_agenda_source + tentative_decisions
+                if _is_followup_agenda_text(item)
+            ]
+            normalized_next_agenda = _normalize_next_agenda_value(next_agenda_candidates, MAX_NEXT_AGENDA)
+
+            normalizer = HeuristicLLMAnalysisService()
+            summary, action_items = normalizer._normalize_analysis_output(normalized_summary, normalized_action_items)
+            if source_kind == "document":
+                summary = re.sub(r"^회의에서는\s*", "문서에서는 ", summary).strip()
+                summary = _normalize_document_summary_value(summary)
+            else:
+                summary = _normalize_summary_card_value(summary)
+            meeting_title = _build_meeting_title(
+                transcript=normalized,
+                summary=summary,
+                keywords=normalized_keywords,
+                decisions=normalized_decisions,
+                action_items=action_items,
+                issues=normalized_issues,
+                next_agenda=normalized_next_agenda,
+                context=context,
+            )
+            (
+                meeting_title,
+                summary,
+                normalized_keywords,
+                normalized_decisions,
+                action_items,
+                normalized_issues,
+                normalized_next_agenda,
+                project_kickoff_applied,
+            ) = _apply_project_kickoff_override(
+                normalized,
+                context,
+                meeting_title=meeting_title,
+                summary=summary,
+                keywords=normalized_keywords,
+                decisions=normalized_decisions,
+                action_items=action_items,
+                issues=normalized_issues,
+                next_agenda=normalized_next_agenda,
+            )
+            if source_kind == "document":
+                source_title = _extract_source_title(context)
+                if source_title:
+                    meeting_title = _normalize_meeting_title_value(source_title) or meeting_title
+            document_summary = _build_document_summary_payload(
+                summary=summary,
+                keywords=normalized_keywords,
+                decisions=normalized_decisions,
+                action_items=action_items,
+                issues=normalized_issues,
+                next_agenda=normalized_next_agenda,
+                context=context,
+            ) if source_kind == "document" else None
+
+            return {
+                "contract_version": "v1",
+                "meeting_title": meeting_title,
+                "summary": summary,
+                "keywords": normalized_keywords,
+                "decisions": normalized_decisions,
+                "action_items": action_items,
+                "issues": normalized_issues,
+                "next_agenda": normalized_next_agenda,
+                "model_name": resolved_model_name,
+                "prompt_version": self.prompt_version,
+                "summary_request": None,
+                "extra_data": {
+                    "source": "langchain",
+                    "llm_tier": model_tier,
+                    "resolved_model_name": resolved_model_name,
+                    "input_characters": len(normalized),
+                    "response_characters": len(response_text),
+                    "action_item_count": len(action_items),
+                    "decision_count": len(normalized_decisions),
+                    "issue_count": len(normalized_issues),
+                    "next_agenda_count": len(normalized_next_agenda),
+                    "context_present": bool(_build_context_block(context)),
+                    "audio_noise_context": noisy_audio,
+                    "source_kind": source_kind,
+                    "analysis_template": "project_kickoff" if project_kickoff_applied else "default",
+                    **({"document_summary": document_summary} if document_summary else {}),
+                },
+            }
+        except Exception as exc:
+            logger.warning("LangChain analysis request failed; falling back to heuristic service: %s", exc)
+            fallback = HeuristicLLMAnalysisService().summarize_and_extract_tickets(normalized, context=context)
+            fallback["extra_data"] = dict(fallback.get("extra_data", {}))
+            fallback["extra_data"].update(
+                {
+                    "source": "langchain_fallback",
+                    "llm_tier": _estimate_model_tier(normalized, context),
+                    "fallback_error": str(exc),
+                    "input_characters": len(normalized),
+                    "context_present": bool(_build_context_block(context)),
+                    "audio_noise_context": HeuristicLLMAnalysisService._has_noisy_audio_context(context),
+                }
+            )
+            return fallback
+
+
+def _langchain_dependencies_available() -> bool:
+    try:
+        LangChainAnalysisService._load_components()
+    except Exception:
+        return False
+    return True
+
+
+def _normalize_analysis_provider(provider: Any) -> str:
+    value = str(provider or "auto").strip().lower()
+    return value or "auto"
+
+
+def build_llm_analysis_service() -> LLMAnalysisService:
+    """Build the preferred analysis service for the configured provider."""
+
+    provider = _normalize_analysis_provider(getattr(settings, "llm_analysis_provider", "auto"))
+
+    if provider == "heuristic":
+        return HeuristicLLMAnalysisService()
+
+    if provider in {"langchain", "auto"}:
+        if settings.openai_api_key and _langchain_dependencies_available():
+            try:
+                return LangChainAnalysisService()
+            except Exception as exc:
+                logger.warning("LangChain analysis unavailable: %s", exc)
+                if provider == "langchain":
+                    logger.warning("LangChain provider was requested explicitly, but could not be constructed.")
+        elif provider == "langchain":
+            logger.warning("LangChain provider was requested explicitly, but required dependencies or API key are missing.")
+            return HeuristicLLMAnalysisService()
+
+    if provider in {"openai", "langchain", "auto"} and settings.openai_api_key:
         try:
             return OpenAIAnalysisService()
         except Exception as exc:

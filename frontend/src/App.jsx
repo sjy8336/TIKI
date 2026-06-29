@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom'
 import FileUploader from './pages/FileUploader'
 import Dashboard from './pages/Dashboard'
@@ -9,40 +10,92 @@ import CreateProject from './pages/CreateProject';
 import ProjectList from './pages/ProjectList';
 import ProjectMeetings from './pages/ProjectMeetings';
 import MeetingMinutesCreate from './pages/MeetingMinutesCreate';
+import MeetingManualDetail from './pages/MeetingManualDetail';
 import MyPage from './pages/Mypage';
 import Landingpage from './pages/Landingpage';
 import OnboardingPage from './pages/Onboarding';
+import Subscription from './pages/Subscription';
+import SubscriptionCheckout from './pages/SubscriptionCheckout';
+import SubscriptionComplete from './pages/SubscriptionComplete';
+import ContactPage from './pages/Contact';
 
 function App() {
-  const isAuthenticated = Boolean(localStorage.getItem('tiki_access_token'));
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem('tiki_access_token')));
+
+  useEffect(() => {
+    const syncAuthSession = () => {
+      setIsAuthenticated(Boolean(localStorage.getItem('tiki_access_token')));
+    };
+
+    window.addEventListener('storage', syncAuthSession);
+    window.addEventListener('tiki-auth-changed', syncAuthSession);
+
+    return () => {
+      window.removeEventListener('storage', syncAuthSession);
+      window.removeEventListener('tiki-auth-changed', syncAuthSession);
+    };
+  }, []);
 
   return (
     <Routes>
+      <Route
+        path="/"
+        element={<Navigate to={isAuthenticated ? '/upload' : '/onboarding'} replace />}
+      />
       <Route path="/create-project" element={<CreateProject />} />
       <Route path="/project-list" element={<ProjectList />} />
       <Route path="/project/:projectId/meetings" element={<ProjectMeetings />} />
       <Route path="/meeting-create" element={<MeetingMinutesCreate />} />
+      <Route path="/meeting-manual-detail" element={<MeetingManualDetail />} />
       <Route path="/dashboard" element={<Dashboard />} />
-      <Route path="/upload" element={<FileUploader />} />
+      <Route
+        path="/upload"
+        element={
+          isAuthenticated ? (
+            <FileUploader />
+          ) : (
+            <Navigate to="/onboarding" replace state={{ from: '/upload' }} />
+          )
+        }
+      />
       <Route path="/configuration" element={<Configuration />} />
       <Route path="/meeting-detail" element={<MeetingMinutesDetail />} />
+      <Route path="/contact" element={<ContactPage />} />
       <Route
         path="/mypage"
         element={
           isAuthenticated ? (
             <MyPage />
           ) : (
-            <Navigate to="/login" replace state={{ from: '/mypage' }} />
+            <Navigate to="/onboarding" replace state={{ from: '/mypage' }} />
           )
         }
       />
+      <Route path="/subscription" element={<Subscription />} />
+      <Route path="/subscription/checkout" element={<SubscriptionCheckout />} />
+      <Route path="/subscription/complete" element={<SubscriptionComplete />} />
       <Route path="/landing" element={<Landingpage />} />
-      <Route path="/onboarding" element={<OnboardingPage />} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignUpPage />} />
+      <Route
+        path="/onboarding"
+        element={
+          isAuthenticated ? (
+            <Navigate to="/upload" replace />
+          ) : (
+            <OnboardingPage />
+          )
+        }
+      />
+      <Route
+        path="/login"
+        element={isAuthenticated ? <Navigate to="/upload" replace /> : <LoginPage />}
+      />
+      <Route
+        path="/signup"
+        element={isAuthenticated ? <Navigate to="/upload" replace /> : <SignUpPage />}
+      />
       <Route
         path="*"
-        element={<Navigate to={isAuthenticated ? '/upload' : '/dashboard'} replace />}
+        element={<Navigate to={isAuthenticated ? '/upload' : '/onboarding'} replace />}
       />
     </Routes>
   );

@@ -3,8 +3,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
+import ToastPopup from '../components/toastpopup';
 
 const ISSUE_PRIORITY_OPTIONS = ['높음', '보통', '낮음'];
+
+const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
+const MANUAL_MEETING_RECORDS_KEY = 'tiki_manual_minutes_records';
 
 const ISSUE_PRIORITY_STYLES = {
   높음: {
@@ -40,18 +44,52 @@ const openDatePicker = (input) => {
   input.focus();
 };
 
-function Toast({ msg, color }) {
-  if (!msg) return null;
+const readProjectOverrides = () => {
+  try {
+    const raw = localStorage.getItem(PROJECT_OVERRIDE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
 
-  return (
-    <div
-      className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 w-fit max-w-[calc(100vw-2rem)] px-4 py-2.5 rounded-full text-white text-xs font-semibold shadow-lg pointer-events-none whitespace-nowrap overflow-hidden text-ellipsis"
-      style={{ background: color }}
-    >
-      {msg}
-    </div>
-  );
-}
+const writeProjectOverrides = (next) => {
+  try {
+    localStorage.setItem(PROJECT_OVERRIDE_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore storage write failures in local mock mode
+  }
+};
+
+const readManualMeetingRecords = () => {
+  try {
+    const raw = localStorage.getItem(MANUAL_MEETING_RECORDS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeManualMeetingRecords = (next) => {
+  try {
+    localStorage.setItem(MANUAL_MEETING_RECORDS_KEY, JSON.stringify(next));
+  } catch {
+    // ignore storage write failures in local mock mode
+  }
+};
+
+const formatStorageDate = (raw) => {
+  const value = String(raw || '').trim();
+  if (!value) return '-';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value.replace(/-/g, '.');
+  }
+  return value;
+};
 
 function LoadingOverlay() {
   return (
@@ -63,6 +101,37 @@ function LoadingOverlay() {
             <p className="text-sm font-bold text-[#0D1B2A]">저장 중</p>
             <p className="text-xs text-[#5A6F8A] mt-0.5">회의록을 저장하고 있어요.</p>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDeleteModal({ open, title, description, onCancel, onConfirm }) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(13,27,42,0.45)' }}>
+      <div className="w-full max-w-sm rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white shadow-[0_18px_50px_rgba(13,27,42,0.22)]">
+        <div className="px-5 py-4 border-b border-[rgba(0,100,180,0.08)]">
+          <h3 className="text-sm font-bold text-[#0D1B2A]">{title}</h3>
+          {description && <p className="text-xs text-[#5A6F8A] mt-1">{description}</p>}
+        </div>
+        <div className="px-5 py-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3.5 py-2 rounded-lg border border-[rgba(0,100,180,0.14)] text-[#5A6F8A] text-xs font-semibold hover:bg-[#F8FAFF]"
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="px-3.5 py-2 rounded-lg bg-[#EF4444] text-white text-xs font-semibold hover:bg-[#DC2626]"
+          >
+            삭제
+          </button>
         </div>
       </div>
     </div>
@@ -82,12 +151,15 @@ export default function MeetingMinutesCreate() {
   const [activeTab, setActiveTab] = useState('home');
   const [isTypeOpen, setIsTypeOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [toast, setToast] = useState({ msg: '', color: '#10B981' });
+  const [toast, setToast] = useState({ message: '', type: 'info' });
 
   const [decisionInput, setDecisionInput] = useState('');
   const [actionInput, setActionInput] = useState({ title: '', assignee: '', dueDate: '' });
   const [decisionItems, setDecisionItems] = useState([]);
   const [actionItems, setActionItems] = useState([]);
+  const [editingActionId, setEditingActionId] = useState(null);
+  const [actionEditInput, setActionEditInput] = useState({ title: '', assignee: '', dueDate: '' });
+  const [pendingDeleteActionId, setPendingDeleteActionId] = useState(null);
 
   const [issueInput, setIssueInput] = useState('');
   const [issuePriority, setIssuePriority] = useState('보통');
@@ -108,6 +180,10 @@ export default function MeetingMinutesCreate() {
     keywords: '',
     nextAgenda: '',
   });
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
 
   const update = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -155,11 +231,78 @@ export default function MeetingMinutesCreate() {
   };
 
   const toggleAction = (id) => {
-    setActionItems((prev) => prev.map((item) => (item.id === id ? { ...item, checked: !item.checked } : item)));
+    let nextChecked = false;
+    setActionItems((prev) => prev.map((item) => {
+      if (item.id !== id) return item;
+      nextChecked = !item.checked;
+      return { ...item, checked: nextChecked };
+    }));
+
+    if (nextChecked) {
+      showToast('해야 할 일이 완료되었습니다.', 'success');
+    }
   };
 
   const removeAction = (id) => {
     setActionItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const startEditAction = (item) => {
+    setEditingActionId(item.id);
+    setActionEditInput({
+      title: item.text || '',
+      assignee: item.assignee || '',
+      dueDate: item.dueDate || '',
+    });
+  };
+
+  const updateActionEditInput = (key, value) => {
+    setActionEditInput((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const cancelEditAction = () => {
+    setEditingActionId(null);
+    setActionEditInput({ title: '', assignee: '', dueDate: '' });
+  };
+
+  const saveEditAction = () => {
+    const nextTitle = actionEditInput.title.trim();
+    if (!editingActionId) return;
+    if (!nextTitle) {
+      showToast('해야 할 일 제목을 입력해 주세요.', 'warning');
+      return;
+    }
+
+    setActionItems((prev) => prev.map((item) => (
+      item.id === editingActionId
+        ? {
+            ...item,
+            text: nextTitle,
+            assignee: actionEditInput.assignee.trim(),
+            dueDate: actionEditInput.dueDate,
+          }
+        : item
+    )));
+    cancelEditAction();
+    showToast('해야 할 일이 수정되었습니다.', 'success');
+  };
+
+  const requestRemoveAction = (id) => {
+    setPendingDeleteActionId(id);
+  };
+
+  const cancelRemoveAction = () => {
+    setPendingDeleteActionId(null);
+  };
+
+  const confirmRemoveAction = () => {
+    if (!pendingDeleteActionId) return;
+    removeAction(pendingDeleteActionId);
+    if (editingActionId === pendingDeleteActionId) {
+      cancelEditAction();
+    }
+    setPendingDeleteActionId(null);
+    showToast('해야 할 일이 삭제되었습니다.', 'success');
   };
 
   const addKeywordTags = () => {
@@ -231,15 +374,15 @@ export default function MeetingMinutesCreate() {
     };
   }, []);
 
-  const showToast = useCallback((msg, color = '#10B981') => {
-    setToast({ msg, color });
+  const showToast = useCallback((message, type = 'info') => {
+    setToast({ message, type });
 
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
     }
 
     toastTimerRef.current = setTimeout(() => {
-      setToast({ msg: '', color });
+      setToast({ message: '', type: 'info' });
     }, 2800);
   }, []);
 
@@ -263,10 +406,141 @@ export default function MeetingMinutesCreate() {
       clearTimeout(saveTimerRef.current);
     }
 
+    const pendingDecision = decisionInput.trim();
+    const pendingActionTitle = actionInput.title.trim();
+    const pendingIssue = issueInput.trim();
+    const pendingKeywordTags = keywordInput
+      .split(/[\n,]/)
+      .map((word) => word.trim().replace(/^#/, ''))
+      .filter(Boolean);
+
+    const mergedDecisionItems = pendingDecision
+      ? [...decisionItems, { id: Date.now() + Math.random(), text: pendingDecision, checked: false }]
+      : decisionItems;
+
+    const mergedActionItems = pendingActionTitle
+      ? [
+          ...actionItems,
+          {
+            id: Date.now() + Math.random(),
+            text: pendingActionTitle,
+            assignee: actionInput.assignee.trim(),
+            dueDate: actionInput.dueDate,
+            checked: false,
+          },
+        ]
+      : actionItems;
+
+    const mergedIssueItems = pendingIssue
+      ? [...issueItems, { id: Date.now() + Math.random(), text: pendingIssue, priority: issuePriority }]
+      : issueItems;
+
+    const mergedKeywords = (() => {
+      const base = keywordTags.length > 0
+        ? [...keywordTags]
+        : form.keywords
+            .split(',')
+            .map((word) => word.trim().replace(/^#/, ''))
+            .filter(Boolean);
+      const next = [...base];
+      pendingKeywordTags.forEach((tag) => {
+        if (!next.includes(tag) && next.length < 12) {
+          next.push(tag);
+        }
+      });
+      return next;
+    })();
+
+    const manualRecordId = `mm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const participants = form.participants
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const meetingDate = formatStorageDate(form.date);
+    const normalizedKeywords = mergedKeywords;
+
+    const manualRecord = {
+      id: manualRecordId,
+      projectId: projectId ? String(projectId) : '',
+      projectName,
+      title: form.title.trim(),
+      date: meetingDate,
+      rawDate: form.date,
+      type: form.type,
+      participants,
+      summary: form.summary.trim(),
+      keywords: normalizedKeywords,
+      decisions: mergedDecisionItems.map((item) => ({ text: item.text, checked: Boolean(item.checked) })),
+      actions: mergedActionItems.map((item) => ({
+        text: item.text,
+        assignee: item.assignee,
+        dueDate: item.dueDate,
+        checked: Boolean(item.checked),
+      })),
+      issues: mergedIssueItems.map((item) => ({ text: item.text, priority: item.priority })),
+      nextAgenda: form.nextAgenda.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextManualRecords = readManualMeetingRecords();
+    nextManualRecords[manualRecordId] = manualRecord;
+    writeManualMeetingRecords(nextManualRecords);
+
+    if (projectId) {
+      const nextOverrides = readProjectOverrides();
+      const key = String(projectId);
+      const prev = nextOverrides[key] && typeof nextOverrides[key] === 'object' ? nextOverrides[key] : {};
+      const prevMeetings = Array.isArray(prev.meetings) ? prev.meetings : [];
+      const prevActionItems = Array.isArray(prev.myActionItems) ? prev.myActionItems : [];
+      const meetingRow = {
+        id: manualRecordId,
+        date: meetingDate,
+        title: manualRecord.title,
+        status: '완료',
+        type: form.type,
+        tags: normalizedKeywords.slice(0, 4).map((tag) => `#${tag}`),
+        participants: participants.length > 0 ? participants : ['미지정'],
+        summary: manualRecord.summary || '직접 작성된 회의록입니다.',
+        actionItems: mergedActionItems.length,
+        jiraLinked: 0,
+        detailType: 'manual',
+        detailRecordId: manualRecordId,
+      };
+
+      const generatedActionItems = mergedActionItems.map((item, index) => ({
+        id: `${manualRecordId}-action-${index + 1}`,
+        text: item.text,
+        description: manualRecord.summary || '',
+        due: formatStorageDate(item.dueDate),
+        assignee: item.assignee || '담당자 미지정',
+        status: '검토대기',
+        source: manualRecord.title,
+        integrationTool: null,
+        externalLink: '',
+        snapshotOf: null,
+        historySavedAt: null,
+        updatedAt: new Date().toISOString(),
+      }));
+
+      nextOverrides[key] = {
+        ...prev,
+        meetings: [meetingRow, ...prevMeetings],
+        myActionItems: [...generatedActionItems, ...prevActionItems],
+      };
+      writeProjectOverrides(nextOverrides);
+    }
+
     saveTimerRef.current = setTimeout(() => {
       setIsSaving(false);
-      showToast('저장되었습니다.', '#10B981');
-    }, 1100);
+      showToast('저장되었습니다.', 'success');
+      navigate('/meeting-manual-detail', {
+        state: {
+          recordId: manualRecordId,
+          projectId: projectId ? String(projectId) : '',
+          projectName,
+        },
+      });
+    }, 500);
   };
 
   return (
@@ -280,7 +554,7 @@ export default function MeetingMinutesCreate() {
             onClick={() => (projectId ? navigate(`/project/${projectId}/meetings`) : navigate('/project-list'))}
             className="text-sm text-[#5A6F8A] hover:text-[#0D1B2A]"
           >
-            돌아가기
+            ← 돌아가기
           </button>
 
           <section className="mt-4 rounded-2xl border border-[rgba(0,100,180,0.12)] bg-white p-5 md:p-6">
@@ -327,7 +601,17 @@ export default function MeetingMinutesCreate() {
                       }`}
                     >
                       <span className="font-medium">{form.type}</span>
-                      <span className={`text-xs text-[#5A6F8A] transition-transform ${isTypeOpen ? 'rotate-180' : ''}`}>⌄</span>
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        className={`shrink-0 text-[#A0AFBF] transition-transform ${isTypeOpen ? 'rotate-180' : ''}`}
+                        aria-hidden="true"
+                      >
+                        <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
                     </button>
 
                     {isTypeOpen && (
@@ -341,11 +625,23 @@ export default function MeetingMinutesCreate() {
                               setIsTypeOpen(false);
                             }}
                             className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between transition-colors ${
-                              form.type === option ? 'bg-[#EEF3FF] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F8FAFF]'
+                              form.type === option ? 'bg-[#F5F7FB] text-[#0099CC] font-semibold' : 'text-[#0D1B2A] hover:bg-[#F5F7FB]'
                             }`}
                           >
                             <span>{option}</span>
-                            {form.type === option && <span className="text-[#0099CC]">✓</span>}
+                            {form.type === option && (
+                              <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="shrink-0 text-[#0099CC]"
+                                aria-hidden="true"
+                              >
+                                <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
                           </button>
                         ))}
                       </div>
@@ -460,8 +756,19 @@ export default function MeetingMinutesCreate() {
                             className="mt-0.5"
                           />
                           <span className={`flex-1 text-sm ${item.checked ? 'text-[#7C8EA6] line-through' : 'text-[#0D1B2A]'}`}>{item.text}</span>
-                          <button type="button" onClick={() => removeDecision(item.id)} className="text-xs text-[#9AAAC0] hover:text-[#EF4444]">
-                            삭제
+                          <button
+                            type="button"
+                            onClick={() => removeDecision(item.id)}
+                            className="w-7 h-7 rounded-lg border border-[rgba(0,100,180,0.14)] text-[#7C8EA6] hover:bg-[#FEF2F2] hover:text-[#EF4444] hover:border-[rgba(239,68,68,0.3)] flex items-center justify-center transition-colors"
+                            aria-label="주요 결정 삭제"
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                              <path d="M3 6h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M10 11v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M14 11v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
                           </button>
                         </label>
                       ))}
@@ -470,7 +777,7 @@ export default function MeetingMinutesCreate() {
 
                   <div className="rounded-2xl border border-[rgba(0,100,180,0.08)] bg-white p-4 space-y-3">
                     <div className="flex items-center justify-between gap-2">
-                      <label className="block text-xs font-semibold text-[#5A6F8A]">액션 아이템</label>
+                      <label className="block text-xs font-semibold text-[#5A6F8A]">해야 할 일</label>
                       <span className="text-[11px] text-[#5A6F8A]">담당자와 마감일을 함께 넣을 수 있습니다.</span>
                     </div>
                     <div className="space-y-2">
@@ -490,6 +797,12 @@ export default function MeetingMinutesCreate() {
                         <input
                           value={actionInput.assignee}
                           onChange={(e) => updateActionInput('assignee', e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              addAction();
+                            }
+                          }}
                           placeholder="담당자"
                           className="w-full min-w-0 px-3 py-2.5 text-sm bg-[#F8FAFF] border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]"
                         />
@@ -499,6 +812,12 @@ export default function MeetingMinutesCreate() {
                             type="date"
                             value={actionInput.dueDate}
                             onChange={(e) => updateActionInput('dueDate', e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                addAction();
+                              }
+                            }}
                             className="w-full min-w-0 px-3 py-2.5 text-sm bg-[#F8FAFF] border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC] cursor-pointer"
                           />
                         </div>
@@ -513,45 +832,116 @@ export default function MeetingMinutesCreate() {
                     </div>
                     <div className="space-y-1.5 max-h-[240px] overflow-y-auto pr-1">
                       {actionItems.length === 0 && (
-                        <p className="text-xs text-[#7C8EA6] px-1 py-2">추가된 액션 아이템이 없습니다.</p>
+                        <p className="text-xs text-[#7C8EA6] px-1 py-2">추가된 해야 할 일이 없습니다.</p>
                       )}
-                      {actionItems.map((item) => (
-                        <div
-                          key={item.id}
-                          className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 ${
-                            item.checked ? 'border-[#A7E8C5] bg-[#ECFDF5]' : 'border-[rgba(0,100,180,0.12)] bg-white'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={item.checked}
-                            onChange={() => toggleAction(item.id)}
-                            className="mt-0.5"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-sm ${item.checked ? 'text-[#15803D] line-through' : 'text-[#0D1B2A]'}`}>{item.text}</p>
-                            {(item.assignee || item.dueDate || item.checked) && (
-                              <p className="text-xs text-[#7C8EA6] mt-0.5">
-                                {[item.assignee, item.checked ? '완료' : formatDate(item.dueDate)].filter(Boolean).join(' · ')}
-                              </p>
-                            )}
-                          </div>
-                          <span
-                            className={`shrink-0 px-2 py-1 rounded-full text-[11px] font-semibold ${
-                              item.checked ? 'bg-[#D1FAE5] text-[#15803D]' : 'bg-[#EEF3FF] text-[#0099CC]'
+                      {actionItems.map((item) => {
+                        const isEditing = editingActionId === item.id;
+
+                        return (
+                          <div
+                            key={item.id}
+                            className={`rounded-xl border px-3 py-2.5 ${
+                              item.checked ? 'border-[#A7E8C5] bg-[#ECFDF5]' : 'border-[rgba(0,100,180,0.12)] bg-white'
                             }`}
                           >
-                            {item.checked ? '완료' : '진행 중'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeAction(item.id)}
-                            className="text-xs text-[#9AAAC0] hover:text-[#EF4444] shrink-0"
-                          >
-                            삭제
-                          </button>
-                        </div>
-                      ))}
+                            {isEditing ? (
+                              <div className="space-y-2">
+                                <input
+                                  value={actionEditInput.title}
+                                  onChange={(e) => updateActionEditInput('title', e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      saveEditAction();
+                                    }
+                                  }}
+                                  className="w-full min-w-0 px-3 py-2 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-lg focus:outline-none focus:border-[#0099CC]"
+                                />
+                                <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-2">
+                                  <input
+                                    value={actionEditInput.assignee}
+                                    onChange={(e) => updateActionEditInput('assignee', e.target.value)}
+                                    placeholder="담당자"
+                                    className="w-full min-w-0 px-3 py-2 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-lg focus:outline-none focus:border-[#0099CC]"
+                                  />
+                                  <input
+                                    type="date"
+                                    value={actionEditInput.dueDate}
+                                    onChange={(e) => updateActionEditInput('dueDate', e.target.value)}
+                                    className="w-full min-w-0 px-3 py-2 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-lg focus:outline-none focus:border-[#0099CC]"
+                                  />
+                                </div>
+                                <div className="flex justify-end gap-2 pt-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={cancelEditAction}
+                                    className="px-3 py-1.5 rounded-lg border border-[rgba(0,100,180,0.14)] text-[#5A6F8A] text-xs font-semibold hover:bg-[#F8FAFF]"
+                                  >
+                                    취소
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={saveEditAction}
+                                    className="px-3 py-1.5 rounded-lg bg-[#0099CC] text-white text-xs font-semibold hover:bg-[#007EA7]"
+                                  >
+                                    저장
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-start gap-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={item.checked}
+                                  onChange={() => toggleAction(item.id)}
+                                  className="mt-0.5"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-sm ${item.checked ? 'text-[#15803D] line-through' : 'text-[#0D1B2A]'}`}>{item.text}</p>
+                                  {(item.assignee || item.dueDate || item.checked) && (
+                                    <p className="text-xs text-[#7C8EA6] mt-0.5">
+                                      {[item.assignee, item.checked ? '완료' : formatDate(item.dueDate)].filter(Boolean).join(' · ')}
+                                    </p>
+                                  )}
+                                </div>
+                                <span
+                                  className={`shrink-0 px-2 py-1 rounded-full text-[11px] font-semibold ${
+                                    item.checked ? 'bg-[#D1FAE5] text-[#15803D]' : 'bg-[#EEF3FF] text-[#0099CC]'
+                                  }`}
+                                >
+                                  {item.checked ? '완료' : '진행 중'}
+                                </span>
+                                <div className="shrink-0 flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => startEditAction(item)}
+                                    className="w-7 h-7 rounded-lg border border-[rgba(0,100,180,0.14)] text-[#5A6F8A] hover:bg-[#F8FAFF] hover:text-[#0D1B2A] flex items-center justify-center transition-colors"
+                                    aria-label="해야 할 일 수정"
+                                  >
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                      <path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => requestRemoveAction(item.id)}
+                                    className="w-7 h-7 rounded-lg border border-[rgba(0,100,180,0.14)] text-[#7C8EA6] hover:bg-[#FEF2F2] hover:text-[#EF4444] hover:border-[rgba(239,68,68,0.3)] flex items-center justify-center transition-colors"
+                                    aria-label="해야 할 일 삭제"
+                                  >
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                      <path d="M3 6h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M10 11v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M14 11v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -618,9 +1008,16 @@ export default function MeetingMinutesCreate() {
                             <button
                               type="button"
                               onClick={() => removeIssue(item.id)}
-                              className="text-xs text-[#9AAAC0] hover:text-[#EF4444] shrink-0"
+                              className="w-7 h-7 rounded-lg border border-[rgba(0,100,180,0.14)] text-[#7C8EA6] hover:bg-[#FEF2F2] hover:text-[#EF4444] hover:border-[rgba(239,68,68,0.3)] flex items-center justify-center transition-colors shrink-0"
+                              aria-label="리스크/이슈 삭제"
                             >
-                              삭제
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                <path d="M3 6h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M10 11v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M14 11v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
                             </button>
                           </div>
                         );
@@ -665,7 +1062,14 @@ export default function MeetingMinutesCreate() {
       {!isMobile && <Footer />}
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
       {isSaving && <LoadingOverlay />}
-      <Toast msg={toast.msg} color={toast.color} />
+      <ConfirmDeleteModal
+        open={Boolean(pendingDeleteActionId)}
+        title="해야 할 일을 삭제할까요?"
+        description="삭제한 항목은 되돌릴 수 없습니다."
+        onCancel={cancelRemoveAction}
+        onConfirm={confirmRemoveAction}
+      />
+      <ToastPopup show={Boolean(toast.message)} message={toast.message} type={toast.type} />
     </div>
   );
 }

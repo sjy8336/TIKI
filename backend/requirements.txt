@@ -8,4 +8,8 @@ alembic
 python-multipart
 email-validator
 openai-whisper
+faster-whisper
 openai
+pyannote.audio
+langchain-core
+langchain-openai

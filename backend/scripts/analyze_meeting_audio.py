@@ -15,13 +15,13 @@ from app.services.ai.stt import WhisperSpeechToTextService
 from app.services.ai_engine import AIEngine
 
 
-def _build_engine(mode: str) -> AIEngine:
+def _build_engine(mode: str, transcription_profile: str) -> AIEngine:
     if mode == "heuristic":
         return AIEngine(
-            stt_service=WhisperSpeechToTextService(),
+            stt_service=WhisperSpeechToTextService(transcription_profile=transcription_profile),
             llm_service=HeuristicLLMAnalysisService(),
         )
-    return AIEngine()
+    return AIEngine(transcription_profile=transcription_profile)
 
 
 def _print_section(title: str, value: Any) -> None:
@@ -50,7 +50,12 @@ def _print_section(title: str, value: Any) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Analyze a meeting audio file and print a readable report.")
-    parser.add_argument("audio_path", type=Path, help="Path to the meeting audio file")
+    parser.add_argument(
+        "audio_paths",
+        type=Path,
+        nargs="+",
+        help="One or more meeting audio files. Multiple files are merged and summarized as a single meeting.",
+    )
     parser.add_argument(
         "--mode",
         choices=("heuristic", "default"),
@@ -63,19 +68,38 @@ def main() -> int:
         default=None,
         help="Optional path to write the full analysis payload as JSON.",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("small", "medium", "large", "light", "balanced", "premium"),
+        default="balanced",
+        help="Transcription budget profile. small/light, medium/balanced, large/premium are accepted aliases.",
+    )
     args = parser.parse_args()
 
-    engine = _build_engine(args.mode)
-    result = engine.process_audio(str(args.audio_path))
+    engine = _build_engine(args.mode, args.profile)
+    audio_paths = [str(path) for path in args.audio_paths]
+    result = engine.process_audio(audio_paths[0]) if len(audio_paths) == 1 else engine.process_audio_batch(audio_paths)
 
     audio_summary = result.analysis.extra_data.get("audio_preprocessing", {})
+    stt_routing = result.analysis.extra_data.get("stt_routing", [])
 
-    print(f"FILE: {args.audio_path}")
+    print(f"FILE_COUNT: {len(audio_paths)}")
+    print("FILES:")
+    for path in audio_paths:
+        print(f"- {path}")
     print(f"MODE: {args.mode}")
+    print(f"PROFILE: {args.profile}")
     print(f"TRANSCRIPT_LEN: {len(result.transcript)}")
     print(f"MODEL: {result.analysis.model_name}")
     print(f"PROMPT: {result.analysis.prompt_version}")
+    if result.analysis.meeting_title:
+        print(f"[회의 요약] {result.analysis.meeting_title}")
+        print()
     _print_section("AUDIO_PREPROCESSING", audio_summary)
+    print()
+    _print_section("STT_ROUTING", stt_routing)
+    print()
+    _print_section("SPEAKER_DIARIZATION", result.analysis.extra_data.get("speaker_diarization", {}))
     print()
     _print_section("SUMMARY", result.analysis.summary)
     print()

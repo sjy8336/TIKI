@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
-import { clearAuthSession } from "../api/apiClient";
+import { clearAuthSession, getSubscription } from "../api/apiClient";
+import { PLANS, yearlyDiscount } from "../data/subscriptionPlans";
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 const ICON_PATHS = {
@@ -30,6 +31,11 @@ const ICON_PATHS = {
   linkOff: ["M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71","M5.17 11.75l-1.72 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71","M1 1l22 22"],
   arrowLeft: ["M19 12H5","M12 19l-7-7 7-7"],
   briefcase: ["M20 7h-4V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z","M16 7V5H8v2"],
+  creditCard: ["M22 10V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4","M2 10h20","M6 14h2","M10 14h6","M4 18h16a2 2 0 0 0 2-2v-2H2v2a2 2 0 0 0 2 2z"],
+  sparkles: ["M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z","M5 17l.8 2.2L8 20l-2.2.8L5 23l-.8-2.2L2 20l2.2-.8L5 17z","M19 15l.7 1.9L21.5 17.6l-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"],
+  home: ["M3 9.5L12 3l9 6.5","M5 10v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10","M9 21v-6h6v6"],
+  pencil: ["M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z","M15 5l4 4"],
+  mail: ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z","M22 6l-10 7L2 6"],
 };
 
 function Icon({ name, size = 16, color = "currentColor", sw = 1.8 }) {
@@ -48,22 +54,20 @@ const cn = (...c) => c.filter(Boolean).join(" ");
 
 // ── Data ──────────────────────────────────────────────────────────────────
 const NAV_ITEMS = [
+  { id: "home",        label: "홈",             icon: "home" },
   { id: "profile",     label: "프로필",         icon: "user" },
   { id: "security",    label: "보안",           icon: "lock" },
   { id: "integrations",label: "연동",           icon: "link" },
+  { id: "subscription",label: "구독권 관리",     icon: "creditCard" },
   { id: "sessions",    label: "세션 관리",       icon: "monitor" },
   { id: "data",        label: "데이터",          icon: "download" },
 ];
 
 const DEPARTMENTS = [
-  "기획팀",
-  "디자인팀",
-  "프론트엔드 개발팀",
-  "백엔드 개발팀",
-  "QA팀",
-  "마케팅팀",
-  "인사팀",
-  "직접 입력",
+  "마케터",
+  "PM",
+  "디자이너",
+  "기타",
 ];
 
 const ROLE_LABELS = {
@@ -302,9 +306,247 @@ function PwStrengthBar({ password }) {
   );
 }
 
+// ── Greeting helper ─────────────────────────────────────────────────────────
+function getGreeting() {
+  const h = new Date().getHours();
+  if (h < 6) return "늦은 시간까지 고생 많으세요";
+  if (h < 12) return "좋은 아침이에요";
+  if (h < 18) return "오늘도 좋은 하루 보내고 계신가요";
+  return "오늘 하루도 고생 많으셨어요";
+}
+
+function formatPlanFeatureLabel(label) {
+  if (!label) return "";
+
+  const meetingMatch = label.match(/^월\s*(\d+)회\s*회의 분석$/);
+  if (meetingMatch) return `회의 분석: 월 ${meetingMatch[1]}회`;
+
+  const recordingMatch = label.match(/^음성 녹음\s*(.+)$/);
+  if (recordingMatch) {
+    return recordingMatch[1] === "무제한"
+      ? "음성 녹음: 무제한"
+      : `음성 녹음: 최대 ${recordingMatch[1]}`;
+  }
+
+  if (label === "기본 STT 전사") return "STT 전사: 기본 품질";
+  if (label.includes("고급 STT 전사")) return "STT 전사: 고급 품질";
+  if (label === "무제한 회의 분석") return "회의 분석: 무제한";
+
+  return label;
+}
+
+function PlanFeatureList({ features, tone = "cyan" }) {
+  const toneClass = tone === "neutral"
+    ? "border-[rgba(0,100,180,.1)] bg-white"
+    : "border-[rgba(0,153,204,.16)] bg-[rgba(0,153,204,.04)]";
+
+  return (
+    <div className={cn("mt-2.5 rounded-xl border p-2.5", toneClass)}>
+      <div className="space-y-1.5">
+        {features.map((feature) => (
+          <div
+            key={`feature-row-${feature.label}`}
+            className="flex items-center gap-2 rounded-lg bg-white/70 px-2.5 py-2"
+          >
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[rgba(0,153,204,.12)]">
+              <Icon name="check" size={11} color="#0099CC" sw={2.5} />
+            </span>
+            <span className="text-[12px] font-semibold text-[#0D1B2A]">
+              {formatPlanFeatureLabel(feature.label)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Sections
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ── Home (마이페이지 홈 대시보드) ───────────────────────────────────────────
+function StatBlock({ value, label, accent }) {
+  return (
+    <div className="text-center">
+      <p className={cn("text-[26px] font-black tracking-[-1px]", accent ? "text-[#0099CC]" : "text-[#0D1B2A]")}>{value}</p>
+      <p className="mt-0.5 text-[12px] text-[#5A6F8A]">{label}</p>
+    </div>
+  );
+}
+
+function UsageBar({ label, value, max, unit = "" }) {
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-[12px]">
+        <span className="text-[#5A6F8A]">{label}</span>
+        <span className="font-bold text-[#0D1B2A]">{value}{unit} / {max}{unit}</span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-[rgba(0,100,180,.08)]">
+        <div className="h-full rounded-full bg-[linear-gradient(135deg,#0099CC,#7C3AED)] transition-all"
+          style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+const RECENT_MEETINGS = [
+  { id: 1, title: "TIKI 앱 개발 - 스프린트 12 리뷰", date: "6월 24일", actionItems: 5, done: 3 },
+  { id: 2, title: "Q3 로드맵 정렬 회의",              date: "6월 22일", actionItems: 3, done: 3 },
+  { id: 3, title: "디자인 시스템 토큰 점검",           date: "6월 19일", actionItems: 4, done: 1 },
+];
+
+function HomeSection({ goTo, name, email, department }) {
+  const totalActionItems = RECENT_MEETINGS.reduce((s, m) => s + m.actionItems, 0);
+  const doneActionItems = RECENT_MEETINGS.reduce((s, m) => s + m.done, 0);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [currentPlanId, setCurrentPlanId] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).planId ?? "free") : "free";
+    } catch {
+      return "free";
+    }
+  });
+  const [currentBilling, setCurrentBilling] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
+    } catch {
+      return "monthly";
+    }
+  });
+  const [nextBillingDate, setNextBillingDate] = useState(null);
+
+  useEffect(() => {
+    if (!localStorage.getItem("tiki_access_token")) return;
+
+    let cancelled = false;
+    setPlanLoading(true);
+    getSubscription()
+      .then((sub) => {
+        if (cancelled) return;
+        setCurrentPlanId(sub.plan_id || "free");
+        setCurrentBilling(sub.billing || "monthly");
+        setNextBillingDate(sub.next_billing_date || null);
+      })
+      .catch(() => {
+        // Keep locally cached plan info when API lookup fails.
+      })
+      .finally(() => {
+        if (!cancelled) setPlanLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
+  const currentPrice = currentPlan.price[currentBilling] || 0;
+  const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
+  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+  const topFeatures = currentPlan.features.filter((f) => f.included).slice(0, 3);
+
+  return (
+    <div className="space-y-7">
+      {/* 인사말 */}
+      <div>
+        <p className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0099CC]">
+          <Icon name="sparkles" size={13} color="#0099CC" />
+          {getGreeting()}
+        </p>
+        <h1 className="mt-1 text-[22px] font-bold tracking-[-0.4px] text-[#0D1B2A]">
+          {name}<span className="text-[#5A6F8A] font-bold">님,</span> 오늘의 TIKI 현황입니다
+        </h1>
+      </div>
+
+      {/* 이번 달 활동 요약 - 메인 스트립 */}
+      <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-[linear-gradient(135deg,rgba(0,153,204,.06),rgba(124,58,237,.05))] p-5 sm:p-6">
+        <p className="mb-4 text-[12px] font-bold text-[#5A6F8A]">이번 달 활동</p>
+        <div className="grid grid-cols-3 gap-4">
+          <StatBlock value="47건" label="총 회의" />
+          <StatBlock value={`${doneActionItems}/${totalActionItems}`} label="처리현황" accent />
+          <StatBlock value="132개" label="Jira 티켓 생성" />
+        </div>
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
+        {/* 좌측: 프로필(계정) + 구독권 */}
+        <div className="space-y-5">
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <p className="text-[14px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
+                <Badge label="이용중" variant="cyan" />
+                {planLoading && <span className="text-[11px] text-[#9BAABE]">동기화 중...</span>}
+              </div>
+            </div>
+            <p className="text-[12px] text-[#5A6F8A]">
+              {billingLabel} 결제 · {priceLabel}
+              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
+            </p>
+            <PlanFeatureList features={topFeatures} />
+          </div>
+
+          {/* 계정 카드: 아바타·이름을 한 줄에, 이메일·부서를 보조 메타로 한 줄에 정리 */}
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0099CC,#7C3AED)] text-[16px] font-black text-white select-none">
+                {(name || "사")[0]}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[14px] font-bold text-[#0D1B2A]">{name}</p>
+                <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#9BAABE]">
+                  <Icon name="mail" size={11} color="#9BAABE" />
+                  <span className="truncate">{email}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="my-3.5 h-px bg-[rgba(0,100,180,.07)]" />
+
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Icon name="briefcase" size={12} color="#5A6F8A" />
+                <span className="truncate text-[14px] font-semibold text-[#5A6F8A]">
+                  {department || "부서 미설정"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 우측: 최근 회의 */}
+        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-[14px] font-bold text-[#0D1B2A]">최근 회의</h3>
+            <span className="text-[12px] text-[#9BAABE]">최근 3건</span>
+          </div>
+          <div className="space-y-1">
+            {RECENT_MEETINGS.map((m, i) => (
+              <div key={m.id}
+                className={cn(
+                  "flex items-center gap-3 py-3",
+                  i !== RECENT_MEETINGS.length - 1 && "border-b border-[rgba(0,100,180,.07)]"
+                )}>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,153,204,.08)]">
+                  <Icon name="checkCircle" size={15} color={m.done === m.actionItems ? "#10B981" : "#0099CC"} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{m.title}</p>
+                  <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 해야 할일 {m.done}/{m.actionItems} 완료</p>
+                </div>
+                <Icon name="chevronRight" size={14} color="#9BAABE" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ProfileSection({ showToast, initialName, initialEmail, initialDepartment }) {
   const fileRef = useRef(null);
@@ -732,11 +974,148 @@ function DataSection({ showToast }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+function SubscriptionSection({ showToast }) {
+  const [planLoading, setPlanLoading] = useState(false);
+  const [currentPlanId, setCurrentPlanId] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).planId ?? "free") : "free";
+    } catch {
+      return "free";
+    }
+  });
+  const [currentBilling, setCurrentBilling] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
+    } catch {
+      return "monthly";
+    }
+  });
+  const [nextBillingDate, setNextBillingDate] = useState(null);
+
+  useEffect(() => {
+    if (!localStorage.getItem("tiki_access_token")) return;
+
+    let cancelled = false;
+    setPlanLoading(true);
+    getSubscription()
+      .then((sub) => {
+        if (cancelled) return;
+        setCurrentPlanId(sub.plan_id || "free");
+        setCurrentBilling(sub.billing || "monthly");
+        setNextBillingDate(sub.next_billing_date || null);
+      })
+      .catch(() => {
+        // Keep locally cached plan info when API lookup fails.
+      })
+      .finally(() => {
+        if (!cancelled) setPlanLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
+  const currentPrice = currentPlan.price[currentBilling] || 0;
+  const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
+  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+
+  const topFeatures = [
+    currentPlan.features.find((f) => f.label.includes("회의 분석")),
+    currentPlan.features.find((f) => f.label.includes("음성 녹음")),
+    currentPlan.features.find((f) => f.label.includes("팀원 초대")),
+    currentPlan.features.find((f) => f.label.includes("해야 할 일")),
+  ].filter(Boolean);
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">구독권 관리</h2>
+      </div>
+
+      <div className="rounded-2xl border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.07))] p-5">
+        <div>
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <Badge label="현재 플랜" variant="cyan" />
+              <p className="text-[16px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
+              {planLoading && <span className="text-[11px] text-[#5A6F8A]">동기화 중...</span>}
+            </div>
+            <p className="text-[13px] text-[#4A5D78]">
+              {billingLabel} 결제 · {priceLabel}
+              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              {topFeatures.slice(0, 3).map((feature) => (
+                <span
+                  key={feature.label}
+                  className="inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#0D1B2A]"
+                >
+                  {formatPlanFeatureLabel(feature.label)}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {PLANS.map((plan) => {
+          const selected = plan.id === currentPlanId;
+          const planPrice = plan.price[currentBilling] || 0;
+          const discount = yearlyDiscount(plan);
+          return (
+            <div
+              key={plan.id}
+              className={cn(
+                "rounded-2xl border p-4 transition-colors",
+                selected
+                  ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.06)]"
+                  : "border-[rgba(0,100,180,.1)] bg-white"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[13px] font-bold text-[#0D1B2A]">TIKI {plan.name}</p>
+                {selected && <Badge label="이용 중" variant="cyan" />}
+              </div>
+              <p className="mt-1 text-[12px] text-[#5A6F8A]">
+                {planPrice === 0 ? "무료" : `${planPrice.toLocaleString("ko-KR")}원/월`}
+              </p>
+              {currentBilling === "yearly" && discount > 0 && (
+                <p className="mt-0.5 text-[11px] font-semibold text-[#0099CC]">연간 결제 {discount}% 할인</p>
+              )}
+              <p className="mt-2 text-[11px] text-[#5A6F8A]">{plan.tagline}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
+        <p className="text-[12px] font-semibold text-[#5A6F8A]">현재 플랜 핵심 제공 항목</p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {topFeatures.map((feature) => (
+            <span
+              key={`current-feature-${feature.label}`}
+              className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
+            >
+              {formatPlanFeatureLabel(feature.label)}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Root
 // ═══════════════════════════════════════════════════════════════════════════
 export default function MyPage() {
-  const [activeTab, setActiveTab] = useState("profile");
+  const [activeTab, setActiveTab] = useState("home");
   const [toast, setToast] = useState(null);
   const [modal, setModal] = useState(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 640);
@@ -762,6 +1141,10 @@ export default function MyPage() {
     const onResize = () => setIsMobile(window.innerWidth < 640);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, []);
 
   useEffect(() => {
@@ -839,7 +1222,7 @@ export default function MyPage() {
     "";
 
   return (
-    <div className="relative min-h-screen bg-white text-[#0D1B2A] [font-family:'Pretendard',-apple-system,BlinkMacSystemFont,sans-serif]">
+    <div className="relative min-h-screen bg-white text-[#0D1B2A] [font-family:'Pretendard']">
       <Header
         isMobile={isMobile}
         isLoggedIn={isAuthenticated}
@@ -847,81 +1230,92 @@ export default function MyPage() {
         stateLabels={stateLabels}
         user={{ name: profileName, email: profileEmail }}
         onLogout={handleLogout}
+        hideMobileMenu={true}
       />
 
-      <div className="relative z-[1] mx-auto flex max-w-[960px] gap-0 px-4 pt-24 pb-28 sm:gap-8 sm:px-6 sm:pb-16">
+      <div className="relative z-[1] mx-auto max-w-[960px] px-4 pt-24 pb-28 sm:px-6 sm:pb-16">
 
-        {/* ── Sidebar ── */}
-        <aside className="hidden w-[188px] shrink-0 sm:block">
+        <div className="flex gap-0 sm:gap-8">
 
-          <nav className="space-y-0.5">
-            {NAV_ITEMS.map(item => {
-              const active = activeTab === item.id;
-              return (
-                <button key={item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-[13px] font-semibold transition-all text-left",
-                    active
-                      ? "bg-[rgba(0,153,204,.1)] text-[#0099CC]"
-                      : "text-[#5A6F8A] hover:bg-[rgba(0,60,150,.05)] hover:text-[#0D1B2A]"
-                  )}>
-                  <Icon name={item.icon} size={15} color={active ? "#0099CC" : "currentColor"} sw={active ? 2 : 1.8} />
-                  {item.label}
-                  {active && <div className="ml-auto h-1.5 w-1.5 rounded-full bg-[#0099CC]" />}
-                </button>
-              );
-            })}
-          </nav>
+          {/* ── Sidebar ── */}
+          <aside className="hidden w-[188px] shrink-0 sm:block">
 
-          {/* User card at bottom */}
-          <div className="mt-6 hidden rounded-2xl border border-[rgba(0,100,180,.1)] bg-[rgba(0,60,150,.03)] p-3.5 sm:block">
-            <div className="flex items-center gap-2.5">
-              <div className="h-8 w-8 rounded-xl bg-[linear-gradient(135deg,#0099CC,#7C3AED)] flex items-center justify-center text-[13px] font-black text-white select-none shrink-0">{(profileName || "사")[0]}</div>
-              <div className="min-w-0">
-                <p className="truncate text-[12px] font-bold text-[#0D1B2A]">{profileName}</p>
-                <p className="truncate text-[11px] text-[#9BAABE]">{profileEmail}</p>
-              </div>
-            </div>
-          </div>
-        </aside>
+            <nav className="space-y-0.5">
+              {NAV_ITEMS.map(item => {
+                const active = activeTab === item.id;
+                return (
+                  <button key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-[13px] font-semibold transition-all text-left",
+                      active
+                        ? "bg-[rgba(0,153,204,.1)] text-[#0099CC]"
+                        : "text-[#5A6F8A] hover:bg-[rgba(0,60,150,.05)] hover:text-[#0D1B2A]"
+                    )}>
+                    <Icon name={item.icon} size={15} color={active ? "#0099CC" : "currentColor"} sw={active ? 2 : 1.8} />
+                    {item.label}
+                    {active && <div className="ml-auto h-1.5 w-1.5 rounded-full bg-[#0099CC]" />}
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
 
-        {/* ── Content ── */}
-        <main className="min-w-0 flex-1 pt-2 sm:pt-0">
-          <div className="mb-4 flex items-center gap-2 sm:hidden">
-            <span className="text-[12px] text-[#9BAABE]">설정</span>
-            <Icon name="chevronRight" size={12} color="#9BAABE" />
-            <span className="text-[12px] font-semibold text-[#0D1B2A]">{activeNav?.label}</span>
-          </div>
-
-          <div className="mb-4 flex gap-2 overflow-x-auto pb-1 sm:hidden">
-            {NAV_ITEMS.map(item => {
-              const active = activeTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className={cn(
-                    "whitespace-nowrap rounded-full border px-3 py-1.5 text-[12px] font-semibold transition-colors",
-                    active
-                      ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.1)] text-[#0099CC]"
-                      : "border-[rgba(0,100,180,.12)] bg-white text-[#5A6F8A]"
-                  )}
+          {/* ── Content ── */}
+          <main className="min-w-0 flex-1 pt-2 sm:pt-0">
+            {activeTab !== "home" && (
+              <div className="mb-4 flex items-center gap-2 sm:hidden">
+                <span
+                  onClick={() => setActiveTab("home")}
+                  className="cursor-pointer text-[12px] font-semibold text-[#9BAABE] transition-colors hover:text-[#0099CC]"
                 >
-                  {item.label}
-                </button>
-              );
-            })}
-          </div>
+                  홈
+                </span>
+                <Icon name="chevronRight" size={12} color="#9BAABE" />
+                <span className="text-[12px] font-semibold text-[#0D1B2A]">{activeNav?.label}</span>
+              </div>
+            )}
 
-          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 shadow-[0_2px_16px_rgba(0,60,150,.05)] sm:p-7">
-            {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} />}
-            {activeTab === "security"     && <SecuritySection showToast={showToast} setModal={handleModal} />}
-            {activeTab === "integrations" && <IntegrationsSection showToast={showToast} />}
-            {activeTab === "sessions"     && <SessionsSection showToast={showToast} setModal={handleModal} />}
-            {activeTab === "data"         && <DataSection showToast={showToast} />}
-          </div>
-        </main>
+            <div className="mb-4 flex gap-2 overflow-x-auto pb-1 sm:hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              {NAV_ITEMS.map(item => {
+                const active = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={cn(
+                      "whitespace-nowrap rounded-full border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                      active
+                        ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.1)] text-[#0099CC]"
+                        : "border-[rgba(0,100,180,.12)] bg-white text-[#5A6F8A]"
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+              {/* 모바일 전용 로그아웃: 메뉴 리스트와 같은 칩 형태, 위험 액션이라 붉은 톤으로 구분 */}
+              <div className="ml-1 shrink-0 self-stretch w-px bg-[rgba(0,100,180,.12)]" />
+              <button
+                onClick={handleLogout}
+                className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-[rgba(239,68,68,.25)] bg-[rgba(239,68,68,.05)] px-3 py-1.5 text-[12px] font-semibold text-[#EF4444] transition-colors"
+              >
+                <Icon name="logOut" size={12} color="#EF4444" sw={2} />
+                로그아웃
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 shadow-[0_2px_16px_rgba(0,60,150,.05)] sm:p-7">
+              {activeTab === "home"          && <HomeSection goTo={setActiveTab} name={profileName} email={profileEmail} department={profileDepartment} />}
+              {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} />}
+              {activeTab === "security"     && <SecuritySection showToast={showToast} setModal={handleModal} />}
+              {activeTab === "integrations" && <IntegrationsSection showToast={showToast} />}
+              {activeTab === "subscription" && <SubscriptionSection showToast={showToast} />}
+              {activeTab === "sessions"     && <SessionsSection showToast={showToast} setModal={handleModal} />}
+              {activeTab === "data"         && <DataSection showToast={showToast} />}
+            </div>
+          </main>
+        </div>
       </div>
 
       {/* Modal */}
