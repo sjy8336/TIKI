@@ -59,13 +59,14 @@ export default function MobileTab({ active, onChange }) {
                 {TABS.map((tab) => {
                     const isActive = activeTab === tab.id;
                     const isUpload = tab.id === 'upload';
+                    const targetPath = tab.id === 'home' ? '/upload' : tab.to;
 
                     return (
                         <button
                             key={tab.id}
                             onClick={() => {
                                 onChange?.(tab.id);
-                                navigate(tab.to);
+                                navigate(targetPath);
                             }}
                             className={cn(
                                 'relative flex flex-col items-center justify-center gap-1 py-3 transition-colors duration-150 focus:outline-none',

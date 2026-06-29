@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
-import { clearAuthSession } from "../api/apiClient";
+import { clearAuthSession, getSubscription } from "../api/apiClient";
+import { PLANS, yearlyDiscount } from "../data/subscriptionPlans";
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 const ICON_PATHS = {
@@ -881,55 +882,136 @@ function DataSection({ showToast }) {
 
 // ─────────────────────────────────────────────────────────────────────────
 function SubscriptionSection({ showToast }) {
-  const [upgrading, setUpgrading] = useState(false);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [currentPlanId, setCurrentPlanId] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).planId ?? "free") : "free";
+    } catch {
+      return "free";
+    }
+  });
+  const [currentBilling, setCurrentBilling] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
+    } catch {
+      return "monthly";
+    }
+  });
+  const [nextBillingDate, setNextBillingDate] = useState(null);
 
-  const handleUpgrade = () => {
-    setUpgrading(true);
-    setTimeout(() => {
-      setUpgrading(false);
-      showToast("구독권 업그레이드 신청이 접수됐습니다.");
-    }, 900);
-  };
+  useEffect(() => {
+    if (!localStorage.getItem("tiki_access_token")) return;
+
+    let cancelled = false;
+    setPlanLoading(true);
+    getSubscription()
+      .then((sub) => {
+        if (cancelled) return;
+        setCurrentPlanId(sub.plan_id || "free");
+        setCurrentBilling(sub.billing || "monthly");
+        setNextBillingDate(sub.next_billing_date || null);
+      })
+      .catch(() => {
+        // Keep locally cached plan info when API lookup fails.
+      })
+      .finally(() => {
+        if (!cancelled) setPlanLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
+  const currentPrice = currentPlan.price[currentBilling] || 0;
+  const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
+  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+
+  const topFeatures = [
+    currentPlan.features.find((f) => f.label.includes("회의 분석")),
+    currentPlan.features.find((f) => f.label.includes("음성 녹음")),
+    currentPlan.features.find((f) => f.label.includes("팀원 초대")),
+    currentPlan.features.find((f) => f.label.includes("해야 할 일")),
+  ].filter(Boolean);
 
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">구독권 관리</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">현재 이용 중인 플랜과 결제 정보를 확인합니다.</p>
+        <p className="mt-1 text-[13px] text-[#5A6F8A]">구독 페이지와 동일한 플랜 기준으로 현재 이용 정보를 확인합니다.</p>
       </div>
 
       <div className="rounded-2xl border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.07))] p-5">
-        <div className="flex items-start justify-between gap-4">
+        <div>
           <div>
             <div className="mb-2 flex items-center gap-2">
               <Badge label="현재 플랜" variant="cyan" />
-              <p className="text-[16px] font-black text-[#0D1B2A]">TIKI Pro</p>
+              <p className="text-[16px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
+              {planLoading && <span className="text-[11px] text-[#5A6F8A]">동기화 중...</span>}
             </div>
-            <p className="text-[13px] text-[#4A5D78]">월 29,000원 · 다음 결제일 2026-07-01</p>
+            <p className="text-[13px] text-[#4A5D78]">
+              {billingLabel} 결제 · {priceLabel}
+              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              {topFeatures.slice(0, 3).map((feature) => (
+                <span
+                  key={feature.label}
+                  className="inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#0D1B2A]"
+                >
+                  {feature.label}
+                </span>
+              ))}
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={handleUpgrade}
-            disabled={upgrading}
-            className="shrink-0 rounded-xl bg-[linear-gradient(135deg,#0099CC,#0077AA)] px-4 py-2 text-[12px] font-bold text-white shadow-[0_2px_10px_rgba(0,153,204,.25)] disabled:opacity-60"
-          >
-            {upgrading ? "처리 중..." : "업그레이드"}
-          </button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
-          <p className="text-[12px] text-[#5A6F8A]">월간 업로드</p>
-          <p className="mt-1 text-[18px] font-black text-[#0D1B2A]">42 / 100</p>
-        </div>
-        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
-          <p className="text-[12px] text-[#5A6F8A]">저장 용량</p>
-          <p className="mt-1 text-[18px] font-black text-[#0D1B2A]">2.3GB / 10GB</p>
-        </div>
-        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
-          <p className="text-[12px] text-[#5A6F8A]">팀 좌석 수</p>
-          <p className="mt-1 text-[18px] font-black text-[#0D1B2A]">8 / 10</p>
+        {PLANS.map((plan) => {
+          const selected = plan.id === currentPlanId;
+          const planPrice = plan.price[currentBilling] || 0;
+          const discount = yearlyDiscount(plan);
+          return (
+            <div
+              key={plan.id}
+              className={cn(
+                "rounded-2xl border p-4 transition-colors",
+                selected
+                  ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.06)]"
+                  : "border-[rgba(0,100,180,.1)] bg-white"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[13px] font-bold text-[#0D1B2A]">TIKI {plan.name}</p>
+                {selected && <Badge label="이용 중" variant="cyan" />}
+              </div>
+              <p className="mt-1 text-[12px] text-[#5A6F8A]">
+                {planPrice === 0 ? "무료" : `${planPrice.toLocaleString("ko-KR")}원/월`}
+              </p>
+              {currentBilling === "yearly" && discount > 0 && (
+                <p className="mt-0.5 text-[11px] font-semibold text-[#0099CC]">연간 결제 {discount}% 할인</p>
+              )}
+              <p className="mt-2 text-[11px] text-[#5A6F8A]">{plan.tagline}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
+        <p className="text-[12px] font-semibold text-[#5A6F8A]">현재 플랜 핵심 제공 항목</p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {topFeatures.map((feature) => (
+            <span
+              key={`current-feature-${feature.label}`}
+              className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
+            >
+              {feature.label}
+            </span>
+          ))}
         </div>
       </div>
     </div>

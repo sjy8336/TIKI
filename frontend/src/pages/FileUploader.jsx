@@ -698,7 +698,7 @@ export default function TikiApp() {
               파일 선택
             </button>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".TXT", ".한글", ".WORD", ".PDF"].map((format) => (
+              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".TXT", ".HWP", ".DOCS", ".PDF"].map((format) => (
                 <span
                   key={format}
                   className={cn(

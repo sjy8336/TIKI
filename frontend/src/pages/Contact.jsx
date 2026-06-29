@@ -384,9 +384,6 @@ export default function ContactPage() {
       {/* ── 히어로 ── */}
       <section className="tiki-fade-up bg-[#F8FAFF] pb-11 pt-[108px] text-center font-pretendard">
         <div className="mx-auto max-w-[620px] px-4">
-          <span className="mb-4 inline-block rounded-full bg-[#0099CC]/10 px-3 py-1 text-xs font-semibold text-[#0099CC]">
-            Contact
-          </span>
           <h1 className="mb-3.5 text-[28px] font-bold leading-snug tracking-tight text-[#0D1B2A] sm:text-[32px] md:text-[38px]">
             무엇이든 편하게 물어보세요
           </h1>

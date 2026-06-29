@@ -622,7 +622,7 @@ export default function TikiLandingPage() {
         {
             icon: 'upload',
             label: '파일 업로드',
-            desc: '.mp3 / .wav / .m4a / .txt / 한글 / PDF / Word 지원',
+            desc: '.mp3 / .wav / .m4a / .txt / HWP / PDF / DOCX 지원',
             color: '#0099CC',
             num: '01',
         },
@@ -639,7 +639,6 @@ export default function TikiLandingPage() {
                 '로컬 Whisper로 음성 데이터 외부 미전송',
                 'AI 보안 마스킹 자동 적용',
                 '회의록 원본 인용 (타임스탬프 링크)',
-                'Diff View로 AI 초안 vs 최종본 비교',
                 '할루시네이션 피드백 학습 루프',
             ],
         },
@@ -750,7 +749,7 @@ export default function TikiLandingPage() {
                         </span>
                     </h1>
 
-                    <p className="max-w-2xl mx-auto text-base sm:text-xl text-[#5A6F8A] leading-relaxed mb-10">
+                    <p className="max-w-2xl mx-auto text-base sm:text-xl text-[#5A6F8A] leading-relaxed mb-10 whitespace-normal md:whitespace-nowrap">
                         회의가 끝나는 순간, AI가 모든 대화를 분석하여 실행 가능한 업무를 자동으로 연동해 드립니다.
                     </p>
 
@@ -783,7 +782,7 @@ export default function TikiLandingPage() {
                                 <span className="w-3 h-3 rounded-full bg-[#F59E0B]" />
                                 <span className="w-3 h-3 rounded-full bg-[#10B981]" />
                                 <div className="flex-1 mx-4 px-3 py-1 bg-white border border-[rgba(0,100,180,0.1)] rounded-md text-[11px] text-[#5A6F8A] font-mono truncate">
-                                    https://tiki.neotech.io/dashboard
+                                    https://tiki.neotech.io/project-list
                                 </div>
                                 <span className="flex items-center gap-1 text-[11px] text-[#10B981] font-bold">
                                     <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-pulse" />
@@ -792,87 +791,13 @@ export default function TikiLandingPage() {
                             </div>
 
                             <div className="p-4 sm:p-6 bg-[#F8FAFF]">
-                                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 p-4 bg-white rounded-xl border border-[rgba(0,100,180,0.12)] gap-3 text-left">
-                                    <div>
-                                        <div className="flex items-center gap-1.5 mb-1">
-                                            <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
-                                            <span className="text-[10px] font-bold text-[#10B981] uppercase tracking-wide">
-                                                AI 분석 완료
-                                            </span>
-                                        </div>
-                                        <p className="text-sm font-bold text-[#0D1B2A]">
-                                            네오테크 6월 3주차 스프린트 회의
-                                        </p>
-                                        <p className="text-xs text-[#5A6F8A] mt-0.5">
-                                            참여자 4명 · 녹화 시간 38분 · 해야 할 일 7개 추출
-                                        </p>
-                                    </div>
-                                    <button className="shrink-0 px-4 py-2 bg-[#0099CC] text-white text-xs font-bold rounded-xl hover:bg-[#0086b3] transition-colors">
-                                        Jira 전송 준비됨 →
-                                    </button>
-                                </div>
-
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                    {[
-                                        {
-                                            status: '검증 전',
-                                            title: '컬러 팔레트 CSS 변수 정의',
-                                            assignee: '정아름',
-                                            time: '03:12',
-                                            priority: '보통',
-                                            statusColor: 'bg-[#F59E0B]',
-                                            priorityColor: 'text-[#F59E0B]',
-                                        },
-                                        {
-                                            status: 'Jira 연동됨',
-                                            title: '세션 토큰 리프레시 로직 보완',
-                                            assignee: '김소현',
-                                            time: '11:45',
-                                            priority: '높음',
-                                            statusColor: 'bg-[#10B981]',
-                                            priorityColor: 'text-[#EF4444]',
-                                        },
-                                        {
-                                            status: 'Jira 연동됨',
-                                            title: 'Figma 최종 시안 업로드 요청',
-                                            assignee: '채하율',
-                                            time: '24:02',
-                                            priority: '낮음',
-                                            statusColor: 'bg-[#10B981]',
-                                            priorityColor: 'text-[#5A6F8A]',
-                                        },
-                                    ].map((card, i) => (
-                                        <div
-                                            key={i}
-                                            className="bg-white rounded-xl border border-[rgba(0,100,180,0.12)] p-4 hover:border-[rgba(0,153,204,0.3)] transition-colors text-left"
-                                        >
-                                            <div className="flex justify-between items-center mb-3">
-                                                <span
-                                                    className={`text-[10px] font-bold text-white px-2 py-0.5 rounded-full ${card.statusColor}`}
-                                                >
-                                                    {card.status}
-                                                </span>
-                                                <span className={`text-[10px] font-semibold ${card.priorityColor}`}>
-                                                    {card.priority}
-                                                </span>
-                                            </div>
-                                            <p className="text-xs font-bold text-[#0D1B2A] leading-snug mb-3">
-                                                {card.title}
-                                            </p>
-                                            <div className="flex justify-between text-[10px] text-[#5A6F8A] pt-2 border-t border-gray-100">
-                                                {/* User 아이콘 → Icon 컴포넌트 */}
-                                                <span className="font-semibold inline-flex items-center gap-1">
-                                                    <Icon name="user" size={11} className="text-[#5A6F8A]" />
-                                                    {card.assignee}
-                                                </span>
-                                                {/* Clock3 아이콘 → Icon 컴포넌트 */}
-                                                <span className="text-[#0099CC] font-bold inline-flex items-center gap-1">
-                                                    <Icon name="clock3" size={11} className="text-[#0099CC]" />
-                                                    {card.time}
-                                                </span>
-                                            </div>
-                                        </div>
-                                    ))}
+                                <div className="overflow-hidden rounded-xl border border-[rgba(0,100,180,0.12)] bg-white">
+                                    <img
+                                        src="/images/projectlist.png"
+                                        alt="TIKI 서비스 미리보기"
+                                        className="w-full h-auto object-cover"
+                                        loading="lazy"
+                                    />
                                 </div>
                             </div>
                         </div>

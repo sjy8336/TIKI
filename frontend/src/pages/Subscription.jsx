@@ -132,7 +132,16 @@ function PlanCard({ plan, billing, currentPlanId, currentBilling, onSelect }) {
 const CATEGORY_COLORS = ['#0099CC', '#7C3AED', '#059669', '#F59E0B'];
 
 // 텍스트 값의 품질 등급 — 높을수록 더 진한 색으로 표시
-const VALUE_TIER = { '무제한': 3, '고급': 2, '최대 3명': 2, '50회': 1, '기본': 1, '5회': 1 };
+const VALUE_TIER = {
+  '무제한': 3,
+  '고급': 2,
+  '최대 5명': 2,
+  '4시간': 2,
+  '15회': 1,
+  '30분': 1,
+  '기본': 1,
+  '5회': 1,
+};
 
 const PLAN_META = {
   free: {

@@ -271,10 +271,20 @@ function parseNextAgendaItem(rawItem) {
   return { topic: raw };
 }
 
+function normalizeInlineAgendaDateLabel(text) {
+  const raw = `${text || ""}`;
+  if (!raw) return "";
+
+  return raw.replace(/\b(\d{1,2})\/(\d{1,2})\b/g, (matched, month, day) => {
+    const dateStr = parseDueToDateStr(`${month}/${day}`);
+    return dateStr ? formatDueFromDateStr(dateStr) : matched;
+  });
+}
+
 function formatNextAgendaItem(item) {
   const topic = (item?.topic || "").trim();
   if (!topic) return "";
-  return topic;
+  return normalizeInlineAgendaDateLabel(topic);
 }
 
 function DueDateCalendar({ value, onSelect, onClose }) {
@@ -536,7 +546,7 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
         </div>
         <div className="flex items-center gap-1">
           <div
-            className="text-xs leading-none font-semibold px-3 py-1 rounded-full flex items-center justify-center text-center gap-[2px]"
+            className="text-[11px] font-semibold px-3 py-1 rounded-full flex items-center justify-center text-center gap-[2px]"
             style={{
               color: achieved ? "#10B981" : "#0099CC",
               background: achieved ? "rgba(16,185,129,0.12)" : "rgba(0,153,204,0.1)",
@@ -942,6 +952,7 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
 function IndividualTicketRow({ item, index }) {
   const [title, setTitle] = useState(item.text);
   const [assignee, setAssignee] = useState(item.assignee);
+  const [due, setDue] = useState(normalizeDueLabel(item.due) || item.due || "미정");
 
   return (
     <div
@@ -956,7 +967,7 @@ function IndividualTicketRow({ item, index }) {
           {index + 1}
         </span>
         <p className="text-xs font-semibold text-slate-500 truncate flex-1">{item.text}</p>
-        <span className="text-xs text-slate-400 flex-shrink-0">{normalizeDueLabel(item.due) || item.due}</span>
+        <span className="text-xs text-slate-400 flex-shrink-0">{due}</span>
       </div>
       <div>
         <label className="text-xs font-semibold text-slate-400 block mb-1">업무 제목</label>
@@ -978,6 +989,33 @@ function IndividualTicketRow({ item, index }) {
           placeholder="담당자 선택"
         />
       </div>
+      <div>
+        <label className="text-xs font-semibold text-slate-400 block mb-1">마감일</label>
+        <input
+          value={due === "미정" ? "" : due}
+          onChange={e => {
+            const raw = e.target.value.trim();
+            setDue(raw || "미정");
+          }}
+          placeholder="YYYY년 M월 D일"
+          className="w-full text-xs px-2.5 py-1.5 rounded-lg border outline-none transition-colors"
+          style={{ borderColor: "rgba(0,100,180,0.12)", background: "#fff", color: "#0D1B2A", fontFamily: "inherit" }}
+          onFocus={e => (e.target.style.borderColor = "rgba(0,153,204,0.5)")}
+          onBlur={e => {
+            const raw = e.target.value.trim();
+            if (!raw) {
+              setDue("미정");
+              e.target.style.borderColor = "rgba(0,100,180,0.12)";
+              return;
+            }
+            const dateStr = parseDueToDateStr(raw);
+            if (dateStr) {
+              setDue(formatDueFromDateStr(dateStr));
+            }
+            e.target.style.borderColor = "rgba(0,100,180,0.12)";
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -987,59 +1025,34 @@ function IssueModal({ open, onClose, onIssued, services }) {
   const [step, setStep] = useState(1);
   const [selectedSvc, setSelectedSvc] = useState(null);
   const [checkedItems, setCheckedItems] = useState(new Set());
-  const [dueOverrides, setDueOverrides] = useState({});
-  const [editingDueIdx, setEditingDueIdx] = useState(null);
   const [issueMode, setIssueMode] = useState("merged");
   const [desc, setDesc] = useState("회의에서 논의된 항목입니다. 내용을 확인하고 처리해주세요.");
   const [priority, setPriority] = useState("보통");
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [mergedDue, setMergedDue] = useState("미정");
 
   const [issuing, setIssuing] = useState(false);
   const [issueError, setIssueError] = useState(null);
-  const dueInputRef = useRef(null);
 
   const isMultiple = checkedItems.size > 1;
   const canIssue = issueMode !== "merged" || assignee.trim().length > 0;
 
-  useEffect(() => {
-    if (editingDueIdx === null) return;
-    dueInputRef.current?.showPicker?.();
-    dueInputRef.current?.focus();
-  }, [editingDueIdx]);
-
   const getDueLabel = useCallback((idx) => {
-    if (Object.prototype.hasOwnProperty.call(dueOverrides, idx)) {
-      return dueOverrides[idx];
-    }
     const baseDue = ACTION_ITEMS_FOR_ISSUE[idx]?.due;
     return normalizeDueLabel(baseDue) || baseDue || "미정";
-  }, [dueOverrides]);
-
-  const getDueDateValue = useCallback((idx) => {
-    return parseDueToDateStr(getDueLabel(idx)) || "";
-  }, [getDueLabel]);
-
-  const handleDueChange = useCallback((idx, dateStr) => {
-    if (!dateStr) {
-      setDueOverrides((prev) => ({ ...prev, [idx]: "미정" }));
-      return;
-    }
-    const nextLabel = formatDueFromDateStr(dateStr);
-    setDueOverrides((prev) => ({ ...prev, [idx]: nextLabel || prev[idx] || "미정" }));
   }, []);
 
   const reset = () => {
     setStep(1);
     setSelectedSvc(null);
     setCheckedItems(new Set());
-    setDueOverrides({});
-    setEditingDueIdx(null);
     setIssueMode("merged");
     setDesc("회의에서 논의된 항목입니다. 내용을 확인하고 처리해주세요.");
     setPriority("보통");
     setTitle("");
     setAssignee("");
+    setMergedDue("미정");
     setIssuing(false);
     setIssueError(null);
   };
@@ -1063,8 +1076,29 @@ function IssueModal({ open, onClose, onIssued, services }) {
     const autoTitle = items.length === 1
       ? items[0].text
       : `${items[0].text} 외 ${items.length - 1}건`;
+    const dueCandidates = items
+      .map((item) => `${item.due || ""}`.trim())
+      .filter((value) => value && value !== "미정");
+
+    const datedCandidates = dueCandidates
+      .map((value) => {
+        const dateStr = parseDueToDateStr(value);
+        if (!dateStr) return null;
+        return {
+          dateStr,
+          label: formatDueFromDateStr(dateStr) || value,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+
+    const defaultMergedDue = datedCandidates.length > 0
+      ? datedCandidates[0].label
+      : (dueCandidates[0] || "미정");
+
     setTitle(autoTitle);
     setAssignee(items.length === 1 ? items[0].assignee : "");
+    setMergedDue(defaultMergedDue);
     setIssueError(null);
     setStep(2);
   };
@@ -1110,7 +1144,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
       onClose={issuing ? undefined : handleClose}
       title="업무 보내기"
       maxWidth={500}
-      bodyOverflowY={step === 1 ? "hidden" : "auto"}
+      bodyOverflowY={step === 1 ? "hidden" : issueMode === "individual" ? "hidden" : "auto"}
       footer={
         step === 1 ? (
           <>
@@ -1233,48 +1267,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                       <p className="text-sm text-slate-800 leading-snug">{item.text}</p>
                       <div className="mt-0.5 flex items-center justify-between gap-2">
                         <p className="text-xs text-slate-400">{item.assignee}</p>
-                        <div className="flex items-center gap-1.5">
-                          {editingDueIdx === idx ? (
-                            <input
-                              ref={dueInputRef}
-                              type="text"
-                              value={getDueLabel(idx) === "미정" ? "" : getDueLabel(idx)}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={(e) => {
-                                const raw = e.target.value.trim();
-                                if (!raw) {
-                                  setDueOverrides((prev) => ({ ...prev, [idx]: "미정" }));
-                                  return;
-                                }
-                                const dateStr = parseDueToDateStr(raw);
-                                if (dateStr) {
-                                  handleDueChange(idx, dateStr);
-                                  return;
-                                }
-                                setDueOverrides((prev) => ({ ...prev, [idx]: raw }));
-                              }}
-                              onBlur={() => setEditingDueIdx(null)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") setEditingDueIdx(null);
-                              }}
-                              placeholder="YYYY년 M월 D일"
-                              className="w-[130px] text-[11px] px-1.5 py-0.5 rounded-md border border-cyan-300 bg-cyan-50 text-cyan-700 outline-none"
-                            />
-                          ) : (
-                            <span className="text-xs text-slate-400">{getDueLabel(idx)}</span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingDueIdx((prev) => (prev === idx ? null : idx));
-                            }}
-                            className="w-5 h-5 flex items-center justify-center rounded border border-slate-200 text-slate-400 hover:text-cyan-600 hover:border-cyan-300 hover:bg-cyan-50 transition-colors cursor-pointer"
-                            aria-label="마감일 수정"
-                          >
-                            <LucideIcon name="pencil" size={10} />
-                          </button>
-                        </div>
+                        <span className="text-xs text-slate-400">{getDueLabel(idx)}</span>
                       </div>
                     </div>
                   </div>
@@ -1402,8 +1395,8 @@ function IssueModal({ open, onClose, onIssued, services }) {
                   onBlur={e => (e.target.style.borderColor = "rgba(0,100,180,0.12)")}
                 />
               </div>
-              <div className="flex gap-3">
-                <div className="flex-1">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="min-w-0">
                   <label className="text-xs font-semibold text-slate-400 block mb-1.5">담당자</label>
                   <CustomDropdown
                     value={assignee}
@@ -1419,7 +1412,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                     </p>
                   )}
                 </div>
-                <div className="flex-1">
+                <div className="min-w-0">
                   <label className="text-xs font-semibold text-slate-400 block mb-1.5">우선순위</label>
                   <CustomDropdown
                     value={priority}
@@ -1427,6 +1420,34 @@ function IssueModal({ open, onClose, onIssued, services }) {
                     options={["높음", "보통", "낮음"]}
                     placeholder="우선순위 선택"
                     disabled={issuing}
+                  />
+                </div>
+                <div className="min-w-0 sm:col-span-2">
+                  <label className="text-xs font-semibold text-slate-400 block mb-1.5">마감일</label>
+                  <input
+                    value={mergedDue}
+                    onChange={e => {
+                      const raw = e.target.value.trim();
+                      setMergedDue(raw || "미정");
+                    }}
+                    disabled={issuing}
+                    placeholder="YYYY년 M월 D일"
+                    className="w-full text-sm px-3 py-2.5 rounded-lg border outline-none transition-colors disabled:opacity-50"
+                    style={{ borderColor: "rgba(0,100,180,0.12)", background: "#F8FAFF", color: "#0D1B2A", fontFamily: "inherit" }}
+                    onFocus={e => (e.target.style.borderColor = "rgba(0,153,204,0.5)")}
+                    onBlur={e => {
+                      const raw = e.target.value.trim();
+                      if (!raw) {
+                        setMergedDue("미정");
+                        e.target.style.borderColor = "rgba(0,100,180,0.12)";
+                        return;
+                      }
+                      const dateStr = parseDueToDateStr(raw);
+                      if (dateStr) {
+                        setMergedDue(formatDueFromDateStr(dateStr));
+                      }
+                      e.target.style.borderColor = "rgba(0,100,180,0.12)";
+                    }}
                   />
                 </div>
               </div>
@@ -1519,7 +1540,11 @@ function RegenModal({ open, onClose, onRegen }) {
             ))}
             <button
               type="button"
-              onClick={() => setShowDirectInput(true)}
+              onClick={() => {
+                setFocus("");
+                setPrompt("");
+                setShowDirectInput(true);
+              }}
               className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
                 showDirectInput ? "bg-cyan-50 text-cyan-600 border-cyan-300" : "text-slate-400 border-slate-200 hover:border-slate-300"
               }`}
@@ -1574,7 +1599,7 @@ function RegenModal({ open, onClose, onRegen }) {
 }
 
 /* ─── Transcript Card ────────────────────────────────── */
-function TxCard({ item, isActive, isBookmarked, onSeek, onToggleBm }) {
+function TxCard({ item, isActive, isBookmarked, isCollapsed, onSeek, onToggleBm }) {
   const col = SPK_COLOR[item.spk] || "#5A6F8A";
   const anonLabel = SPK_ANON_LABEL[item.spk] || item.spk;
   const anonInitial = anonLabel.replace("팀원", "");
@@ -1607,9 +1632,11 @@ function TxCard({ item, isActive, isBookmarked, onSeek, onToggleBm }) {
         </button>
       </div>
 
-      <div className="px-4 pb-3 pl-[3.75rem]">
-        <p className="text-sm text-slate-800 leading-relaxed">{item.txt}</p>
-      </div>
+      {!isCollapsed && (
+        <div className="px-4 pb-3 pl-[3.75rem]">
+          <p className="text-sm text-slate-800 leading-relaxed">{item.txt}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1674,7 +1701,7 @@ function ActionItem({ item, checked, onToggle }) {
           {item.text}
         </p>
         <p className="text-xs text-slate-400 mt-0.5">
-          {item.assignee}{checked ? " · 완료" : item.due ? ` · ${item.due}` : ""}
+          {item.assignee}{checked ? " · 완료" : item.due ? ` · ${normalizeDueLabel(item.due) || item.due}` : ""}
         </p>
       </div>
       {checked && (
@@ -2002,7 +2029,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                     <p className="text-[11px] text-slate-400 leading-tight">저장하면 바로 반영돼요</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
                   <button
                     onClick={handleInlineCancel}
                     className="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors cursor-pointer"
@@ -2074,9 +2101,9 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                 <div className="space-y-2">
                   {decisionsDraft.length === 0 && <EditEmptyRow>아직 추가된 결정 사항이 없어요</EditEmptyRow>}
                   {decisionsDraft.map((item, idx) => (
-                    <div key={`decision-edit-${idx}`} className="flex items-center gap-2">
+                    <div key={`decision-edit-${idx}`} className="flex items-start sm:items-center gap-2">
                       <span
-                        className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
+                        className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-2 sm:mt-0"
                         style={{ background: "rgba(0,153,204,0.5)" }}
                       >
                         {idx + 1}
@@ -2133,7 +2160,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                           />
                           <EditRemoveButton onClick={() => setActionsDraft((prev) => prev.filter((_, i) => i !== idx))} />
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           <input
                             value={item.assignee || ""}
                             onChange={(e) =>
@@ -2168,7 +2195,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                             onClick={() =>
                               setActionsDraft((prev) => prev.map((v, i) => (i === idx ? { ...v, status: isDone ? "todo" : "done" } : v)))
                             }
-                            className="h-8 mt-3 justify-self-end px-2.5 flex items-center justify-center text-[10px] font-semibold rounded-md border transition-colors cursor-pointer whitespace-nowrap"
+                            className="h-8 px-2.5 flex items-center justify-center text-[10px] font-semibold rounded-md border transition-colors cursor-pointer whitespace-nowrap sm:justify-self-end"
                             style={{
                               borderColor: isDone ? "rgba(16,185,129,0.4)" : "rgba(0,100,180,0.15)",
                               color: isDone ? "#10B981" : "#5A6F8A",
@@ -2208,8 +2235,8 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                         ? { background: "#F8FAFC", borderColor: "#E2E8F0", color: "#64748B" }
                         : { background: "#FFFBEB", borderColor: "#FDE68A", color: "#D97706" };
                     return (
-                      <div key={`issue-edit-${idx}`} className="flex items-center gap-2">
-                        <div className="w-[92px] flex-shrink-0">
+                      <div key={`issue-edit-${idx}`} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <div className="w-full sm:w-[92px] flex-shrink-0">
                           <CustomDropdown
                             value={ISSUE_LEVEL_TO_LABEL[item.level || "medium"] || "보통"}
                             onChange={(label) =>
@@ -2231,7 +2258,9 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                           style={{ fontFamily: "inherit" }}
                           placeholder="이슈/리스크 내용"
                         />
-                        <EditRemoveButton onClick={() => setIssuesDraft((prev) => prev.filter((_, i) => i !== idx))} />
+                        <div className="self-end sm:self-auto">
+                          <EditRemoveButton onClick={() => setIssuesDraft((prev) => prev.filter((_, i) => i !== idx))} />
+                        </div>
                       </div>
                     );
                   })}
@@ -2270,7 +2299,9 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                           placeholder={`다음 회의 안건 ${idx + 1}`}
                         />
                       </div>
-                      <EditRemoveButton onClick={() => setNextAgendaDraft((prev) => prev.filter((_, i) => i !== idx))} />
+                      <div className="self-center">
+                        <EditRemoveButton onClick={() => setNextAgendaDraft((prev) => prev.filter((_, i) => i !== idx))} />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2422,7 +2453,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                         >
                           {i + 1}
                         </span>
-                        <p className="text-sm text-slate-800 leading-relaxed">{item}</p>
+                        <p className="text-sm text-slate-800 leading-relaxed">{normalizeInlineAgendaDateLabel(item)}</p>
                       </div>
                     ))}
                   </div>
@@ -3015,7 +3046,7 @@ export default function TikiSprint12() {
       (!bmFilter || bookmarks.has(d.idx)) &&
       (!searchQ || d.txt.includes(searchQ) || d.spk.includes(searchQ))
     );
-  const visibleTx = txData.filter((d) => !collapsedSet.has(d.idx));
+  const visibleTx = txData;
   const visible = visibleTx.slice(0, shownCount);
   const remaining = visibleTx.length - shownCount;
 
@@ -3082,7 +3113,7 @@ export default function TikiSprint12() {
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-slate-400">2025.06.14</span>
+                <span className="text-xs font-semibold text-slate-400">2026.06.14</span>
                 <span className="text-slate-300">·</span>
                 <span className="text-xs font-semibold text-slate-400">오후 2:00 – 3:15</span>
                 <span className="text-slate-300">·</span>
@@ -3201,7 +3232,7 @@ export default function TikiSprint12() {
                       onClick={toggleAllCollapse}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors bg-white text-slate-400 border-slate-200 hover:bg-blue-50 cursor-pointer"
                     >
-                      <span style={{ transform: allCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
+                      <span style={{ transform: allCollapsed ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
                         <LucideIcon name="chevron-down" size={13} color={PROJECTLIST_CHEVRON_COLOR} strokeWidth={2} />
                       </span>
                       <span className="hidden sm:inline text-xs">{allCollapsed ? "전체 펼치기" : "전체 접기"}</span>
@@ -3224,6 +3255,7 @@ export default function TikiSprint12() {
                       item={item}
                       isActive={activeIdx === item.idx}
                       isBookmarked={bookmarks.has(item.idx)}
+                      isCollapsed={collapsedSet.has(item.idx)}
                       onSeek={seekTo}
                       onToggleBm={toggleBm}
                     />

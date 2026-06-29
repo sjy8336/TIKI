@@ -14,13 +14,13 @@ export const PLANS = [
     ctaVariant: 'outline',
     features: [
       { label: '월 5회 회의 분석', included: true },
+      { label: '음성 녹음 30분', included: true },
       { label: '기본 STT 전사', included: true },
       { label: 'AI 회의 요약', included: true },
-      { label: '액션아이템 자동 추출', included: false },
+      { label: '해야 할 일 자동 추출', included: false },
       { label: 'Jira / Notion 연동', included: false },
       { label: '화자 분리', included: false },
       { label: '팀원 초대', included: false },
-      { label: '우선 고객 지원', included: false },
     ],
   },
   {
@@ -32,14 +32,14 @@ export const PLANS = [
     highlight: true,
     ctaVariant: 'primary',
     features: [
-      { label: '월 50회 회의 분석', included: true },
+      { label: '월 15회 회의 분석', included: true },
+      { label: '음성 녹음 4시간', included: true },
       { label: '고급 STT 전사 (병렬 처리)', included: true },
       { label: 'AI 회의 요약', included: true },
-      { label: '액션아이템 자동 추출', included: true },
+      { label: '해야 할 일 자동 추출', included: true },
       { label: 'Jira / Notion 연동', included: true },
       { label: '화자 분리', included: true },
-      { label: '팀원 초대 (최대 3명)', included: true },
-      { label: '우선 고객 지원', included: false },
+      { label: '팀원 초대 (최대 5명)', included: true },
     ],
   },
   {
@@ -52,13 +52,13 @@ export const PLANS = [
     ctaVariant: 'outline',
     features: [
       { label: '무제한 회의 분석', included: true },
+      { label: '음성 녹음 무제한', included: true },
       { label: '고급 STT 전사 (병렬 처리)', included: true },
       { label: 'AI 회의 요약', included: true },
-      { label: '액션아이템 자동 추출', included: true },
+      { label: '해야 할 일 자동 추출', included: true },
       { label: 'Jira / Notion 연동', included: true },
       { label: '화자 분리', included: true },
       { label: '팀원 초대 (무제한)', included: true },
-      { label: '우선 고객 지원', included: true },
     ],
   },
 ];
@@ -67,7 +67,8 @@ export const FEATURE_COMPARISON = [
   {
     category: '전사 & 분석',
     rows: [
-      { feature: '월 회의 분석 횟수', free: '5회', pro: '50회', team: '무제한' },
+      { feature: '월 회의 분석 횟수', free: '5회', pro: '15회', team: '무제한' },
+      { feature: '음성 녹음 길이', free: '30분', pro: '4시간', team: '무제한' },
       { feature: 'STT 전사 품질', free: '기본', pro: '고급', team: '고급' },
       { feature: '화자 분리', free: false, pro: true, team: true },
     ],
@@ -76,8 +77,8 @@ export const FEATURE_COMPARISON = [
     category: 'AI 기능',
     rows: [
       { feature: 'AI 회의 요약', free: true, pro: true, team: true },
-      { feature: '액션아이템 추출', free: false, pro: true, team: true },
-      { feature: '티켓 자동 생성', free: false, pro: true, team: true },
+      { feature: '해야 할 일 자동 추출', free: false, pro: true, team: true },
+      { feature: '해야 할 일 생성', free: false, pro: true, team: true },
     ],
   },
   {
@@ -85,14 +86,13 @@ export const FEATURE_COMPARISON = [
     rows: [
       { feature: 'Jira 연동', free: false, pro: true, team: true },
       { feature: 'Notion 연동', free: false, pro: true, team: true },
-      { feature: '팀원 초대', free: false, pro: '최대 3명', team: '무제한' },
+      { feature: '팀원 초대', free: false, pro: '최대 5명', team: '무제한' },
     ],
   },
   {
     category: '지원',
     rows: [
       { feature: '이메일 지원', free: true, pro: true, team: true },
-      { feature: '우선 고객 지원', free: false, pro: false, team: true },
     ],
   },
 ];

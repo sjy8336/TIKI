@@ -140,7 +140,7 @@ function ProfileDropdown({ user, onLogout }) {
                     <div className="py-1.5">
                         {[
                             { icon: 'user', label: '마이페이지', to: '/mypage' },
-                            { icon: 'helpCircle', label: '고객센터 / 문서', to: '/docs', disabled: true },
+                            { icon: 'helpCircle', label: '고객센터 / 문서', to: '/contact' },
                         ].map(({ icon, label, to, disabled }) => (
                             <Link
                                 key={label}
