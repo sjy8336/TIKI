@@ -181,6 +181,10 @@ export default function MeetingMinutesCreate() {
     nextAgenda: '',
   });
 
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
+
   const update = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
 
   const addDecision = () => {
