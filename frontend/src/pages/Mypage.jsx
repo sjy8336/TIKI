@@ -315,6 +315,52 @@ function getGreeting() {
   return "오늘 하루도 고생 많으셨어요";
 }
 
+function formatPlanFeatureLabel(label) {
+  if (!label) return "";
+
+  const meetingMatch = label.match(/^월\s*(\d+)회\s*회의 분석$/);
+  if (meetingMatch) return `회의 분석: 월 ${meetingMatch[1]}회`;
+
+  const recordingMatch = label.match(/^음성 녹음\s*(.+)$/);
+  if (recordingMatch) {
+    return recordingMatch[1] === "무제한"
+      ? "음성 녹음: 무제한"
+      : `음성 녹음: 최대 ${recordingMatch[1]}`;
+  }
+
+  if (label === "기본 STT 전사") return "STT 전사: 기본 품질";
+  if (label.includes("고급 STT 전사")) return "STT 전사: 고급 품질";
+  if (label === "무제한 회의 분석") return "회의 분석: 무제한";
+
+  return label;
+}
+
+function PlanFeatureList({ features, tone = "cyan" }) {
+  const toneClass = tone === "neutral"
+    ? "border-[rgba(0,100,180,.1)] bg-white"
+    : "border-[rgba(0,153,204,.16)] bg-[rgba(0,153,204,.04)]";
+
+  return (
+    <div className={cn("mt-2.5 rounded-xl border p-2.5", toneClass)}>
+      <div className="space-y-1.5">
+        {features.map((feature) => (
+          <div
+            key={`feature-row-${feature.label}`}
+            className="flex items-center gap-2 rounded-lg bg-white/70 px-2.5 py-2"
+          >
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[rgba(0,153,204,.12)]">
+              <Icon name="check" size={11} color="#0099CC" sw={2.5} />
+            </span>
+            <span className="text-[12px] font-semibold text-[#0D1B2A]">
+              {formatPlanFeatureLabel(feature.label)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Sections
 // ═══════════════════════════════════════════════════════════════════════════
@@ -354,6 +400,54 @@ const RECENT_MEETINGS = [
 function HomeSection({ goTo, name, email, department }) {
   const totalActionItems = RECENT_MEETINGS.reduce((s, m) => s + m.actionItems, 0);
   const doneActionItems = RECENT_MEETINGS.reduce((s, m) => s + m.done, 0);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [currentPlanId, setCurrentPlanId] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).planId ?? "free") : "free";
+    } catch {
+      return "free";
+    }
+  });
+  const [currentBilling, setCurrentBilling] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
+    } catch {
+      return "monthly";
+    }
+  });
+  const [nextBillingDate, setNextBillingDate] = useState(null);
+
+  useEffect(() => {
+    if (!localStorage.getItem("tiki_access_token")) return;
+
+    let cancelled = false;
+    setPlanLoading(true);
+    getSubscription()
+      .then((sub) => {
+        if (cancelled) return;
+        setCurrentPlanId(sub.plan_id || "free");
+        setCurrentBilling(sub.billing || "monthly");
+        setNextBillingDate(sub.next_billing_date || null);
+      })
+      .catch(() => {
+        // Keep locally cached plan info when API lookup fails.
+      })
+      .finally(() => {
+        if (!cancelled) setPlanLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
+  const currentPrice = currentPlan.price[currentBilling] || 0;
+  const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
+  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+  const topFeatures = currentPlan.features.filter((f) => f.included).slice(0, 3);
 
   return (
     <div className="space-y-7">
@@ -384,16 +478,16 @@ function HomeSection({ goTo, name, email, department }) {
           <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
-                <p className="text-[14px] font-black text-[#0D1B2A]">TIKI Pro</p>
+                <p className="text-[14px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
                 <Badge label="이용중" variant="cyan" />
+                {planLoading && <span className="text-[11px] text-[#9BAABE]">동기화 중...</span>}
               </div>
-              <button onClick={() => goTo("subscription")}
-                className="text-[11px] font-semibold text-[#5A6F8A] hover:text-[#0099CC]">관리</button>
             </div>
-            <div className="space-y-2.5">
-              <UsageBar label="월간 업로드" value={42} max={100} unit="건" />
-              <UsageBar label="저장 용량" value={2.3} max={10} unit="GB" />
-            </div>
+            <p className="text-[12px] text-[#5A6F8A]">
+              {billingLabel} 결제 · {priceLabel}
+              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
+            </p>
+            <PlanFeatureList features={topFeatures} />
           </div>
 
           {/* 계정 카드: 아바타·이름을 한 줄에, 이메일·부서를 보조 메타로 한 줄에 정리 */}
@@ -941,7 +1035,6 @@ function SubscriptionSection({ showToast }) {
     <div className="space-y-8">
       <div>
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">구독권 관리</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">구독 페이지와 동일한 플랜 기준으로 현재 이용 정보를 확인합니다.</p>
       </div>
 
       <div className="rounded-2xl border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.07))] p-5">
@@ -962,7 +1055,7 @@ function SubscriptionSection({ showToast }) {
                   key={feature.label}
                   className="inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#0D1B2A]"
                 >
-                  {feature.label}
+                  {formatPlanFeatureLabel(feature.label)}
                 </span>
               ))}
             </div>
@@ -1009,7 +1102,7 @@ function SubscriptionSection({ showToast }) {
               key={`current-feature-${feature.label}`}
               className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
             >
-              {feature.label}
+              {formatPlanFeatureLabel(feature.label)}
             </span>
           ))}
         </div>
@@ -1048,6 +1141,10 @@ export default function MyPage() {
     const onResize = () => setIsMobile(window.innerWidth < 640);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, []);
 
   useEffect(() => {

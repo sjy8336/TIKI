@@ -131,6 +131,10 @@ export default function LoginPage() {
     const [error, setError] = useState('');
 
     useEffect(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }, []);
+
+    useEffect(() => {
         if (localStorage.getItem('tiki_access_token')) {
             navigate(redirectTo, { replace: true });
         }
@@ -151,6 +155,7 @@ export default function LoginPage() {
         try {
             const authResponse = await loginUser({ email, password });
             saveAuthSession(authResponse);
+            sessionStorage.removeItem('tiki_flash_toast');
             navigate(redirectTo, { replace: true });
         } catch (err) {
             setError(err.message || '로그인에 실패했습니다.');

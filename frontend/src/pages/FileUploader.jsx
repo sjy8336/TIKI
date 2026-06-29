@@ -236,6 +236,10 @@ export default function TikiApp() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
+
   const projectIdFromState = Number(location.state?.projectId);
   const preselectedProject = Number.isFinite(projectIdFromState)
     ? PROJECTS.find((project) => project.id === projectIdFromState)
@@ -698,7 +702,7 @@ export default function TikiApp() {
               파일 선택
             </button>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".TXT", ".HWP", ".DOCS", ".PDF"].map((format) => (
+              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".TXT", ".HWP", ".DOCX", ".PDF"].map((format) => (
                 <span
                   key={format}
                   className={cn(

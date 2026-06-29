@@ -128,19 +128,18 @@ function Hero() {
 /* ─── Stats Band ──────────────────────────────────────────────────────────── */
 function StatsBand() {
   const stats = [
-    { value: "2~5분", label: "첫 결과까지 걸리는 시간" },
-    { value: "6종", label: "지원 포맷" },
+    { value: "10종", label: "지원 포맷" },
     { value: "3단계", label: "시작에 필요한 전부" },
     { value: "할일 자동추출", label: "회의록 기반 해야 할 일 생성" },
   ];
   return (
     <section className="border-t border-b border-[rgba(0,100,180,0.12)] bg-white">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 md:px-8">
-        <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-[rgba(0,100,180,0.12)]">
+        <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-[rgba(0,100,180,0.12)]">
           {stats.map((s) => (
             <div
               key={s.value}
-              className="py-6 sm:py-7 px-4 sm:px-8 sm:first:pl-0 sm:last:pr-0 flex flex-col gap-3"
+              className="py-6 sm:py-7 px-4 sm:px-8 flex flex-col items-center text-center gap-3"
             >
               <span className="text-2xl sm:text-3xl font-bold text-[#0099CC] tracking-tight">
                 {s.value}
@@ -523,6 +522,10 @@ export default function TikiOnboardingPage() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth < 1024 : false
   );
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 1024);

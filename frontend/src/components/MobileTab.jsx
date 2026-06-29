@@ -46,9 +46,13 @@ const TABS = [
 export default function MobileTab({ active, onChange }) {
     const navigate = useNavigate();
     const location = useLocation();
+    const isLoggedIn = Boolean(localStorage.getItem('tiki_access_token'));
 
     const routeActiveTab = TABS.find((tab) => location.pathname.startsWith(tab.to))?.id;
-    const activeTab = routeActiveTab ?? active ?? 'home';
+    const isUploadRoute = location.pathname.startsWith('/upload');
+    const activeTab = isUploadRoute && active === 'home'
+        ? 'home'
+        : (routeActiveTab ?? active ?? 'home');
 
     return (
         <div
@@ -59,7 +63,9 @@ export default function MobileTab({ active, onChange }) {
                 {TABS.map((tab) => {
                     const isActive = activeTab === tab.id;
                     const isUpload = tab.id === 'upload';
-                    const targetPath = tab.id === 'home' ? '/upload' : tab.to;
+                    const targetPath = tab.id === 'home'
+                        ? '/upload'
+                        : (isLoggedIn ? tab.to : '/login');
 
                     return (
                         <button

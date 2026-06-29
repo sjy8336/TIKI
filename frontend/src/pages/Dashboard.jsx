@@ -39,9 +39,9 @@ const MEETING_TITLES = {
 };
 
 const PRIORITY_EN = {
-  "높음": { label: "High", bg: "#FCE8E6", text: "#EF4444" },
-  "보통": { label: "Medium", bg: "#EEF3FF", text: "#0099CC" },
-  "낮음": { label: "Low", bg: "#F1F4F8", text: "#5A6F8A" }
+  "높음": { label: "높음", bg: "#FCE8E6", text: "#EF4444" },
+  "보통": { label: "보통", bg: "#EEF3FF", text: "#0099CC" },
+  "낮음": { label: "낮음", bg: "#F1F4F8", text: "#5A6F8A" }
 };
 
 const INITIAL_ACTION_ITEMS = [
@@ -701,6 +701,10 @@ export default function App() {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, []);
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem("tiki_access_token")));
@@ -1796,7 +1800,10 @@ export default function App() {
                       {selectedItem.status === "검증 전" && (
                         <button
                           type="button"
-                          onClick={() => handleVerify(selectedItem.id)}
+                          onClick={() => {
+                            handleVerify(selectedItem.id);
+                            closePanel();
+                          }}
                           className="px-5 py-2.5 text-sm font-bold text-white bg-[#0099CC] hover:bg-[#0086b3] rounded-xl shadow-md shadow-cyan-500/20 transition-all flex items-center gap-1.5 cursor-pointer"
                         >
                           <LucideIcon name="checkCircle" size={14} />
