@@ -487,6 +487,13 @@ function normalizeProject(project) {
             participants.push(`구성원${i}`);
         }
     }
+    const admins = Array.isArray(project.admins)
+        ? [...new Set(project.admins.filter((name) => participants.includes(name)))]
+        : [];
+    if (admins.length === 0 && participants[0]) {
+        const fallbackAdmin = teamLead && participants.includes(teamLead) ? teamLead : participants[0];
+        admins.push(fallbackAdmin);
+    }
     const meetings = Array.isArray(project.meetings)
         ? project.meetings.map((meeting, idx) => ({
               id: meeting.id || `m-${project.id}-${idx + 1}`,
@@ -515,6 +522,7 @@ function normalizeProject(project) {
         status: project.status || '진행 중',
         teamLead: teamLead || participants[0] || '담당자',
         participants,
+        admins,
         myActionItems: Array.isArray(project.myActionItems) ? project.myActionItems : [],
         meetings,
     };
@@ -3444,13 +3452,10 @@ export default function ProjectMeetings() {
                                                     {member}
                                                 </p>
                                                 {adminNames.includes(member) && (
-                                                    <span
-                                                        title="관리자 권한"
-                                                        className="inline-flex items-center text-sky-600 shrink-0"
-                                                    >
+                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 text-[10px] font-bold">
                                                         <svg
-                                                            width="13"
-                                                            height="13"
+                                                            width="10"
+                                                            height="10"
                                                             viewBox="0 0 24 24"
                                                             fill="none"
                                                             stroke="currentColor"
@@ -3461,6 +3466,7 @@ export default function ProjectMeetings() {
                                                         >
                                                             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                                                         </svg>
+                                                        관리자
                                                     </span>
                                                 )}
                                             </div>

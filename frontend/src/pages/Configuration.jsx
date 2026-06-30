@@ -743,7 +743,12 @@ const Configuration = () => {
                                   </span>
                                   <div className="flex min-w-0 items-center gap-1.5">
                                     <p className="truncate text-sm font-semibold text-slate-800">{name}</p>
-                                    {isAdmin && <span className="shrink-0 text-[11px] font-bold text-sky-600">관리자</span>}
+                                    {isAdmin && (
+                                      <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-sky-600">
+                                        <IIcon name="shield" size={11} />
+                                        관리자
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
 
