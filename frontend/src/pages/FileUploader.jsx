@@ -118,7 +118,7 @@ const SUPPORTED_UPLOAD_EXTENSIONS = [...SUPPORTED_AUDIO_EXTENSIONS, ...SUPPORTED
 const ACTION_ITEM_TEMPLATES = [
   { text: "핵심 의사결정 사항 정리 및 공유", dueDays: 2 },
   { text: "후속 해야 할일 우선순위 확정", dueDays: 4 },
-  { text: "Jira 연동 결과 검증", dueDays: 6 },
+  { text: "협업 도구 동기화 결과 검증", dueDays: 6 },
 ];
 
 const readProjectOverrides = () => {
@@ -169,7 +169,7 @@ const STEPS = [
   { label: "파일 업로드 중...", pct: 25, duration: 1800, icon: "uploadCloud", sub: "서버로 파일을 전송하고 있습니다..." },
   { label: "본문 구조화 중...", pct: 55, duration: 2500, icon: "users", sub: "오디오 전사 또는 문서 본문 추출을 준비하고 있습니다..." },
   { label: "AI 요약 및 연동 항목 추출 중...", pct: 80, duration: 3000, icon: "box", sub: "LLM이 핵심 내용을 정리하고 있습니다..." },
-  { label: "Jira 연동 완료!", pct: 100, duration: 1200, icon: "checkCircle", sub: "추출된 해야 할일을 Jira에 연동했습니다." },
+  { label: "동기화 완료!", pct: 100, duration: 1200, icon: "checkCircle", sub: "추출된 해야 할일이 작업 항목으로 반영되었습니다." },
 ];
 
 const DOT_FRAMES = ["", ".", "..", "..."];
@@ -571,14 +571,14 @@ export default function TikiApp() {
       <section className={cn("relative z-[1] text-center", isMobile ? "px-5 pb-6 pt-9" : "px-12 pb-12 pt-16")}>
         <div className="mb-5 inline-flex items-center gap-1.5 rounded-full border border-[rgba(124,58,237,.3)] bg-[rgba(124,58,237,.08)] px-3 py-[5px] text-[11px] font-semibold uppercase tracking-[0.5px] text-[#7C3AED] sm:text-xs">
           <IIcon name="cpu" size={13} color="#7C3AED" />
-          AI-Powered · STT + 문서 요약 + Jira 자동화
+          AI-Powered · STT + 문서 요약 + 업무 자동화
         </div>
         <h1 className={cn("mb-3.5 font-bold leading-[1.1] tracking-[-1.5px]", isMobile ? "text-[26px]" : "text-[clamp(28px,5vw,60px)]")}>
           회의 파일이나 문서를 올리면<br />
           <em className="not-italic bg-[linear-gradient(90deg,#0099CC,#7C3AED)] bg-clip-text text-transparent">완성되는 자동 요약</em>
         </h1>
         <p className={cn("mx-auto mb-8 max-w-[42rem] text-balance leading-[1.45] text-[#5A6F8A] sm:leading-8", isMobile ? "text-[14px]" : "text-[17px]")}>
-          <span className="block">회의 파일을 업로드하면 화자 분리, AI 요약, Jira 연동까지</span>
+          <span className="block">회의 파일을 업로드하면 화자 분리, AI 요약, 후속 업무 정리까지</span>
           <span className="block">회의가 끝나는 순간 모든 게 정리됩니다.</span>
         </p>
       </section>
@@ -653,7 +653,7 @@ export default function TikiApp() {
             {/* 프로젝트 미선택 안내 */}
             {!selectedProject && (
               <p className="mt-2 text-[12px] text-[#5A6F8A]">
-                Jira 연동할 프로젝트를 먼저 선택해야 분석을 시작할 수 있습니다.
+                분석 결과를 저장할 프로젝트를 먼저 선택해야 시작할 수 있습니다.
               </p>
             )}
           </div>
@@ -886,7 +886,7 @@ export default function TikiApp() {
               <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-[rgba(245,158,11,.25)] bg-[rgba(245,158,11,.06)] px-4 py-2.5">
                 <IIcon name="alertTriangle" size={14} color="#D97706" />
                 <span className="text-[13px] text-[#D97706]">
-                  위에서 Jira 프로젝트를 선택해야 분석을 시작할 수 있습니다.
+                  위에서 프로젝트를 선택해야 분석을 시작할 수 있습니다.
                 </span>
               </div>
             )}
@@ -970,13 +970,13 @@ export default function TikiApp() {
               <IIcon name="checkCircle" size={36} color="#10B981" sw={1.8} />
             </div>
             <div className="mb-2 text-[22px] font-bold tracking-[-0.3px]">분석이 완료됐습니다!</div>
-            <div className="mb-1 text-sm text-[#5A6F8A]">회의록이 생성되고 Jira 연동이 자동으로 완료됐습니다.</div>
+            <div className="mb-1 text-sm text-[#5A6F8A]">회의록 생성과 후속 업무 정리가 완료됐습니다.</div>
 
             <div className="mb-6 inline-flex flex-wrap justify-center gap-4 rounded-[10px] border border-[rgba(16,185,129,.15)] bg-[rgba(16,185,129,.06)] px-5 py-[10px]">
               {[
                 { icon: "clock", text: "처리 시간", val: elapsedTime },
                 { icon: "mic", text: "화자", val: "3명 감지" },
-                { icon: "checkCircle", text: "Jira 연동", val: "3건 완료" },
+                { icon: "checkCircle", text: "업무 반영", val: "3건 완료" },
               ].map(({ icon, text, val }) => (
                 <div key={text} className="inline-flex items-center gap-1 text-[13px] text-[#5A6F8A]">
                   <IIcon name={icon} size={13} color="#10B981" />
