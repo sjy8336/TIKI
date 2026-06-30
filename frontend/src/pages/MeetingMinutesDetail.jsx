@@ -102,7 +102,7 @@ const SUMMARY_DATA = {
   actions: [
     { text: "STT 응답 속도 벤치마크 문서 작성",       assignee: "김지훈",  due: "6/18", status: "todo" },
     { text: "화자 분리 모델 정확도 테스트 결과 공유", assignee: "박소현",  due: "6/20", status: "todo" },
-    { text: "Jira API 연동 PoC 완료",                 assignee: "이민준",  due: null,   status: "done" },
+    { text: "Jira API 연동 PoC 완료",                 assignee: "이민준",  due: "6/17", status: "done" },
     { text: "업로드 UI 사용자 테스트 세션 진행",      assignee: "최아로미", due: "6/25", status: "todo" },
   ],
   issues: [
@@ -162,6 +162,10 @@ function fmtAuditTime(dateStr) {
   }
 
   return raw;
+}
+
+function isGeneratedAuditLog(log) {
+  return /^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(String(log?.time || "").trim());
 }
 
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -600,17 +604,6 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
             </div>
           </div>
 
-          {/* 모바일: 게이지 옆에 미니 통계 */}
-          <div className="flex md:hidden flex-col gap-1.5">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
-              <span className="text-slate-500">완료 <b className="text-slate-800">{done}</b></span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "#CBD5E1" }} />
-              <span className="text-slate-500">남음 <b className="text-slate-800">{remaining}</b></span>
-            </div>
-          </div>
         </div>
 
         {/* 구분선 (데스크탑) — 좌우 형제와의 거리는 부모의 gap-10이 동일하게 처리 */}
@@ -794,9 +787,9 @@ function CustomDropdown({
 }
 
 /* ─── 연동 서비스 뱃지 (실시간 카운트 반영) ─────────── */
-function IntegrationBadge({ svc, onClick }) {
-  const done = svc.tickets.filter(t => t.status === "done").length;
+function IntegrationBadge({ svc, onClick, issuedCount }) {
   const total = svc.tickets.length;
+  const done = Math.min(Math.max(issuedCount ?? 0, 0), total);
   const isEmpty = done === 0;
   const allDone = done === total;
 
@@ -844,8 +837,12 @@ function IntegrationBadge({ svc, onClick }) {
 function ServiceDetailModal({ open, onClose, svc, auditLog }) {
   if (!svc) return null;
 
-  const done = svc.tickets.filter(t => t.status === "done").length;
-  const pct = Math.round((done / svc.tickets.length) * 100);
+  const totalTickets = svc.tickets.length;
+  const done = Math.min(
+    auditLog.filter((log) => log.svcId === svc.id && isGeneratedAuditLog(log)).length,
+    totalTickets
+  );
+  const pct = totalTickets > 0 ? Math.round((done / totalTickets) * 100) : 0;
   const statusLabel = { done: "완료", progress: "진행 중", todo: "대기" };
   const statusCls = {
     done:     "bg-emerald-100 text-emerald-700",
@@ -865,7 +862,7 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
       <div className="mb-4">
         <div className="flex justify-between mb-1.5">
           <span className="text-xs text-slate-400">전체 진행률</span>
-          <span className="text-xs font-bold text-slate-900">{done} / {svc.tickets.length} 완료</span>
+          <span className="text-xs font-bold text-slate-900">{done} / {totalTickets} 완료</span>
         </div>
         <div className="h-1.5 rounded-full bg-slate-100">
           <div
@@ -2719,9 +2716,17 @@ function AudioPlayer({ curTime, playing, spdIdx, onSeek, onTogglePlay, onCycleSp
 
 /* ─── 연동 컨트롤 타워 ───────────────────────────────── */
 function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen, isMobile }) {
-  const totalDone = services.reduce((sum, s) => sum + s.tickets.filter(t => t.status === "done").length, 0);
   const totalTickets = services.reduce((sum, s) => sum + s.tickets.length, 0);
-  const generatedLogs = auditLog.filter((log) => /^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(String(log?.time || "").trim()));
+  const generatedLogs = auditLog.filter(isGeneratedAuditLog);
+  const generatedCountByService = generatedLogs.reduce((acc, log) => {
+    if (!log?.svcId) return acc;
+    acc[log.svcId] = (acc[log.svcId] || 0) + 1;
+    return acc;
+  }, {});
+  const totalDone = services.reduce(
+    (sum, s) => sum + Math.min(generatedCountByService[s.id] || 0, s.tickets.length),
+    0
+  );
   const latestGeneratedLog = generatedLogs[generatedLogs.length - 1] || null;
   const hasGenerated = Boolean(latestGeneratedLog);
 
@@ -2768,7 +2773,12 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
 
       <div className="flex flex-wrap items-center gap-2">
         {services.map(svc => (
-          <IntegrationBadge key={svc.id} svc={svc} onClick={onBadgeClick} />
+          <IntegrationBadge
+            key={svc.id}
+            svc={svc}
+            onClick={onBadgeClick}
+            issuedCount={generatedCountByService[svc.id] || 0}
+          />
         ))}
 
         <div className="hidden sm:block w-px h-5 bg-slate-200 mx-1" />
