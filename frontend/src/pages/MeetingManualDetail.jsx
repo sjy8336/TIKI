@@ -6,6 +6,7 @@ import MobileTab from '../components/MobileTab';
 import ToastPopup from '../components/toastpopup';
 
 const MANUAL_MEETING_RECORDS_KEY = 'tiki_manual_minutes_records';
+const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
 const PROJECTLIST_CHEVRON_COLOR = '#A0AFBF';
 
 const stateLabels = {
@@ -54,6 +55,17 @@ const writeManualMeetingRecords = (next) => {
     localStorage.setItem(MANUAL_MEETING_RECORDS_KEY, JSON.stringify(next));
   } catch {
     // ignore storage write failures in local mock mode
+  }
+};
+
+const readProjectOverrides = () => {
+  try {
+    const raw = localStorage.getItem(PROJECT_OVERRIDE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
 };
 
@@ -235,6 +247,8 @@ function LucideIcon({ name, size = 14, color = 'currentColor', strokeWidth = 2, 
       return <svg {...common}><path d="m6 9 6 6 6-6" /></svg>;
     case 'pencil':
       return <svg {...common}><path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" /></svg>;
+    case 'shield':
+      return <svg {...common}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>;
     default:
       return null;
   }
@@ -1592,6 +1606,34 @@ export default function MeetingManualDetail() {
   }
 
   const participants = Array.isArray(minutes.participants) ? minutes.participants : [];
+  const adminNameSet = useMemo(() => {
+    const names = new Set();
+    const pid = String(minutes?.projectId || location.state?.projectId || '').trim();
+    const overrides = readProjectOverrides();
+    const override = pid ? overrides[pid] : null;
+
+    [minutes?.admins, location.state?.projectAdmins, location.state?.project?.admins, override?.admins].forEach((source) => {
+      if (!Array.isArray(source)) return;
+      source.forEach((name) => {
+        const normalized = String(name || '').trim();
+        if (normalized && participants.includes(normalized)) names.add(normalized);
+      });
+    });
+
+    if (names.size === 0) {
+      const fallbackLead = String(
+        minutes?.teamLead
+          || location.state?.project?.teamLead
+          || override?.teamLead
+          || ''
+      ).trim();
+      if (fallbackLead && participants.includes(fallbackLead)) {
+        names.add(fallbackLead);
+      }
+    }
+
+    return names;
+  }, [location.state, minutes, participants]);
   const visibleParticipants = participants.slice(0, 4);
   const hiddenCount = Math.max(participants.length - visibleParticipants.length, 0);
   const hasRichContent = Boolean(
@@ -2570,7 +2612,9 @@ export default function MeetingManualDetail() {
               <p className="text-xs text-slate-400 mb-2">총 {participantsModalMembers.length}명 참여</p>
               <div className="space-y-2 pr-1">
                 {participantsModalMembers.length > 0 ? (
-                  participantsModalMembers.map((name, idx) => (
+                  participantsModalMembers.map((name, idx) => {
+                    const isAdmin = adminNameSet.has(name);
+                    return (
                     <div
                       key={`${name}-${idx}`}
                       className="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200"
@@ -2582,12 +2626,21 @@ export default function MeetingManualDetail() {
                         {String(name || '?').slice(0, 1)}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-slate-900 truncate">{name}</p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="text-sm font-semibold text-slate-900 truncate">{name}</p>
+                          {isAdmin && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 text-[10px] font-bold">
+                              <LucideIcon name="shield" size={9} />
+                              관리자
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-slate-400">{ROLE_MAP[name] || 'Team Member'}</p>
                       </div>
                       <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-600">참여 중</span>
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="text-sm text-[#7C8EA6]">참여자 정보가 없습니다.</p>
                 )}
