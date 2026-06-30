@@ -185,7 +185,7 @@ def list_project_uploads(
         .where(UploadedFile.project_id == project_id)
         .order_by(UploadedFile.created_at.desc())
     ).all()
-    return [UploadedFileResponse.model_validate(f) for f in files]
+    return [UploadedFileResponse.from_uploaded_file(f) for f in files]
 
 
 # ── Meeting ───────────────────────────────────────────────────────────────────

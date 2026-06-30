@@ -92,7 +92,7 @@ def list_uploaded_files(
     if project_id:
         stmt = stmt.where(UploadedFile.project_id == project_id)
     files = db.scalars(stmt).all()
-    return [UploadedFileResponse.model_validate(f) for f in files]
+    return [UploadedFileResponse.from_uploaded_file(f) for f in files]
 
 
 @router.post(
@@ -170,7 +170,7 @@ async def upload_files(
 
     return UploadBatchResponse(
         files=[
-            UploadedFileResponse.model_validate(uploaded_file)
+            UploadedFileResponse.from_uploaded_file(uploaded_file)
             for uploaded_file in saved_files
         ],
     )
@@ -186,7 +186,7 @@ def get_uploaded_file(
     if uploaded_file is None:
         raise AppException(detail="Uploaded file not found", status_code=404, code="not_found")
     _assert_file_access(db, uploaded_file, current_user.id)
-    return UploadedFileResponse.model_validate(uploaded_file)
+    return UploadedFileResponse.from_uploaded_file(uploaded_file)
 
 
 @router.post("/{file_id}/retry", response_model=UploadedFileResponse)
@@ -219,7 +219,7 @@ def retry_analysis(
     db.refresh(uploaded_file)
 
     background_tasks.add_task(process_uploaded_file, uploaded_file.id)
-    return UploadedFileResponse.model_validate(uploaded_file)
+    return UploadedFileResponse.from_uploaded_file(uploaded_file)
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

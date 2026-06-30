@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 import numpy as np
 
@@ -40,6 +41,7 @@ from app.services.ai_engine import (
     _summarize_audio_preprocessing,
     _summarize_stt_routing,
 )
+from app.schemas.upload import UploadedFileResponse
 
 
 class HeuristicMeetingAnalysisTests(unittest.TestCase):
@@ -289,6 +291,26 @@ class HeuristicMeetingAnalysisTests(unittest.TestCase):
         self.assertEqual(config.compute_type, "int8")
         self.assertEqual(config.cpu_threads, 8)
         self.assertEqual(config.num_workers, 4)
+
+    def test_uploaded_file_response_includes_processing_state(self) -> None:
+        uploaded_file = SimpleNamespace(
+            id=uuid4(),
+            project_id=None,
+            project_key="TIKI",
+            project_name="테스트",
+            original_filename="sample.mp3",
+            file_size_bytes=1024,
+            file_extension="mp3",
+            file_kind="audio",
+            status="processing",
+        )
+
+        response = UploadedFileResponse.from_uploaded_file(uploaded_file)
+
+        self.assertEqual(response.status, "processing")
+        self.assertEqual(response.processing_state.phase, "processing")
+        self.assertEqual(response.processing_state.progress_pct, 65)
+        self.assertEqual(response.processing_state.status_message, "AI 분석을 진행 중입니다.")
 
     def test_transcription_profiles_adjust_decoding_budget(self) -> None:
         light_service = WhisperSpeechToTextService(model_name="large", language="ko", transcription_profile="light")

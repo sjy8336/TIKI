@@ -70,6 +70,11 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+function getFilePreviewIcon(fileName) {
+  const extension = String(fileName || "").includes(".") ? String(fileName).split(".").pop().toLowerCase() : "";
+  return SUPPORTED_DOCUMENT_EXTENSIONS.includes(extension) ? "fileText" : "music";
+}
+
 function useAnimatedNumber(target, duration = 400) {
   const [display, setDisplay] = useState(0);
   const frameRef = useRef();
@@ -106,6 +111,9 @@ function useIsMobile() {
 }
 
 const PROJECT_OVERRIDE_STORAGE_KEY = "tiki_project_overrides";
+const SUPPORTED_AUDIO_EXTENSIONS = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "webm"];
+const SUPPORTED_DOCUMENT_EXTENSIONS = ["pdf", "doc", "docx", "txt", "md", "hwp", "hwpx"];
+const SUPPORTED_UPLOAD_EXTENSIONS = [...SUPPORTED_AUDIO_EXTENSIONS, ...SUPPORTED_DOCUMENT_EXTENSIONS];
 
 const ACTION_ITEM_TEMPLATES = [
   { text: "핵심 의사결정 사항 정리 및 공유", dueDays: 2 },
@@ -159,8 +167,8 @@ const PROJECTS = [
 
 const STEPS = [
   { label: "파일 업로드 중...", pct: 25, duration: 1800, icon: "uploadCloud", sub: "서버로 파일을 전송하고 있습니다..." },
-  { label: "화자 분리 처리 중...", pct: 55, duration: 2500, icon: "users", sub: "STT 변환 및 화자 diarization 진행 중..." },
-  { label: "AI 요약 및 연동 항목 추출 중...", pct: 80, duration: 3000, icon: "box", sub: "LLM이 핵심 항목을 분석하고 있습니다..." },
+  { label: "본문 구조화 중...", pct: 55, duration: 2500, icon: "users", sub: "오디오 전사 또는 문서 본문 추출을 준비하고 있습니다..." },
+  { label: "AI 요약 및 연동 항목 추출 중...", pct: 80, duration: 3000, icon: "box", sub: "LLM이 핵심 내용을 정리하고 있습니다..." },
   { label: "Jira 연동 완료!", pct: 100, duration: 1200, icon: "checkCircle", sub: "추출된 해야 할일을 Jira에 연동했습니다." },
 ];
 
@@ -312,7 +320,7 @@ export default function TikiApp() {
   };
 
   const handleFiles = (selectedFiles) => {
-    const allowed = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "txt"];
+    const allowed = SUPPORTED_UPLOAD_EXTENSIONS;
     const acceptedFiles = [];
     let skippedCount = 0;
     let skippedMessage = "";
@@ -321,7 +329,7 @@ export default function TikiApp() {
       const extension = selectedFile.name.split(".").pop().toLowerCase();
       if (!allowed.includes(extension)) {
         skippedCount += 1;
-        skippedMessage ||= `허용되는 형식: MP3, WAV, M4A, AAC, OGG, FLAC, TXT (${extension.toUpperCase()})`;
+        skippedMessage ||= `허용되는 형식: MP3, WAV, M4A, AAC, OGG, FLAC, PDF, DOC, DOCX, TXT, MD, HWP, HWPX (${extension.toUpperCase()})`;
         return;
       }
       if (selectedFile.size > 1024 * 1024 * 1024) {
@@ -335,7 +343,7 @@ export default function TikiApp() {
     if (acceptedFiles.length === 0) {
       setError({
         title: skippedCount > 0 ? "추가할 수 없는 파일입니다" : "파일을 찾을 수 없습니다",
-        msg: skippedMessage || "지원되는 오디오 파일을 선택해 주세요.",
+        msg: skippedMessage || "지원되는 오디오 또는 문서 파일을 선택해 주세요.",
         cancelStyle: false,
       });
       return;
@@ -540,8 +548,8 @@ export default function TikiApp() {
     const firstFile = files[0];
     const firstFileName = String(firstFile?.name || "");
     const ext = firstFileName.includes(".") ? firstFileName.split(".").pop().toLowerCase() : "";
-    const audioExt = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "webm"];
-    const textExt = ["txt", "md", "doc", "docx", "pdf", "rtf", "hwp", "hwpx"];
+    const audioExt = SUPPORTED_AUDIO_EXTENSIONS;
+    const textExt = SUPPORTED_DOCUMENT_EXTENSIONS;
 
     const uploadKind = audioExt.includes(ext) ? "audio" : textExt.includes(ext) ? "text" : "audio";
 
@@ -563,11 +571,11 @@ export default function TikiApp() {
       <section className={cn("relative z-[1] text-center", isMobile ? "px-5 pb-6 pt-9" : "px-12 pb-12 pt-16")}>
         <div className="mb-5 inline-flex items-center gap-1.5 rounded-full border border-[rgba(124,58,237,.3)] bg-[rgba(124,58,237,.08)] px-3 py-[5px] text-[11px] font-semibold uppercase tracking-[0.5px] text-[#7C3AED] sm:text-xs">
           <IIcon name="cpu" size={13} color="#7C3AED" />
-          AI-Powered · STT + LLM + Jira 자동화
+          AI-Powered · STT + 문서 요약 + Jira 자동화
         </div>
         <h1 className={cn("mb-3.5 font-bold leading-[1.1] tracking-[-1.5px]", isMobile ? "text-[26px]" : "text-[clamp(28px,5vw,60px)]")}>
-          회의 파일을 올리면<br />
-          <em className="not-italic bg-[linear-gradient(90deg,#0099CC,#7C3AED)] bg-clip-text text-transparent">완성되는 자동 회의록</em>
+          회의 파일이나 문서를 올리면<br />
+          <em className="not-italic bg-[linear-gradient(90deg,#0099CC,#7C3AED)] bg-clip-text text-transparent">완성되는 자동 요약</em>
         </h1>
         <p className={cn("mx-auto mb-8 max-w-[42rem] text-balance leading-[1.45] text-[#5A6F8A] sm:leading-8", isMobile ? "text-[14px]" : "text-[17px]")}>
           <span className="block">회의 파일을 업로드하면 화자 분리, AI 요약, Jira 연동까지</span>
@@ -702,7 +710,7 @@ export default function TikiApp() {
               파일 선택
             </button>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".TXT", ".HWP", ".DOCX", ".PDF"].map((format) => (
+              {[".MP3", ".WAV", ".M4A", ".AAC", ".OGG", ".FLAC", ".PDF", ".DOC", ".DOCX", ".TXT", ".MD", ".HWP", ".HWPX"].map((format) => (
                 <span
                   key={format}
                   className={cn(
@@ -719,7 +727,7 @@ export default function TikiApp() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.txt"
+              accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.pdf,.doc,.docx,.txt,.md,.hwp,.hwpx"
               className="hidden"
               onChange={(event) => {
                 if (event.target.files.length) handleFiles(event.target.files);
@@ -804,7 +812,7 @@ export default function TikiApp() {
                   )}
                 >
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.08))]">
-                    <IIcon name="music" size={20} color="#0099CC" sw={1.8} />
+                    <IIcon name={getFilePreviewIcon(selectedFile.name)} size={20} color="#0099CC" sw={1.8} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">{selectedFile.name}</div>

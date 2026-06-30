@@ -6,7 +6,7 @@ from fastapi import UploadFile
 from app.models.enums import FileKind
 
 AUDIO_EXTENSIONS = {"mp3", "wav", "m4a", "aac", "ogg", "flac"}
-DOCUMENT_EXTENSIONS = {"pdf", "doc", "docx", "txt", "md"}
+DOCUMENT_EXTENSIONS = {"pdf", "doc", "docx", "txt", "md", "hwp", "hwpx"}
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 
 
