@@ -265,6 +265,13 @@ function toDateInputValue(value) {
     if (!raw) return '';
     if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
     if (/^\d{4}\.\d{2}\.\d{2}$/.test(raw)) return raw.replace(/\./g, '-');
+    const koreanDate = raw.match(/^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일$/);
+    if (koreanDate) {
+        const year = koreanDate[1];
+        const month = pad2(Number(koreanDate[2]));
+        const day = pad2(Number(koreanDate[3]));
+        return `${year}-${month}-${day}`;
+    }
     return '';
 }
 
@@ -278,7 +285,21 @@ function fromDateInputValue(value) {
 function formatDueDateDisplay(value) {
     const raw = String(value || '').trim();
     if (!raw || raw === '-') return '-';
-    if (/^\d{4}\.\d{2}\.\d{2}$/.test(raw)) return raw.replace(/\./g, '-');
+    const koreanDate = raw.match(/^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일$/);
+    if (koreanDate) {
+        return `${Number(koreanDate[1])}년 ${Number(koreanDate[2])}월 ${Number(koreanDate[3])}일`;
+    }
+
+    const directDate = raw.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})(?:$|T)/);
+    if (directDate) {
+        return `${Number(directDate[1])}년 ${Number(directDate[2])}월 ${Number(directDate[3])}일`;
+    }
+
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}년 ${parsed.getMonth() + 1}월 ${parsed.getDate()}일`;
+    }
+
     return raw;
 }
 
@@ -1591,10 +1612,10 @@ export default function ProjectMeetings() {
         toDateLabel(projectCatalog.find((item) => isSameProjectId(item?.id, project.id))?.createdAt) ||
         new Date().toISOString().slice(0, 10);
 
-    // 데스크톱 해야 할 일 표 컬럼 비율 (체크 3%, 해야 할 일 50%, 담당자 10%, 상태 10%, 출처 15%, 마감일 10%, 더보기 2%)
+    // 데스크톱 해야 할 일 표 컬럼 비율 (마감일 길이 증가 대응: 각 컬럼 최소폭 보장)
     const actionTableGridStyle = {
         gridTemplateColumns:
-            '3% 50% 10% 10% 15% 10% 2%',
+            '40px minmax(0,4.6fr) minmax(90px,1.2fr) minmax(96px,1.2fr) minmax(120px,1.7fr) minmax(130px,1.5fr) 32px',
     };
 
     // 데스크톱 회의기록 표 컬럼 비율 (날짜/제목/상태/태그/더보기)
@@ -2732,7 +2753,7 @@ export default function ProjectMeetings() {
 
                                                             {/* 마감일 */}
                                                             <div className="flex items-center justify-start min-h-[44px] text-left">
-                                                                <span className="text-sm text-[#0D1B2A]">
+                                                                <span className="text-sm text-[#0D1B2A] whitespace-nowrap">
                                                                     {formatDueDateDisplay(item.due)}
                                                                 </span>
                                                             </div>
