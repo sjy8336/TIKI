@@ -40,8 +40,8 @@ export default function Footer() {
               <span className="text-[#0099CC]">TI</span>KI
             </span>
           </div>
-          <p className="mb-5 max-w-[260px] text-[13px] leading-7 text-[#5A6F8A]">
-            음성 회의록을 AI로 자동 정리하고, Jira 티켓까지 연동하는 스마트 업무 자동화 플랫폼입니다.
+          <p className="mb-5 max-w-[360px] text-[13px] leading-7 text-[#5A6F8A]">
+            음성 회의록을 AI로 자동 정리하고, Jira와 Notion의 할 일 목록으로 <span className="whitespace-nowrap">연동하는</span> 스마트 업무 자동화 플랫폼입니다.
           </p>
           <div className="flex gap-2">
             {[
