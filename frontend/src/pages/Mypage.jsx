@@ -95,7 +95,7 @@ function Toast({ message, type, onClose }) {
   useEffect(() => { const t = setTimeout(onClose, 3200); return () => clearTimeout(t); }, [onClose]);
   return (
     <div className={cn(
-      "fixed bottom-6 left-1/2 z-[200] -translate-x-1/2 flex items-center gap-2.5 rounded-2xl px-5 py-3 text-sm font-semibold text-white shadow-[0_8px_32px_rgba(0,0,0,.18)] backdrop-blur-sm",
+      "fixed bottom-24 sm:bottom-6 left-1/2 z-[200] -translate-x-1/2 flex items-center gap-2.5 rounded-2xl px-5 py-3 text-sm font-semibold text-white shadow-[0_8px_32px_rgba(0,0,0,.18)] backdrop-blur-sm",
       type === "success" ? "bg-[#10B981]" : "bg-[#EF4444]"
     )}>
       <Icon name={type === "success" ? "checkCircle" : "alertTriangle"} size={15} color="#fff" />
@@ -1167,6 +1167,7 @@ function SubscriptionSection({ showToast, isMobile }) {
 // Root
 // ═══════════════════════════════════════════════════════════════════════════
 export default function MyPage() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("home");
   const [toast, setToast] = useState(null);
   const [modal, setModal] = useState(null);
@@ -1236,9 +1237,10 @@ export default function MyPage() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    sessionStorage.setItem("tiki_flash_toast", "로그아웃 되었습니다.");
     clearAuthSession();
-    showToast("로그아웃 되었습니다.");
-  }, [showToast]);
+    navigate("/onboarding", { replace: true });
+  }, [navigate]);
 
   const handleModal = (type) => setModal(type);
   const closeModal = () => setModal(null);

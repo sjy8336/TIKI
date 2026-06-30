@@ -739,7 +739,7 @@ export default function TikiApp() {
                 <div className="mt-1 text-[11px] text-[#0099CC]">파일을 드래그해 순서를 바꾸면 위쪽부터 차례대로 분석됩니다.</div>
               </div>
               <button
-                className="rounded-[7px] border border-[rgba(0,0,0,.08)] bg-[rgba(0,0,0,.03)] px-3 py-1.5 text-xs font-semibold text-[#5A6F8A]"
+                className="shrink-0 whitespace-nowrap rounded-[7px] border border-[rgba(0,0,0,.08)] bg-[rgba(0,0,0,.03)] px-3 py-1.5 text-xs font-semibold text-[#5A6F8A]"
                 onClick={clearFiles}
               >
                 전체 삭제
