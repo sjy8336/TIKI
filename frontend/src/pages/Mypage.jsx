@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
@@ -33,6 +34,7 @@ const ICON_PATHS = {
   briefcase: ["M20 7h-4V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z","M16 7V5H8v2"],
   creditCard: ["M22 10V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4","M2 10h20","M6 14h2","M10 14h6","M4 18h16a2 2 0 0 0 2-2v-2H2v2a2 2 0 0 0 2 2z"],
   sparkles: ["M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z","M5 17l.8 2.2L8 20l-2.2.8L5 23l-.8-2.2L2 20l2.2-.8L5 17z","M19 15l.7 1.9L21.5 17.6l-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9z"],
+  helpCircle: ["M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3","M12 17h.01","M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"],
   home: ["M3 9.5L12 3l9 6.5","M5 10v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10","M9 21v-6h6v6"],
   pencil: ["M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z","M15 5l4 4"],
   mail: ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z","M22 6l-10 7L2 6"],
@@ -475,13 +477,25 @@ function HomeSection({ goTo, name, email, department }) {
       <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
         {/* 좌측: 프로필(계정) + 구독권 */}
         <div className="space-y-5">
-          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+          <div
+            onClick={() => goTo("subscription")}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                goTo("subscription");
+              }
+            }}
+            className="cursor-pointer rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 transition-colors hover:border-[rgba(0,153,204,.35)]"
+          >
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <p className="text-[14px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
                 <Badge label="이용중" variant="cyan" />
                 {planLoading && <span className="text-[11px] text-[#9BAABE]">동기화 중...</span>}
               </div>
+              <Icon name="chevronRight" size={14} color="#9BAABE" />
             </div>
             <p className="text-[12px] text-[#5A6F8A]">
               {billingLabel} 결제 · {priceLabel}
@@ -519,28 +533,50 @@ function HomeSection({ goTo, name, email, department }) {
         </div>
 
         {/* 우측: 최근 회의 */}
-        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-[14px] font-bold text-[#0D1B2A]">최근 회의</h3>
-            <span className="text-[12px] text-[#9BAABE]">최근 3건</span>
+        <div className="space-y-5">
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-[14px] font-bold text-[#0D1B2A]">최근 회의</h3>
+              <span className="text-[12px] text-[#9BAABE]">최근 3건</span>
+            </div>
+            <div className="space-y-1">
+              {RECENT_MEETINGS.map((m, i) => (
+                <div key={m.id}
+                  className={cn(
+                    "flex items-center gap-3 py-3",
+                    i !== RECENT_MEETINGS.length - 1 && "border-b border-[rgba(0,100,180,.07)]"
+                  )}>
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,153,204,.08)]">
+                    <Icon name="checkCircle" size={15} color={m.done === m.actionItems ? "#10B981" : "#0099CC"} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{m.title}</p>
+                    <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 해야 할일 {m.done}/{m.actionItems} 완료</p>
+                  </div>
+                  <Icon name="chevronRight" size={14} color="#9BAABE" />
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="space-y-1">
-            {RECENT_MEETINGS.map((m, i) => (
-              <div key={m.id}
-                className={cn(
-                  "flex items-center gap-3 py-3",
-                  i !== RECENT_MEETINGS.length - 1 && "border-b border-[rgba(0,100,180,.07)]"
-                )}>
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,153,204,.08)]">
-                  <Icon name="checkCircle" size={15} color={m.done === m.actionItems ? "#10B981" : "#0099CC"} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{m.title}</p>
-                  <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 해야 할일 {m.done}/{m.actionItems} 완료</p>
-                </div>
-                <Icon name="chevronRight" size={14} color="#9BAABE" />
+
+          <div className="sm:hidden rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,153,204,.08)]">
+                <Icon name="helpCircle" size={15} color="#0099CC" />
               </div>
-            ))}
+              <div className="min-w-0 flex-1">
+                <h3 className="text-[14px] font-bold text-[#0D1B2A]">고객센터 문의하기</h3>
+                <p className="mt-1 text-[12px] leading-[1.6] text-[#5A6F8A]">이용 중 불편한 점이나 개선 의견을 보내주세요.</p>
+                <Link
+                  to="/contact"
+                  state={{ mobileTab: "mypage" }}
+                  className="mt-2.5 inline-flex items-center gap-1.5 rounded-xl bg-[linear-gradient(135deg,#0099CC,#0077AA)] px-3 py-1.5 text-[11.5px] font-bold text-white"
+                >
+                  <Icon name="helpCircle" size={12} color="#fff" />
+                  고객센터로 이동
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -975,7 +1011,8 @@ function DataSection({ showToast }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-function SubscriptionSection({ showToast }) {
+function SubscriptionSection({ showToast, isMobile }) {
+  const navigate = useNavigate();
   const [planLoading, setPlanLoading] = useState(false);
   const [currentPlanId, setCurrentPlanId] = useState(() => {
     try {
@@ -1068,11 +1105,23 @@ function SubscriptionSection({ showToast }) {
           const selected = plan.id === currentPlanId;
           const planPrice = plan.price[currentBilling] || 0;
           const discount = yearlyDiscount(plan);
+          const canNavigateToSubscription = isMobile && !selected;
+
           return (
             <div
               key={plan.id}
+              onClick={canNavigateToSubscription ? () => navigate("/subscription", { state: { mobileTab: "mypage" } }) : undefined}
+              role={canNavigateToSubscription ? "button" : undefined}
+              tabIndex={canNavigateToSubscription ? 0 : undefined}
+              onKeyDown={canNavigateToSubscription ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  navigate("/subscription", { state: { mobileTab: "mypage" } });
+                }
+              } : undefined}
               className={cn(
                 "rounded-2xl border p-4 transition-colors",
+                canNavigateToSubscription && "cursor-pointer active:scale-[0.99]",
                 selected
                   ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.06)]"
                   : "border-[rgba(0,100,180,.1)] bg-white"
@@ -1089,6 +1138,9 @@ function SubscriptionSection({ showToast }) {
                 <p className="mt-0.5 text-[11px] font-semibold text-[#0099CC]">연간 결제 {discount}% 할인</p>
               )}
               <p className="mt-2 text-[11px] text-[#5A6F8A]">{plan.tagline}</p>
+              {canNavigateToSubscription && (
+                <p className="mt-2 text-[11px] font-semibold text-[#0099CC]">탭하여 구독 페이지로 이동</p>
+              )}
             </div>
           );
         })}
@@ -1310,7 +1362,7 @@ export default function MyPage() {
               {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} />}
               {activeTab === "security"     && <SecuritySection showToast={showToast} setModal={handleModal} />}
               {activeTab === "integrations" && <IntegrationsSection showToast={showToast} />}
-              {activeTab === "subscription" && <SubscriptionSection showToast={showToast} />}
+              {activeTab === "subscription" && <SubscriptionSection showToast={showToast} isMobile={isMobile} />}
               {activeTab === "sessions"     && <SessionsSection showToast={showToast} setModal={handleModal} />}
               {activeTab === "data"         && <DataSection showToast={showToast} />}
             </div>

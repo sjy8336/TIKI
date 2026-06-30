@@ -60,10 +60,7 @@ const writeManualMeetingRecords = (next) => {
 const formatDueDate = (raw) => {
   const value = String(raw || '').trim();
   if (!value) return '미정';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return value.replace(/-/g, '.');
-  }
-  return value;
+  return normalizeDueLabel(value) || value;
 };
 
 const formatDisplayDate = (raw) => {
@@ -157,6 +154,16 @@ const parseDueToDateStr = (due) => {
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     return raw;
+  }
+
+  const dottedMatched = raw.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})$/);
+  if (dottedMatched) {
+    const year = Number(dottedMatched[1]);
+    const month = Number(dottedMatched[2]);
+    const day = Number(dottedMatched[3]);
+    if (year >= 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return toDateStr(year, month - 1, day);
+    }
   }
 
   const legacyMatched = raw.match(/^(\d{1,2})\/(\d{1,2})$/);
@@ -583,6 +590,7 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
   const totalDone = services.reduce((sum, svc) => sum + svc.tickets.filter((t) => t.status === 'done').length, 0);
   const totalTickets = services.reduce((sum, svc) => sum + svc.tickets.length, 0);
   const latestLog = auditLog[auditLog.length - 1] || null;
+  const hasIssued = Boolean(latestLog);
 
   return (
     <div
@@ -595,11 +603,19 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
           <span
             className="text-xs font-bold px-2 py-0.5 rounded-full"
             style={{
-              background: totalDone === totalTickets ? 'rgba(16,185,129,0.1)' : 'rgba(0,153,204,0.1)',
-              color: totalDone === totalTickets ? '#10B981' : '#0099CC',
+              background: hasIssued
+                ? totalDone === totalTickets
+                  ? 'rgba(16,185,129,0.1)'
+                  : 'rgba(0,153,204,0.1)'
+                : 'rgba(0,153,204,0.1)',
+              color: hasIssued
+                ? totalDone === totalTickets
+                  ? '#10B981'
+                  : '#0099CC'
+                : '#0099CC',
             }}
           >
-            {totalDone}/{totalTickets} 연동 완료
+            {hasIssued ? `${totalDone}/${totalTickets} 연동 완료` : `0/${totalTickets}`}
           </span>
         </div>
 
@@ -962,7 +978,7 @@ export default function MeetingManualDetail() {
   const [detailSvc, setDetailSvc] = useState(null);
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueStep, setIssueStep] = useState(1);
-  const [selectedIssueSvc, setSelectedIssueSvc] = useState('jira');
+  const [selectedIssueSvc, setSelectedIssueSvc] = useState('');
   const [issueCheckedItems, setIssueCheckedItems] = useState(new Set());
   const [issueMode, setIssueMode] = useState('merged');
   const [issueTitle, setIssueTitle] = useState('');
@@ -1170,10 +1186,8 @@ export default function MeetingManualDetail() {
   }, []);
 
   const openIssueModal = useCallback(() => {
-    setSelectedIssueSvc('jira');
-    const defaults = new Set();
-    issueActionItems.forEach((_, idx) => defaults.add(idx));
-    setIssueCheckedItems(defaults);
+    setSelectedIssueSvc('');
+    setIssueCheckedItems(new Set());
     setIssueStep(1);
     setIssueMode('merged');
     const first = issueActionItems[0];
@@ -1521,6 +1535,7 @@ export default function MeetingManualDetail() {
     if (issueCheckedItems.size === 0) return;
 
     const isMultiple = issueCheckedItems.size > 1;
+    if (!selectedIssueSvc) return;
     if (issueMode === 'merged' && isMultiple && !String(issueAssignee || '').trim()) return;
 
     setIssuing(true);
@@ -1741,13 +1756,13 @@ export default function MeetingManualDetail() {
             )}
 
             <div className="rounded-xl p-4 space-y-3 bg-blue-50 border border-blue-100">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-bold text-slate-800">핵심 키워드 / 전체 요약</p>
-                {isEditMode && <EditSaveButton onClick={saveSummarySection} />}
-              </div>
+              {isEditMode ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-slate-800">핵심 키워드 / 전체 요약</p>
+                    <EditSaveButton onClick={saveSummarySection} />
+                  </div>
 
-              <div>
-                {isEditMode ? (
                   <EditField label="핵심 키워드" hint="쉼표(,)로 구분해서 입력하세요">
                     <input
                       value={editDraft.keywordsInput}
@@ -1770,23 +1785,7 @@ export default function MeetingManualDetail() {
                       </div>
                     )}
                   </EditField>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {(Array.isArray(minutes.keywords) ? minutes.keywords : []).length > 0 ? (
-                      minutes.keywords.map((word) => (
-                        <span key={word} className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
-                          {String(word).startsWith('#') ? word : `#${word}`}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-xs text-slate-400">키워드가 없습니다.</span>
-                    )}
-                  </div>
-                )}
-              </div>
 
-              <div className="border-t border-blue-100 pt-3">
-                {isEditMode ? (
                   <EditField label="전체 요약">
                     <textarea
                       value={editDraft.summaryInput}
@@ -1797,10 +1796,30 @@ export default function MeetingManualDetail() {
                       style={{ fontFamily: 'inherit' }}
                     />
                   </EditField>
-                ) : (
-                  <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-line">{minutes.summary || '요약 내용이 없습니다.'}</p>
-                )}
-              </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">핵심 키워드</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(Array.isArray(minutes.keywords) ? minutes.keywords : []).length > 0 ? (
+                        minutes.keywords.map((word) => (
+                          <span key={word} className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
+                            {String(word).startsWith('#') ? word : `#${word}`}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-xs text-slate-400">키워드가 없습니다.</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-blue-100 pt-3">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">전체 요약</p>
+                    <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-line">{minutes.summary || '요약 내용이 없습니다.'}</p>
+                  </div>
+                </>
+              )}
             </div>
 
             <Divider label="협업" />
@@ -1820,7 +1839,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="주요 결정 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.decisions ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.decisions ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -1878,7 +1897,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="해야 할 일 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.actions ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.actions ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -1991,7 +2010,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="이슈 리스크 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.issues ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.issues ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -2088,7 +2107,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="다음 안건 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.nextAgenda ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.nextAgenda ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -2269,9 +2288,10 @@ export default function MeetingManualDetail() {
                 보낼 업무 선택
                 {issueCheckedItems.size > 0 && <span className="ml-2 text-cyan-500 normal-case">({issueCheckedItems.size}개 선택됨)</span>}
               </p>
-              <div className="space-y-1.5 max-h-52 overflow-y-auto">
+              <div className="space-y-1.5">
                 {issueActionItems.length > 0 ? issueActionItems.map((item, idx) => {
                   const checked = issueCheckedItems.has(idx);
+                  const canSelectItem = Boolean(selectedIssueSvc);
                   return (
                     <div
                       key={`${item.text}-${idx}`}
@@ -2286,6 +2306,7 @@ export default function MeetingManualDetail() {
                       style={{
                         borderColor: checked ? 'rgba(16,185,129,0.35)' : 'rgba(0,100,180,0.12)',
                         background: checked ? '#F0FDF9' : '#fff',
+                        cursor: 'pointer',
                       }}
                     >
                       <div

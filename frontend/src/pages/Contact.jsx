@@ -224,8 +224,8 @@ const InfoPanel = () => (
     <div className="flex flex-col gap-3.5">
       <div className="flex items-start gap-2.5 text-[13.5px] leading-relaxed text-[#5A6F8A]">
         <Icons.Mail className="mt-0.5 shrink-0" />
-        <span>
-          <strong className="text-[#0D1B2A]">support@website.kr</strong>
+        <span className="min-w-0 break-words">
+          <strong className="break-all text-[#0D1B2A]">support@website.kr</strong>
           <br />평일 09:00–18:00 답변
         </span>
       </div>
@@ -273,7 +273,7 @@ const SuccessNotice = ({ email, onReset }) => (
       <Icons.Check />
     </div>
     <h2 className="mb-2 text-[19px] font-bold text-[#0D1B2A]">문의가 접수되었습니다</h2>
-    <p className="mb-5 max-w-[340px] text-sm leading-relaxed text-[#5A6F8A]">
+    <p className="mb-5 max-w-[340px] break-words text-sm leading-relaxed text-[#5A6F8A]">
       입력하신 <strong className="text-[#0D1B2A]">{email}</strong> 으로 평균 4시간 이내에 답변드릴게요.
     </p>
     <button
@@ -380,7 +380,7 @@ export default function ContactPage() {
     } ${shaking[name] ? "tiki-shake" : ""}`;
 
   return (
-    <div className="min-h-screen bg-[#F8FAFF]">
+    <div className="min-h-screen overflow-x-hidden bg-[#F8FAFF]">
       <GlobalStyle />
       <Header isMobile={isMobile} phase="IDLE" stateLabels={stateLabels} />
 
@@ -406,7 +406,9 @@ export default function ContactPage() {
         }`}
       >
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px_1fr] lg:items-start">
-          <InfoPanel />
+          <div className="min-w-0">
+            <InfoPanel />
+          </div>
 
           {/* ── 폼 카드 ── */}
           <div
@@ -529,7 +531,7 @@ export default function ContactPage() {
                     type="checkbox" id="privacy" name="privacy" checked={form.privacy} onChange={handleChange}
                     className="mt-0.5 h-[18px] w-[18px] shrink-0 cursor-pointer accent-[#0099CC]"
                   />
-                  <label htmlFor="privacy" className="cursor-pointer text-sm leading-relaxed text-[#5A6F8A]">
+                  <label htmlFor="privacy" className="cursor-pointer break-words text-sm leading-relaxed text-[#5A6F8A]">
                     <a href="#" className="font-semibold text-[#0099CC] underline underline-offset-2">
                       개인정보 처리방침
                     </a>
