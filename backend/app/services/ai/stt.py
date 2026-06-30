@@ -684,7 +684,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
     @staticmethod
     def _resolve_compute_type_name(device_name: str, whisper_engine: str) -> str:
         if whisper_engine == WHISPER_ENGINE_FASTER:
-            return "int8"
+            return detect_whisper_runtime_config().compute_type
         return "float16" if device_name == "cuda" else "float32"
 
     @staticmethod
@@ -800,7 +800,11 @@ class WhisperSpeechToTextService(SpeechToTextService):
                     preprocessing,
                     whisper_engine=WHISPER_ENGINE_OPENAI,
                 )
-            speaker_turns, diarization_summary = self._diarize_audio(path, preprocessing=preprocessing)
+            speaker_turns, diarization_summary = self._diarize_audio(
+                path,
+                preprocessing=preprocessing,
+                expected_speaker_count=len(participant_names) if participant_names else None,
+            )
             segments, attachment_summary = _attach_speaker_labels(
                 segments,
                 speaker_turns,
@@ -826,6 +830,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
         audio_path: Path,
         *,
         preprocessing: AudioPreprocessingResult | None = None,
+        expected_speaker_count: int | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         diarization_service = self._get_diarization_service()
         if diarization_service is None:
@@ -837,11 +842,21 @@ class WhisperSpeechToTextService(SpeechToTextService):
             }
 
         try:
-            speaker_turns = diarization_service.diarize(
-                str(audio_path),
-                samples=getattr(preprocessing, "samples", None),
-                sample_rate=getattr(preprocessing, "sample_rate", None),
-            )
+            logger.info("Starting speaker diarization for %s", audio_path.name)
+            diarize_kwargs = {
+                "samples": getattr(preprocessing, "samples", None),
+                "sample_rate": getattr(preprocessing, "sample_rate", None),
+            }
+            if expected_speaker_count and expected_speaker_count > 0:
+                diarize_kwargs["num_speakers"] = expected_speaker_count
+
+            try:
+                speaker_turns = diarization_service.diarize(str(audio_path), **diarize_kwargs)
+            except TypeError as exc:
+                if "num_speakers" not in str(exc):
+                    raise
+                diarize_kwargs.pop("num_speakers", None)
+                speaker_turns = diarization_service.diarize(str(audio_path), **diarize_kwargs)
         except Exception as exc:
             logger.warning("Speaker diarization skipped for %s: %s", audio_path.name, exc)
             return [], {
@@ -859,6 +874,12 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 if turn.get("speaker_id") or turn.get("speaker_label") or turn.get("speaker")
             }
         )
+        logger.info(
+            "Speaker diarization finished for %s (speakers=%d, turns=%d)",
+            audio_path.name,
+            len(speaker_ids),
+            len(speaker_turns),
+        )
         return speaker_turns, {
             "enabled": True,
             "status": "applied" if speaker_turns else "empty",
@@ -866,6 +887,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
             "turn_count": len(speaker_turns),
             "model_name": getattr(diarization_service, "model_name", None),
             "speakers": speaker_ids,
+            "expected_speaker_count": expected_speaker_count if expected_speaker_count and expected_speaker_count > 0 else None,
         }
 
     def transcribe_with_segments_parallel(
@@ -1080,7 +1102,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 logger.debug("Failed to clear MPS cache", exc_info=True)
 
     def _get_diarization_service(self):
-        if not settings.diarization_enabled:
+        if not (settings.diarization_enabled or settings.huggingface_token):
             return None
         if self._diarization_service is None:
             from app.services.ai.diarization import build_speaker_diarization_service

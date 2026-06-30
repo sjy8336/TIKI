@@ -6,6 +6,8 @@ import base64
 import logging
 import re
 import subprocess
+import shutil
+import tempfile
 import zipfile
 import zlib
 from dataclasses import dataclass, field
@@ -351,6 +353,31 @@ def _extract_plain_text(file_path: Path) -> tuple[str, dict[str, Any]]:
     return _normalize_paragraph(text), {"page_count": 1 if text else 0}
 
 
+def _extract_hwp_text(file_path: Path) -> tuple[str, dict[str, Any]]:
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        raise FileNotFoundError("LibreOffice/soffice is required for HWP/HWPX extraction")
+
+    with tempfile.TemporaryDirectory(prefix="tiki-hwp-") as tmpdir:
+        output_dir = Path(tmpdir)
+        subprocess.run(
+            [soffice, "--headless", "--convert-to", "txt:Text", "--outdir", str(output_dir), str(file_path)],
+            check=True,
+            capture_output=True,
+        )
+        converted_files = sorted(output_dir.glob("*.txt"))
+        if not converted_files:
+            raise FileNotFoundError(f"Converted text file not found for {file_path}")
+        text = converted_files[0].read_text(encoding="utf-8", errors="ignore")
+        return (
+            _normalize_paragraph(text),
+            {
+                "page_count": 1 if text else 0,
+                "extraction_tool": "soffice",
+            },
+        )
+
+
 def _extract_document_pages(file_path: Path) -> tuple[list[str], dict[str, Any]]:
     extension = file_path.suffix.lower().lstrip(".")
 
@@ -364,6 +391,13 @@ def _extract_document_pages(file_path: Path) -> tuple[list[str], dict[str, Any]]
     if extension in {"txt", "md"}:
         text, metadata = _extract_plain_text(file_path)
         return ([text] if text else []), metadata
+
+    if extension in {"hwp", "hwpx"}:
+        try:
+            text, metadata = _extract_hwp_text(file_path)
+            return ([text] if text else []), metadata
+        except Exception as exc:  # pragma: no cover - fallback path
+            logger.warning("soffice failed for %s: %s", file_path, exc)
 
     if extension == "doc":
         try:

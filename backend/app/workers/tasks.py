@@ -14,6 +14,10 @@ from app.services.ai_engine import get_default_ai_engine
 logger = logging.getLogger(__name__)
 
 
+def _log_progress(file_id: UUID, progress_pct: int, message: str) -> None:
+    logger.info("File %s progress %d%% - %s", file_id, progress_pct, message)
+
+
 def process_uploaded_file(file_id: UUID) -> None:
     db = SessionLocal()
     try:
@@ -33,13 +37,18 @@ def _run_pipeline(db, file_id: UUID) -> None:
     uploaded_file.status = ProcessingStatus.PROCESSING
     uploaded_file.started_at = datetime.now(UTC)
     db.commit()
+    _log_progress(file_id, 10, "파일이 분석 큐에서 처리 단계로 이동했습니다")
 
     engine = get_default_ai_engine()
     if uploaded_file.file_kind == FileKind.AUDIO:
+        _log_progress(file_id, 25, "오디오 전사와 화자분리 파이프라인을 시작합니다")
         result = engine.process_audio_parallel(uploaded_file.storage_path, n_workers=2)
+        _log_progress(file_id, 75, "전사 결과를 분석하고 있습니다")
         extraction_method = "whisper"
     elif uploaded_file.file_kind in {FileKind.DOCUMENT, FileKind.TEXT}:
+        _log_progress(file_id, 25, "문서 추출 파이프라인을 시작합니다")
         result = engine.process_document(uploaded_file.storage_path)
+        _log_progress(file_id, 75, "문서 요약과 액션아이템을 정리하고 있습니다")
         extraction_method = result.analysis.extra_data.get("document_extraction", {}).get(
             "extraction_method",
             "document",
@@ -56,6 +65,7 @@ def _run_pipeline(db, file_id: UUID) -> None:
     )
     db.add(extracted_content)
     db.flush()
+    _log_progress(file_id, 85, "추출된 본문을 저장했습니다")
 
     analysis_result = AnalysisResult(
         extracted_content_id=extracted_content.id,
@@ -67,6 +77,7 @@ def _run_pipeline(db, file_id: UUID) -> None:
     )
     db.add(analysis_result)
     db.flush()
+    _log_progress(file_id, 92, "분석 결과를 저장했습니다")
 
     for item in result.analysis.action_items:
         due_at = None
@@ -88,7 +99,7 @@ def _run_pipeline(db, file_id: UUID) -> None:
     uploaded_file.completed_at = datetime.now(UTC)
     db.commit()
 
-    logger.info("Pipeline completed for file %s", file_id)
+    _log_progress(file_id, 100, "파이프라인이 완료되었습니다")
 
 
 def _mark_failed(db, file_id: UUID, error_message: str) -> None:
