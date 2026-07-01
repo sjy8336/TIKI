@@ -129,6 +129,7 @@ function saveUserProjectActivity(user, map) {
 }
 
 const PROJECT_LIST_VIEW_MODE_KEY = 'tiki_project_list_view_mode';
+const isTemporaryCodexProject = (project) => String(project?.name || '').toLowerCase().includes('codex invitation check');
 
 function loadProjectListViewMode() {
   try {
@@ -415,7 +416,9 @@ export default function ProjectList() {
   const fetchProjects = useCallback(() => {
     return listProjects()
       .then((data) => {
-        const mapped = (Array.isArray(data) ? data : []).map((p) => ({
+        const mapped = (Array.isArray(data) ? data : [])
+          .filter((p) => !isTemporaryCodexProject(p))
+          .map((p) => ({
           id: p.id,
           name: p.name,
           category: p.category,
@@ -431,7 +434,7 @@ export default function ProjectList() {
       })
       .catch(() => {
         // Keep existing data to avoid UI flicker when a refetch fails momentarily.
-        setProjects((prev) => prev);
+        setProjects((prev) => prev.filter((project) => !isTemporaryCodexProject(project)));
       })
       .finally(() => {
         setHasFetchedProjects(true);
@@ -456,9 +459,11 @@ export default function ProjectList() {
     };
 
     window.addEventListener('focus', handleRefetch);
+    window.addEventListener('tiki-projects-changed', handleRefetch);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
       window.removeEventListener('focus', handleRefetch);
+      window.removeEventListener('tiki-projects-changed', handleRefetch);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [fetchProjects]);

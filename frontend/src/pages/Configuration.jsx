@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
-import { inviteProjectMember } from '../api/apiClient';
+import { getProject, inviteProjectMember } from '../api/apiClient';
 
 const icons = {
   save: ["M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z", "M17 21v-8H7v8", "M7 3v5h8"],
@@ -109,6 +109,24 @@ const avatarColor = (name = '') => {
   return avatarPalette[hash % avatarPalette.length];
 };
 
+const memberDisplayName = (member) => member?.name || member?.email || '';
+
+const projectParticipants = (project) => {
+  if (Array.isArray(project?.members)) {
+    return project.members
+      .filter((member) => !member?.invite_status || member.invite_status === 'accepted')
+      .map(memberDisplayName)
+      .filter(Boolean);
+  }
+  return Array.isArray(project?.participants) ? project.participants : [];
+};
+
+const inviteStatusMeta = {
+  pending: { label: '승인 대기', className: 'bg-amber-50 text-amber-700' },
+  accepted: { label: '승인 완료', className: 'bg-emerald-50 text-emerald-700' },
+  declined: { label: '거절됨', className: 'bg-red-50 text-red-600' },
+};
+
 function StatusBadge({ status }) {
   const map = {
     connected: { label: '연결됨', dot: 'bg-emerald-500', text: 'text-emerald-700', bg: 'bg-emerald-50' },
@@ -148,7 +166,7 @@ const Configuration = () => {
     projectPurpose: project?.description || '',
     meetingTemplate: 'basic',
     projectVisibility: 'project',
-    participants: Array.isArray(project?.participants) ? project.participants : [],
+    participants: projectParticipants(project),
     jiraDomain: '',
     jiraEmail: '',
     jiraToken: '',
@@ -164,6 +182,7 @@ const Configuration = () => {
   const [showGuideDetails, setShowGuideDetails] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [inviteQuery, setInviteQuery] = useState('');
+  const [sentInvitations, setSentInvitations] = useState([]);
   const [adminNames, setAdminNames] = useState([]);
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
   const [templateMenuDirection, setTemplateMenuDirection] = useState('down');
@@ -192,9 +211,41 @@ const Configuration = () => {
   useEffect(() => {
     setFormData(buildInitialState(selectedProject));
     setInviteQuery('');
-    const initialParticipants = Array.isArray(selectedProject?.participants) ? selectedProject.participants : [];
+    const initialParticipants = projectParticipants(selectedProject);
     setAdminNames(buildInitialAdminNames(selectedProject, initialParticipants));
   }, [selectedProject]);
+
+  useEffect(() => {
+    const projectId = selectedProject?.id;
+    if (!projectId) {
+      setSentInvitations([]);
+      return;
+    }
+
+    let cancelled = false;
+    getProject(projectId)
+      .then((project) => {
+        if (cancelled) return;
+        const participants = projectParticipants(project);
+        setFormData((prev) => ({
+          ...prev,
+          projectName: project?.name || prev.projectName,
+          projectPurpose: project?.description || prev.projectPurpose,
+          meetingTemplate: project?.meeting_template || prev.meetingTemplate,
+          projectVisibility: project?.visibility || prev.projectVisibility,
+          participants,
+        }));
+        setAdminNames(buildInitialAdminNames(selectedProject, participants));
+        setSentInvitations(Array.isArray(project?.members) ? project.members : []);
+      })
+      .catch(() => {
+        setSentInvitations([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProject?.id]);
 
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -270,13 +321,10 @@ const Configuration = () => {
     }
 
     try {
-      await inviteProjectMember(projectId, { email, role: 'member' });
-      setFormData((prev) => {
-        const exists = prev.participants.includes(email);
-        if (exists) return prev;
-        return { ...prev, participants: [...prev.participants, email] };
-      });
+      const invitation = await inviteProjectMember(projectId, { email, role: 'member' });
+      setSentInvitations((prev) => [invitation, ...prev.filter((item) => item.id !== invitation.id)]);
       setInviteQuery('');
+      window.dispatchEvent(new Event('tiki-invitations-changed'));
       showToast(`초대 완료: ${email}`, 'success');
     } catch (err) {
       showToast(err?.message || '초대에 실패했습니다.', 'error');
@@ -684,6 +732,36 @@ const Configuration = () => {
                       </button>
                     </div>
                     <p className="mt-1.5 text-xs text-slate-400">이메일 주소를 입력하고 추가 버튼을 누르면 해당 사용자가 프로젝트에 초대됩니다.</p>
+                  </div>
+
+                  <div className="mt-6">
+                    <p className="mb-2 text-xs font-semibold text-slate-500">보낸 초대 ({sentInvitations.length})</p>
+                    {sentInvitations.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
+                        아직 보낸 초대가 없습니다.
+                      </div>
+                    ) : (
+                      <div className="overflow-hidden rounded-xl border border-slate-200">
+                        <div className="divide-y divide-slate-100">
+                          {sentInvitations.map((member) => {
+                            const statusInfo = inviteStatusMeta[member.invite_status] || inviteStatusMeta.pending;
+                            return (
+                              <div key={member.id || member.email} className="flex items-center justify-between gap-3 px-3 py-3 sm:px-4">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-slate-800">{member.email}</p>
+                                  <p className="mt-0.5 text-xs text-slate-400">
+                                    {member.role === 'admin' ? '관리자' : '멤버'} 초대
+                                  </p>
+                                </div>
+                                <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${statusInfo.className}`}>
+                                  {statusInfo.label}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-6">

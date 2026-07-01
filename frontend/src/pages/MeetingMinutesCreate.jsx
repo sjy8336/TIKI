@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
@@ -80,6 +80,23 @@ const writeManualMeetingRecords = (next) => {
   } catch {
     // ignore storage write failures in local mock mode
   }
+};
+
+const parseKeywordInput = (value) => {
+  return String(value || '')
+    .split(/(?=#)|[\s,;]+/)
+    .map((word) => word.trim().replace(/^#+/, '').trim())
+    .filter(Boolean);
+};
+
+const parseDecisionInput = (value) => {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\s+([0-9]+[.)])/g, '\n$1')
+    .replace(/\s+([-*•])\s+/g, '\n')
+    .split(/\n|[;；]+/)
+    .map((item) => item.replace(/^[-*•]\s*/, '').replace(/^[0-9]+[.)]\s*/, '').trim())
+    .filter(Boolean);
 };
 
 const formatStorageDate = (raw) => {
@@ -332,10 +349,13 @@ export default function MeetingMinutesCreate() {
   const update = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
 
   const addDecision = () => {
-    const value = decisionInput.trim();
-    if (!value) return;
+    const values = parseDecisionInput(decisionInput);
+    if (values.length === 0) return;
 
-    setDecisionItems((prev) => [...prev, { id: Date.now() + Math.random(), text: value, checked: false }]);
+    setDecisionItems((prev) => [
+      ...prev,
+      ...values.map((text) => ({ id: Date.now() + Math.random(), text, checked: false })),
+    ]);
     setDecisionInput('');
   };
 
@@ -453,10 +473,7 @@ export default function MeetingMinutesCreate() {
   };
 
   const addKeywordTags = () => {
-    const nextTags = keywordInput
-      .split(/[\n,]/)
-      .map((word) => word.trim().replace(/^#/, ''))
-      .filter(Boolean);
+    const nextTags = parseKeywordInput(keywordInput);
 
     if (nextTags.length === 0) return;
 
@@ -556,16 +573,16 @@ export default function MeetingMinutesCreate() {
       clearTimeout(saveTimerRef.current);
     }
 
-    const pendingDecision = decisionInput.trim();
+    const pendingDecisions = parseDecisionInput(decisionInput);
     const pendingActionTitle = actionInput.title.trim();
     const pendingIssue = issueInput.trim();
-    const pendingKeywordTags = keywordInput
-      .split(/[\n,]/)
-      .map((word) => word.trim().replace(/^#/, ''))
-      .filter(Boolean);
+    const pendingKeywordTags = parseKeywordInput(keywordInput);
 
-    const mergedDecisionItems = pendingDecision
-      ? [...decisionItems, { id: Date.now() + Math.random(), text: pendingDecision, checked: false }]
+    const mergedDecisionItems = pendingDecisions.length > 0
+      ? [
+          ...decisionItems,
+          ...pendingDecisions.map((text) => ({ id: Date.now() + Math.random(), text, checked: false })),
+        ]
       : decisionItems;
 
     const mergedActionItems = pendingActionTitle
@@ -588,10 +605,7 @@ export default function MeetingMinutesCreate() {
     const mergedKeywords = (() => {
       const base = keywordTags.length > 0
         ? [...keywordTags]
-        : form.keywords
-            .split(',')
-            .map((word) => word.trim().replace(/^#/, ''))
-            .filter(Boolean);
+        : parseKeywordInput(form.keywords);
       const next = [...base];
       pendingKeywordTags.forEach((tag) => {
         if (!next.includes(tag) && next.length < 12) {
@@ -664,7 +678,7 @@ export default function MeetingMinutesCreate() {
           title: manualRecord.title,
           date: meetingDate,
           round_number: 1,
-          status: '완료',
+          status: '검토대기',
           meeting_type: form.type,
           tags: normalizedKeywords.slice(0, 4).map((tag) => `#${tag}`),
           participants,
@@ -686,7 +700,7 @@ export default function MeetingMinutesCreate() {
         id: serverMeetingId || manualRecordId,
         date: meetingDate,
         title: manualRecord.title,
-        status: '완료',
+        status: '검토대기',
         type: form.type,
         tags: normalizedKeywords.slice(0, 4).map((tag) => `#${tag}`),
         participants,
@@ -870,7 +884,7 @@ export default function MeetingMinutesCreate() {
                 <div className="rounded-2xl border border-[rgba(0,100,180,0.08)] bg-white p-4 space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <label className="block text-xs font-semibold text-[#5A6F8A]">핵심 키워드</label>
-                    <span className="text-[11px] text-[#5A6F8A]">엔터를 누르면 해시태그로 추가됩니다.</span>
+                    <span className="text-[11px] text-[#5A6F8A]">공백, #, 쉼표로 자동 구분됩니다.</span>
                   </div>
                   <input
                     value={keywordInput}
@@ -910,7 +924,7 @@ export default function MeetingMinutesCreate() {
                   <div className="rounded-2xl border border-[rgba(0,100,180,0.08)] bg-white p-4 space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <label className="block text-xs font-semibold text-[#5A6F8A]">주요 결정</label>
-                      <span className="text-[11px] text-[#5A6F8A]">Enter로 빠르게 추가하세요.</span>
+                      <span className="text-[11px] text-[#5A6F8A]">여러 줄, 번호, 불릿을 한 번에 추가할 수 있어요.</span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-stretch">
                       <input
@@ -921,6 +935,17 @@ export default function MeetingMinutesCreate() {
                             e.preventDefault();
                             addDecision();
                           }
+                        }}
+                        onPaste={(e) => {
+                          const text = e.clipboardData?.getData('text') || '';
+                          const values = parseDecisionInput(text);
+                          if (values.length <= 1) return;
+                          e.preventDefault();
+                          setDecisionItems((prev) => [
+                            ...prev,
+                            ...values.map((item) => ({ id: Date.now() + Math.random(), text: item, checked: false })),
+                          ]);
+                          setDecisionInput('');
                         }}
                         placeholder="예: 배포 일정 6/28 확정"
                         className="w-full min-w-0 px-3 py-2.5 text-sm bg-white border border-[rgba(0,100,180,0.12)] rounded-xl focus:outline-none focus:border-[#0099CC]"

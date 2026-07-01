@@ -65,6 +65,11 @@ class MemberResponse(BaseModel):
     email: str
     name: str | None
     role: str
+    invite_status: str = "pending"
+    invited_by_name: str | None = None
+    project_id: UUID | None = None
+    project_name: str | None = None
+    responded_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

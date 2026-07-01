@@ -57,6 +57,11 @@ export async function getCurrentUser() {
   return request('/auth/me');
 }
 
+export async function lookupUserByEmail(email) {
+  const search = new URLSearchParams({ email });
+  return request(`/auth/users/lookup?${search.toString()}`);
+}
+
 export function saveAuthSession(authResponse) {
   localStorage.setItem('tiki_access_token', authResponse.access_token);
   localStorage.setItem('tiki_user', JSON.stringify(authResponse.user));
@@ -128,6 +133,22 @@ export async function inviteProjectMember(projectId, payload) {
 export async function removeProjectMember(projectId, memberId) {
   return request(`/projects/${projectId}/members/${memberId}`, {
     method: 'DELETE',
+  });
+}
+
+export async function listProjectInvitations() {
+  return request('/projects/invitations');
+}
+
+export async function acceptProjectInvitation(invitationId) {
+  return request(`/projects/invitations/${invitationId}/accept`, {
+    method: 'POST',
+  });
+}
+
+export async function declineProjectInvitation(invitationId) {
+  return request(`/projects/invitations/${invitationId}/decline`, {
+    method: 'POST',
   });
 }
 

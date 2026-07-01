@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,7 +10,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.db.database import get_db
 from app.models.project import ProjectMember
 from app.models.user import User
-from app.schemas.auth import AuthResponse, UserCreate, UserLogin, UserResponse, UserUpdate
+from app.schemas.auth import AuthResponse, UserCreate, UserLogin, UserLookupResponse, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -84,6 +84,21 @@ def login(payload: UserLogin, db: Session = Depends(get_db)) -> AuthResponse:
 @router.get("/me", response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)) -> UserResponse:
     return UserResponse.model_validate(current_user)
+
+
+@router.get("/users/lookup", response_model=UserLookupResponse)
+def lookup_user_by_email(
+    email: str = Query(min_length=1, max_length=255),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserLookupResponse:
+    normalized_email = email.lower().strip()
+    user = db.scalar(select(User).where(User.email == normalized_email, User.is_active.is_(True)))
+    return UserLookupResponse(
+        found=user is not None,
+        email=normalized_email,
+        name=user.name if user else None,
+    )
 
 
 @router.patch("/me", response_model=UserResponse)

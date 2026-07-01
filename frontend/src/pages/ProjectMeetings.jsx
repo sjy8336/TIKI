@@ -10,31 +10,35 @@ function statusBadgeClass(status) {
     if (status === '완료') return 'bg-[#E6F4EA] text-[#10B981]';
     if (status === '보류') return 'bg-[#FCE8E6] text-[#EF4444]';
     if (status === 'Jira 발행됨') return 'bg-[#EEF3FF] text-[#0099CC]';
+    if (status === '연동완료') return 'bg-[#EEF3FF] text-[#0099CC]';
+    if (status === '수행완료') return 'bg-[#F1F5F9] text-[#475569]';
+    if (status === '검토완료') return 'bg-[#F1F5F9] text-[#475569]';
     return 'bg-[#FEF7E0] text-[#F59E0B]';
 }
 
 // ✅ 해야 할일 상태 뱃지 스타일 함수 추가
-const ACTION_STATUS_ORDER = ['검토대기', '검토완료', '연동완료', '완료히스토리'];
+const ACTION_STATUS_ORDER = ['검토대기', '검토완료', '연동완료', '수행완료'];
 const ACTION_STATUS_LABEL = {
     검토대기: '검토대기',
     검토완료: '검토완료',
+    수행완료: '수행완료',
     연동완료: '연동완료',
-    완료히스토리: '완료',
 };
 
 function normalizeActionStatus(status) {
     const normalized = String(status || '').trim();
     if (normalized === '검증 전') return '검토대기';
-    if (normalized === '완료') return '완료히스토리';
+    if (normalized === '완료' || normalized === '완료히스토리') return '수행완료';
     if (normalized === '연동 완료') return '연동완료';
     if (ACTION_STATUS_ORDER.includes(normalized)) return normalized;
     return '검토대기';
 }
 
 function actionStatusStyle(status) {
-    if (status === '완료히스토리') return { bg: '#E6F4EA', color: '#10B981', border: '#10B981' };
-    if (status === '연동완료') return { bg: '#EEF3FF', color: '#0099CC', border: '#0099CC' };
-    if (status === '검토완료') return { bg: '#F1F5F9', color: '#475569', border: '#94A3B8' };
+    const normalized = normalizeActionStatus(status);
+    if (normalized === '연동완료') return { bg: '#EEF3FF', color: '#0099CC', border: '#0099CC' };
+    if (normalized === '수행완료') return { bg: '#E6F4EA', color: '#10B981', border: '#10B981' };
+    if (normalized === '검토완료') return { bg: '#F1F5F9', color: '#475569', border: '#94A3B8' };
     return { bg: '#FEF7E0', color: '#F59E0B', border: '#F59E0B' }; // 검토대기
 }
 
@@ -44,6 +48,70 @@ function getActionStatusLabel(status) {
 
 function getActionStatusBadgeLabel(status) {
     return getActionStatusLabel(status);
+}
+
+function isActionCompleteStatus(status) {
+    return normalizeActionStatus(status) === '수행완료';
+}
+
+function compactLegacyActionHistoryItems(items) {
+    const byId = new Map();
+    const histories = [];
+
+    items.forEach((item) => {
+        const snapshotOf = String(item?.snapshotOf || '').trim();
+        const historySavedAt = String(item?.historySavedAt || '').trim();
+        if (snapshotOf || historySavedAt) {
+            histories.push({ ...item, snapshotOf });
+            return;
+        }
+
+        const id = String(item?.id || '').trim();
+        const key = id || `${item?.text || item?.title || ''}::${item?.source || ''}::${item?.due || item?.dueDate || ''}`;
+        if (!byId.has(key)) byId.set(key, item);
+    });
+
+    histories.forEach((history) => {
+        const key = String(history.snapshotOf || '').trim();
+        const recoveredKey = key || `${history?.text || history?.title || ''}::${history?.source || ''}::${history?.due || history?.dueDate || ''}`;
+        const base = byId.get(recoveredKey);
+        const merged = {
+            ...(base || history),
+            id: recoveredKey || history.id,
+            status: '수행완료',
+            integrationTool: base?.integrationTool || history.integrationTool || null,
+            externalLink: base?.externalLink || history.externalLink || '',
+            snapshotOf: null,
+            historySavedAt: null,
+        };
+        byId.set(recoveredKey || merged.id, merged);
+    });
+
+    return Array.from(byId.values());
+}
+
+function hasActionIntegration(item) {
+    return Boolean(item?.externalLink || item?.integrationTool);
+}
+
+function getMeetingDisplayStatus(meeting, actionItems) {
+    const title = String(meeting?.title || '').trim();
+    const meetingId = String(meeting?.id || '').trim();
+    const relatedActions = actionItems.filter((item) => {
+        const source = String(item?.source || '').trim();
+        return (title && source === title) || (meetingId && String(item?.meetingId || '') === meetingId);
+    });
+
+    if (relatedActions.length === 0) {
+        const raw = String(meeting?.status || '').trim();
+        if (raw === '완료') return '진행 중';
+        return raw || '진행 중';
+    }
+
+    const statuses = relatedActions.map((item) => normalizeActionStatus(item.status));
+    if (statuses.every((status) => isActionCompleteStatus(status))) return '완료';
+    if (statuses.some((status) => status === '검토완료' || isActionCompleteStatus(status))) return '진행 중';
+    return '검토대기';
 }
 
 function toDateInputValue(value) {
@@ -153,6 +221,7 @@ const PARTICIPANT_COLOR_MAP = {
 const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
 const PROJECT_CATALOG_STORAGE_KEY = 'tiki_project_catalog';
 const MANUAL_MEETING_RECORDS_KEY = 'tiki_manual_minutes_records';
+const isTemporaryCodexProject = (project) => String(project?.name || '').toLowerCase().includes('codex invitation check');
 
 const TOAST_COLORS = { info: '#0099CC', ai: '#7C3AED', success: '#10B981', warning: '#F59E0B', error: '#EF4444' };
 const TOAST_VARIANTS = {
@@ -184,6 +253,15 @@ function getProjectVisibilityMeta(value) {
     if (normalized === 'private') return { label: '개인', icon: 'lock' };
     if (normalized === 'org') return { label: '전체보기', icon: 'globe' };
     return { label: '구성원만', icon: 'user' };
+}
+
+function normalizeProjectStatus(project) {
+    const raw = String(project?.status || project?.projectStatus || '').trim();
+    const hasCompletionFlag = Boolean(project?.completed_at || project?.completedAt || project?.isCompleted);
+    if (hasCompletionFlag && (raw === '완료' || raw === 'completed')) return '완료';
+    if (raw === '보류' || raw === 'paused') return '보류';
+    if (raw === 'Jira 발행됨') return raw;
+    return '진행 중';
 }
 
 const readProjectOverrides = () => {
@@ -229,7 +307,12 @@ const readProjectCatalog = () => {
         const raw = localStorage.getItem(PROJECT_CATALOG_STORAGE_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
+        const projects = Array.isArray(parsed) ? parsed : [];
+        const cleaned = projects.filter((project) => !isTemporaryCodexProject(project));
+        if (cleaned.length !== projects.length) {
+            localStorage.setItem(PROJECT_CATALOG_STORAGE_KEY, JSON.stringify(cleaned));
+        }
+        return cleaned;
     } catch {
         return [];
     }
@@ -237,7 +320,8 @@ const readProjectCatalog = () => {
 
 const writeProjectCatalog = (next) => {
     try {
-        localStorage.setItem(PROJECT_CATALOG_STORAGE_KEY, JSON.stringify(next));
+        const cleaned = Array.isArray(next) ? next.filter((project) => !isTemporaryCodexProject(project)) : [];
+        localStorage.setItem(PROJECT_CATALOG_STORAGE_KEY, JSON.stringify(cleaned));
     } catch {
         // ignore storage write failures in local mock mode
     }
@@ -257,16 +341,26 @@ function normalizeProject(project) {
     const teamLead = String(project.teamLead || project.team_lead || '').trim();
     const memberNames = Array.isArray(project.members)
         ? project.members
+              .filter((member) => {
+                  if (typeof member === 'string') return true;
+                  const inviteStatus = String(member?.invite_status || member?.inviteStatus || '').trim();
+                  return !inviteStatus || inviteStatus === 'accepted';
+              })
               .map((member) => {
                   if (typeof member === 'string') return member;
                   return member?.name || member?.email || '';
               })
               .filter(Boolean)
         : [];
+    const storedParticipants = Array.isArray(project.members)
+        ? []
+        : Array.isArray(project.participants)
+          ? project.participants.filter(Boolean)
+          : [];
     const participants = [
         ...new Set([
             teamLead,
-            ...(Array.isArray(project.participants) ? project.participants.filter(Boolean) : []),
+            ...storedParticipants,
             ...memberNames,
         ].filter(Boolean)),
     ];
@@ -299,7 +393,7 @@ function normalizeProject(project) {
         description: project.description || '',
         createdAt,
         visibility: normalizeProjectVisibility(project.visibility || project.projectVisibility),
-        status: project.status || '진행 중',
+        status: normalizeProjectStatus(project),
         teamLead: teamLead || participants[0] || '담당자',
         participants,
         admins,
@@ -1028,7 +1122,7 @@ export default function ProjectMeetings() {
                     description: record?.summary || '',
                     due: normalizeStorageDate(action?.dueDate),
                     assignee: action?.assignee || project.teamLead || '담당자 미지정',
-                    status: action?.checked ? '검토완료' : '검토대기',
+                    status: action?.status ? normalizeActionStatus(action.status) : action?.checked ? '수행완료' : '검토대기',
                     source: String(record?.title || '').trim() || project.name || '회의 제목 없음',
                     integrationTool: null,
                     externalLink: '',
@@ -1039,7 +1133,7 @@ export default function ProjectMeetings() {
                 }));
             });
 
-        const mergedActionItems = [...(project.myActionItems || []), ...manualActionItems].filter((item) => {
+        const mergedActionItems = compactLegacyActionHistoryItems([...(project.myActionItems || []), ...manualActionItems]).filter((item) => {
             return String(item?.text || '').trim().length > 0;
         });
         const dedupedActionItems = [];
@@ -1082,6 +1176,47 @@ export default function ProjectMeetings() {
     }, [project]);
 
     const allActionItems = actionItems;
+    const computedProjectStatus = useMemo(() => {
+        if (!project) return '진행 중';
+        if (allActionItems.length > 0 && allActionItems.every((item) => isActionCompleteStatus(item.status))) {
+            return '완료';
+        }
+        if (allActionItems.length > 0) return '진행 중';
+        return normalizeProjectStatus(project);
+    }, [project, allActionItems]);
+
+    useEffect(() => {
+        if (!project?.id) return;
+        if (project.status === computedProjectStatus) return;
+
+        const id = String(project.id);
+        const nextOverrides = readProjectOverrides();
+        const prevOverride = nextOverrides[id] && typeof nextOverrides[id] === 'object' ? nextOverrides[id] : {};
+        nextOverrides[id] = {
+            ...prevOverride,
+            id,
+            status: computedProjectStatus,
+            isCompleted: computedProjectStatus === '완료',
+            completedAt: computedProjectStatus === '완료' ? prevOverride.completedAt || new Date().toISOString() : null,
+        };
+        writeProjectOverrides(nextOverrides);
+
+        setProjectCatalog((prev) => {
+            const base = Array.isArray(prev) ? prev : [];
+            const next = base.map((item) =>
+                isSameProjectId(item?.id, id)
+                    ? {
+                          ...item,
+                          status: computedProjectStatus,
+                          isCompleted: computedProjectStatus === '완료',
+                          completedAt: computedProjectStatus === '완료' ? item.completedAt || new Date().toISOString() : null,
+                      }
+                    : item
+            );
+            writeProjectCatalog(next);
+            return next;
+        });
+    }, [project?.id, project?.status, computedProjectStatus]);
 
     const actionAssigneeOptions = useMemo(() => {
         const participants = Array.isArray(project?.participants) ? project.participants : [];
@@ -1092,15 +1227,33 @@ export default function ProjectMeetings() {
         allActionItems.forEach((item) => statusSet.add(normalizeActionStatus(item.status)));
         return ['전체', ...statusSet];
     }, [allActionItems]);
-    const actionSourceOptions = useMemo(
-        () => ['전체', ...new Set(allActionItems.map((item) => item.source))],
-        [allActionItems]
-    );
+    const actionSourceOptions = useMemo(() => {
+        const meetingTitles = (project?.meetings || [])
+            .map((meeting) => String(meeting?.title || '').trim())
+            .filter(Boolean);
+        const itemSources = allActionItems
+            .map((item) => String(item?.source || '').trim())
+            .filter(Boolean);
+        return ['전체', ...new Set([...meetingTitles, ...itemSources])];
+    }, [project?.meetings, allActionItems]);
+
+    const actionMetricItems = useMemo(() => {
+        return allActionItems.filter((item) => {
+            const assigneeOk = actionAssigneeFilter === '전체' || item.assignee === actionAssigneeFilter;
+            const sourceOk = actionSourceFilter === '전체' || item.source === actionSourceFilter;
+            return assigneeOk && sourceOk;
+        });
+    }, [allActionItems, actionAssigneeFilter, actionSourceFilter]);
 
     const filteredActionItems = useMemo(() => {
         return allActionItems.filter((item) => {
             const assigneeOk = actionAssigneeFilter === '전체' || item.assignee === actionAssigneeFilter;
-            const statusOk = actionStatusFilter === '전체' || item.status === actionStatusFilter;
+            const normalizedStatus = normalizeActionStatus(item.status);
+            const statusOk =
+                actionStatusFilter === '전체' ||
+                (actionStatusFilter === '연동완료'
+                    ? normalizedStatus === '연동완료' || hasActionIntegration(item)
+                    : normalizedStatus === actionStatusFilter);
             const sourceOk = actionSourceFilter === '전체' || item.source === actionSourceFilter;
             return assigneeOk && statusOk && sourceOk;
         });
@@ -1108,12 +1261,12 @@ export default function ProjectMeetings() {
 
     const actionDashboardStats = useMemo(() => {
         return {
-            reviewPending: allActionItems.filter((item) => item.status === '검토대기').length,
-            reviewDone: allActionItems.filter((item) => item.status === '검토완료').length,
-            linked: allActionItems.filter((item) => item.status === '연동완료').length,
-            history: allActionItems.filter((item) => item.status === '완료히스토리').length,
+            reviewPending: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '검토대기').length,
+            reviewDone: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '검토완료').length,
+            performed: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '수행완료').length,
+            linked: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '연동완료' || hasActionIntegration(item)).length,
         };
-    }, [allActionItems]);
+    }, [actionMetricItems]);
 
     const activeActionItem = useMemo(() => {
         if (!activeActionItemId) return null;
@@ -1348,33 +1501,13 @@ export default function ProjectMeetings() {
         return true;
     };
 
-    const saveActionToHistory = (itemId, { closeAfterSave = false } = {}) => {
-        const baseItem = allActionItems.find((item) => item.id === itemId);
-        if (!baseItem) return false;
-        const now = getKSTTimestampLabel();
-        const historyItem = {
-            ...baseItem,
-            id: `${baseItem.id}-history-${Date.now()}`,
-            status: '완료히스토리',
-            snapshotOf: baseItem.id,
-            historySavedAt: now,
-            updatedAt: now,
-        };
-        const nextItems = [...allActionItems, historyItem];
-        setActionItems(nextItems);
-        persistProjectActionItems(nextItems);
-        showToast('히스토리에 저장되었습니다.', 'success');
-        if (closeAfterSave) closeActionDrawer();
-        return true;
-    };
-
     const startActionIntegration = (tool) => {
         if (!actionDraft) return;
         setPendingIntegrationTarget(tool);
         window.setTimeout(() => {
             const isNotion = tool === 'notion';
             const ok = saveActionDraft({
-                nextStatus: '연동완료',
+                nextStatus: normalizeActionStatus(actionDraft.status) === '수행완료' ? '수행완료' : '연동완료',
                 integrationTool: isNotion ? 'Notion' : 'Jira',
                 closeAfterSave: true,
             });
@@ -1577,9 +1710,9 @@ export default function ProjectMeetings() {
                                         <div className="mt-1 flex flex-wrap items-center gap-2">
                                             <h1 className="text-2xl font-bold text-[#0D1B2A]">{project.name}</h1>
                                             <span
-                                                className={`px-2.5 py-1 rounded-full text-xs font-bold ${statusBadgeClass(project.status)}`}
+                                                className={`px-2.5 py-1 rounded-full text-xs font-bold ${statusBadgeClass(computedProjectStatus)}`}
                                             >
-                                                {project.status}
+                                                {computedProjectStatus}
                                             </span>
                                         </div>
                                         {projectDescriptionText && (
@@ -1883,6 +2016,7 @@ export default function ProjectMeetings() {
                                                 <div className="hidden md:block">
                                                     {visibleMeetings.map((meeting) => {
                                                         const isEditing = pendingEditMeetingId === meeting.id;
+                                                        const meetingDisplayStatus = getMeetingDisplayStatus(meeting, allActionItems);
                                                         const onTitleKeyDown = (e) => {
                                                             if (e.key === 'Enter') {
                                                                 e.preventDefault();
@@ -1952,9 +2086,9 @@ export default function ProjectMeetings() {
                                                                 )}
                                                                 <div className="text-left">
                                                                     <span
-                                                                        className={`px-2 py-0.5 rounded-full text-xs font-semibold ${statusBadgeClass(meeting.status)}`}
+                                                                        className={`px-2 py-0.5 rounded-full text-xs font-semibold ${statusBadgeClass(meetingDisplayStatus)}`}
                                                                     >
-                                                                        {meeting.status}
+                                                                        {meetingDisplayStatus}
                                                                     </span>
                                                                 </div>
                                                                 <div className="flex flex-wrap gap-1 text-left">
@@ -2093,6 +2227,7 @@ export default function ProjectMeetings() {
                                                 <div className="md:hidden divide-y divide-[rgba(0,100,180,0.08)]">
                                                     {visibleMeetings.map((meeting) => {
                                                         const isEditing = pendingEditMeetingId === meeting.id;
+                                                        const meetingDisplayStatus = getMeetingDisplayStatus(meeting, allActionItems);
                                                         const onMobileTitleKeyDown = (e) => {
                                                             if (e.key === 'Enter') {
                                                                 e.preventDefault();
@@ -2117,9 +2252,9 @@ export default function ProjectMeetings() {
                                                                     </span>
                                                                     <div className="flex items-center gap-2">
                                                                         <span
-                                                                            className={`px-2 py-0.5 rounded-full text-xs font-semibold ${statusBadgeClass(meeting.status)}`}
+                                                                            className={`px-2 py-0.5 rounded-full text-xs font-semibold ${statusBadgeClass(meetingDisplayStatus)}`}
                                                                         >
-                                                                            {meeting.status}
+                                                                            {meetingDisplayStatus}
                                                                         </span>
                                                                         {!isEditing && (
                                                                             <div
@@ -2471,9 +2606,9 @@ export default function ProjectMeetings() {
                                                 </p>
                                             </div>
                                             <div className="rounded-xl border border-[rgba(0,100,180,0.1)] bg-[#F8FAFF] p-3">
-                                                <p className="text-[11px] text-[#5A6F8A]">업무 처리 현황</p>
+                                                <p className="text-[11px] text-[#5A6F8A]">수행완료</p>
                                                 <p className="text-lg font-bold text-[#10B981]">
-                                                    {actionDashboardStats.history}
+                                                    {actionDashboardStats.performed}
                                                 </p>
                                             </div>
                                         </div>
@@ -2509,7 +2644,7 @@ export default function ProjectMeetings() {
                                                 {filteredActionItems.map((item) => {
                                                     const statusStyle = actionStatusStyle(item.status);
                                                     const isFinalDone =
-                                                        normalizeActionStatus(item.status) === '완료히스토리';
+                                                        normalizeActionStatus(item.status) === '수행완료';
                                                     return (
                                                         <div
                                                             key={item.id}
@@ -2619,7 +2754,7 @@ export default function ProjectMeetings() {
                                                 {filteredActionItems.map((item) => {
                                                     const statusStyle = actionStatusStyle(item.status);
                                                     const isFinalDone =
-                                                        normalizeActionStatus(item.status) === '완료히스토리';
+                                                        normalizeActionStatus(item.status) === '수행완료';
                                                     return (
                                                         <article
                                                             key={item.id}
@@ -2959,17 +3094,6 @@ export default function ProjectMeetings() {
                                                 </a>
                                             </div>
                                         )}
-
-                                    {normalizeActionStatus(actionDraft.status) === '완료히스토리' && (
-                                        <div className="rounded-2xl border border-[rgba(16,185,129,0.28)] bg-[#F3FBF7] px-3.5 py-3">
-                                            <p className="text-sm font-semibold text-[#0D1B2A]">
-                                                업무 처리 현황 상태입니다.
-                                            </p>
-                                            <p className="text-xs text-[#5A6F8A] mt-1">
-                                                내부 기록으로 보관 중이며 필요 시 수정을 할 수 있습니다.
-                                            </p>
-                                        </div>
-                                    )}
                                 </div>
                             ) : (
                                 <div className="view-enter-right p-5 space-y-4">
@@ -3143,7 +3267,11 @@ export default function ProjectMeetings() {
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        saveActionToHistory(actionDraft.id, { closeAfterSave: true });
+                                                        const ok = saveActionDraft({
+                                                            nextStatus: '수행완료',
+                                                            closeAfterSave: true,
+                                                        });
+                                                        if (ok) showToast('수행 완료 처리되었습니다.', 'success');
                                                     }}
                                                     className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
                                                 >
@@ -3165,6 +3293,36 @@ export default function ProjectMeetings() {
                                             </>
                                         )}
 
+                                        {normalizeActionStatus(actionDraft.status) === '수행완료' && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const ok = saveActionDraft({ closeAfterSave: true });
+                                                        if (ok) showToast('변경 사항이 저장되었습니다.', 'success');
+                                                    }}
+                                                    className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
+                                                >
+                                                    수정 저장
+                                                </button>
+                                                {!hasActionIntegration(actionDraft) && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setActionDrawerView('integrate')}
+                                                        className="flex items-center gap-1.5 text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5"
+                                                        style={{
+                                                            background:
+                                                                'linear-gradient(135deg,#0099CC,#7C3AED)',
+                                                            boxShadow: '0 4px 12px rgba(0,100,180,0.18)',
+                                                        }}
+                                                    >
+                                                        <ZapIcon className="text-white" />
+                                                        연동하기
+                                                    </button>
+                                                )}
+                                            </>
+                                        )}
+
                                         {normalizeActionStatus(actionDraft.status) === '연동완료' && (
                                             <>
                                                 <button
@@ -3179,9 +3337,13 @@ export default function ProjectMeetings() {
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    onClick={() =>
-                                                        saveActionToHistory(actionDraft.id, { closeAfterSave: true })
-                                                    }
+                                                    onClick={() => {
+                                                        const ok = saveActionDraft({
+                                                            nextStatus: '수행완료',
+                                                            closeAfterSave: true,
+                                                        });
+                                                        if (ok) showToast('수행 완료 처리되었습니다.', 'success');
+                                                    }}
                                                     className="flex items-center gap-1.5 text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5"
                                                     style={{
                                                         background:
@@ -3192,19 +3354,6 @@ export default function ProjectMeetings() {
                                                     수행완료
                                                 </button>
                                             </>
-                                        )}
-
-                                        {normalizeActionStatus(actionDraft.status) === '완료히스토리' && (
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    const ok = saveActionDraft({ closeAfterSave: true });
-                                                    if (ok) showToast('변경 사항이 저장되었습니다.', 'success');
-                                                }}
-                                                className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
-                                            >
-                                                수정 저장
-                                            </button>
                                         )}
                                     </div>
                                 </div>

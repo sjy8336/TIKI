@@ -1,7 +1,9 @@
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -57,12 +59,20 @@ class ProjectMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=True,
         index=True,
     )
+    invited_by_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str | None] = mapped_column(String(100))
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    invite_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     project: Mapped["Project"] = relationship(back_populates="members")
     user: Mapped["User | None"] = relationship("User", foreign_keys=[user_id])
+    invited_by: Mapped["User | None"] = relationship("User", foreign_keys=[invited_by_id])
 
 
 class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
