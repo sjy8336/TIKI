@@ -68,9 +68,15 @@ def _resolve_category_analysis_focus(category: str | None) -> list[str]:
 
 @dataclass(slots=True)
 class RAGContext:
+    contract_version: str = "v1"
     project_name: str | None = None
     project_key: str | None = None
     project_category: str | None = None
+    source_kind: str | None = None
+    source_name: str | None = None
+    source_path: str | None = None
+    source_title: str | None = None
+    meeting_title: str | None = None
     analysis_focus: list[str] = field(default_factory=list)
     ticket_rules: list[str] = field(default_factory=list)
     glossary: list[str] = field(default_factory=list)
@@ -84,9 +90,15 @@ class RAGContext:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "contract_version": self.contract_version,
             "project_name": self.project_name,
             "project_key": self.project_key,
             "project_category": self.project_category,
+            "source_kind": self.source_kind,
+            "source_name": self.source_name,
+            "source_path": self.source_path,
+            "source_title": self.source_title,
+            "meeting_title": self.meeting_title,
             "analysis_focus": list(self.analysis_focus),
             "ticket_rules": list(self.ticket_rules),
             "glossary": list(self.glossary),
@@ -99,6 +111,14 @@ class RAGContext:
             "extra": dict(self.extra),
         }
 
+    def to_search_context(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        return {
+            key: value
+            for key, value in payload.items()
+            if value not in (None, "", [], {}, ())
+        }
+
     def to_prompt_lines(self) -> list[str]:
         lines: list[str] = []
         if self.project_name:
@@ -107,6 +127,12 @@ class RAGContext:
             lines.append(f"- project_key: {self.project_key}")
         if self.project_category:
             lines.append(f"- project_category: {self.project_category}")
+        if self.source_kind:
+            lines.append(f"- source_kind: {self.source_kind}")
+        if self.source_title:
+            lines.append(f"- source_title: {self.source_title}")
+        if self.meeting_title:
+            lines.append(f"- meeting_title: {self.meeting_title}")
 
         focus = _normalize_list(self.analysis_focus)
         if focus:
@@ -163,9 +189,15 @@ def normalize_rag_context(context: Any | None) -> RAGContext | None:
 
     if isinstance(context, dict):
         reserved_keys = {
+            "contract_version",
             "project_name",
             "project_key",
             "project_category",
+            "source_kind",
+            "source_name",
+            "source_path",
+            "source_title",
+            "meeting_title",
             "analysis_focus",
             "ticket_rules",
             "glossary",
@@ -190,9 +222,15 @@ def normalize_rag_context(context: Any | None) -> RAGContext | None:
             analysis_focus = _resolve_category_analysis_focus(project_category)
 
         return RAGContext(
+            contract_version=_normalize_text(context.get("contract_version")) or "v1",
             project_name=_normalize_text(context.get("project_name")) or None,
             project_key=_normalize_text(context.get("project_key")) or None,
             project_category=project_category,
+            source_kind=_normalize_text(context.get("source_kind")) or None,
+            source_name=_normalize_text(context.get("source_name")) or None,
+            source_path=_normalize_text(context.get("source_path")) or None,
+            source_title=_normalize_text(context.get("source_title")) or None,
+            meeting_title=_normalize_text(context.get("meeting_title")) or None,
             analysis_focus=analysis_focus,
             ticket_rules=_normalize_list(context.get("ticket_rules")),
             glossary=_normalize_list(context.get("glossary")),

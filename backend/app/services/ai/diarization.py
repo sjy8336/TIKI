@@ -22,10 +22,11 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 logger = logging.getLogger(__name__)
 DIARIZATION_MERGE_GAP_SECONDS = 0.6
 TORCH_THREAD_LIMIT = 8
-VAD_MIN_SPEECH_SECONDS = 0.35
-VAD_MIN_GAP_SECONDS = 0.25
-VAD_SPEECH_PAD_SECONDS = 0.12
-VAD_SEPARATOR_SECONDS = 0.08
+# VAD는 무음 구간을 줄이되, 화자 전환 경계를 너무 많이 잘라내지 않도록 보수적으로 유지한다.
+VAD_MIN_SPEECH_SECONDS = 0.25
+VAD_MIN_GAP_SECONDS = 0.18
+VAD_SPEECH_PAD_SECONDS = 0.18
+VAD_SEPARATOR_SECONDS = 0.12
 VAD_FALLBACK_ENERGY_THRESHOLD = 0.01
 
 
@@ -59,6 +60,15 @@ def _merge_intervals(intervals: list[tuple[float, float]], *, max_gap_seconds: f
         else:
             merged.append((start_seconds, end_seconds))
     return merged
+
+
+def _sum_interval_durations(intervals: list[tuple[float, float]]) -> float:
+    total = 0.0
+    for start_seconds, end_seconds in intervals:
+        if end_seconds <= start_seconds:
+            continue
+        total += end_seconds - start_seconds
+    return total
 
 
 def _estimate_energy_intervals(samples: np.ndarray, sample_rate: int) -> list[tuple[float, float]]:
@@ -125,6 +135,36 @@ def _build_compacted_waveform(
         return np.asarray(samples, dtype=np.float32), []
 
     return np.concatenate(compacted_chunks).astype(np.float32, copy=False), windows
+
+
+def _summarize_vad_windows(
+    *,
+    original_samples: np.ndarray,
+    sample_rate: int,
+    speech_windows: list[_SpeechWindow],
+) -> dict[str, Any]:
+    original_seconds = len(original_samples) / float(sample_rate) if sample_rate > 0 else 0.0
+    speech_ranges = _merge_intervals(
+        [
+            (window.original_start_seconds, window.original_end_seconds)
+            for window in speech_windows
+            if window.original_end_seconds > window.original_start_seconds
+        ],
+        max_gap_seconds=0.0,
+    )
+    speech_seconds = _sum_interval_durations(speech_ranges)
+    removed_seconds = max(0.0, original_seconds - speech_seconds)
+    return {
+        "vad_mode": "silero_pretrimmed" if speech_windows else "full_audio_fallback",
+        "diarization_input_mode": "compacted_waveform" if speech_windows else "full_waveform",
+        "vad_enabled": bool(speech_windows),
+        "vad_window_count": len(speech_windows),
+        "vad_original_seconds": round(original_seconds, 3),
+        "vad_speech_seconds": round(speech_seconds, 3),
+        "vad_removed_seconds": round(removed_seconds, 3),
+        "vad_retained_ratio": round((speech_seconds / original_seconds), 4) if original_seconds > 0 else 0.0,
+        "vad_compaction_ratio": round((original_seconds / speech_seconds), 4) if speech_seconds > 0 else None,
+    }
 
 
 def _map_compacted_time_to_original(
@@ -233,6 +273,7 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
         self.model_name = model_name or settings.diarization_model
         self.token = token or settings.huggingface_token
         self.enabled = enabled
+        self._last_vad_summary: dict[str, Any] | None = None
 
     @staticmethod
     def _resolve_device_name() -> str:
@@ -405,15 +446,25 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
         self._configure_torch_threads()
         pipeline = self._load_pipeline(self.model_name, self.token, device_name)
         compacted_samples, speech_windows = self._extract_speech_windows(np.asarray(samples, dtype=np.float32), sample_rate)
+        vad_summary = _summarize_vad_windows(
+            original_samples=np.asarray(samples, dtype=np.float32),
+            sample_rate=sample_rate,
+            speech_windows=speech_windows,
+        )
+        self._last_vad_summary = vad_summary
         compacted_waveform = torch.from_numpy(np.asarray(compacted_samples, dtype=np.float32)).unsqueeze(0)
-        total_speech_seconds = sum(window.original_end_seconds - window.original_start_seconds for window in speech_windows) if speech_windows else float(len(samples) / float(sample_rate))
+        total_speech_seconds = (
+            vad_summary["vad_speech_seconds"] if speech_windows else float(len(samples) / float(sample_rate))
+        )
         logger.info(
-            "Starting diarization inference for %s (device=%s, sample_rate=%s, waveform_shape=%s, speech_windows=%s, num_speakers=%s)",
+            "Starting diarization inference for %s (device=%s, sample_rate=%s, waveform_shape=%s, speech_windows=%s, vad_mode=%s, speech_ratio=%.4f, num_speakers=%s)",
             path.name,
             device_name,
             sample_rate,
             tuple(compacted_waveform.shape),
             len(speech_windows) if speech_windows else 0,
+            vad_summary["vad_mode"],
+            vad_summary["vad_retained_ratio"],
             num_speakers if num_speakers else "auto",
         )
         try:
@@ -453,10 +504,11 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
                 path.name,
                 len(turns),
                 len({turn["speaker_id"] for turn in turns}),
-                total_speech_seconds,
+                float(total_speech_seconds),
                 len(samples) / float(sample_rate),
             )
-            return _normalize_diarization_turns(turns)
+            normalized_turns = _normalize_diarization_turns(turns)
+            return normalized_turns
         finally:
             self._clear_device_cache(device_name)
 

@@ -4,10 +4,13 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import select
+
 from app.db.database import SessionLocal
 from app.models.analysis import AnalysisResult
 from app.models.enums import FileKind, ProcessingStatus
 from app.models.file import ExtractedContent, UploadedFile
+from app.models.project import Project, ProjectMember
 from app.models.ticket import Ticket
 from app.services.ai_engine import get_default_ai_engine
 
@@ -34,6 +37,28 @@ def _run_pipeline(db, file_id: UUID) -> None:
     if uploaded_file is None:
         raise ValueError(f"UploadedFile {file_id} not found")
 
+    project_context = None
+    if uploaded_file.project_id is not None:
+        project = db.get(Project, uploaded_file.project_id)
+        if project is not None:
+            members = db.scalars(
+                select(ProjectMember).where(ProjectMember.project_id == project.id)
+            ).all()
+            participant_names = [
+                (member.name or member.email or "").strip()
+                for member in members
+                if (member.name or member.email or "").strip()
+            ]
+            project_context = {
+                "project_name": project.name,
+                "project_category": project.category,
+                "participants": participant_names,
+                "extra": {
+                    "project_id": str(project.id),
+                    "project_visibility": project.visibility,
+                },
+            }
+
     uploaded_file.status = ProcessingStatus.PROCESSING
     uploaded_file.started_at = datetime.now(UTC)
     db.commit()
@@ -42,12 +67,16 @@ def _run_pipeline(db, file_id: UUID) -> None:
     engine = get_default_ai_engine()
     if uploaded_file.file_kind == FileKind.AUDIO:
         _log_progress(file_id, 25, "오디오 전사와 화자분리 파이프라인을 시작합니다")
-        result = engine.process_audio_parallel(uploaded_file.storage_path, n_workers=2)
+        result = engine.process_audio_parallel(
+            uploaded_file.storage_path,
+            n_workers=2,
+            rag_context=project_context,
+        )
         _log_progress(file_id, 75, "전사 결과를 분석하고 있습니다")
         extraction_method = "whisper"
     elif uploaded_file.file_kind in {FileKind.DOCUMENT, FileKind.TEXT}:
         _log_progress(file_id, 25, "문서 추출 파이프라인을 시작합니다")
-        result = engine.process_document(uploaded_file.storage_path)
+        result = engine.process_document(uploaded_file.storage_path, rag_context=project_context)
         _log_progress(file_id, 75, "문서 요약과 액션아이템을 정리하고 있습니다")
         extraction_method = result.analysis.extra_data.get("document_extraction", {}).get(
             "extraction_method",

@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from textwrap import shorten
 from typing import Any
 
 from app.services.ai.llm_analysis import LLMAnalysisService, build_llm_analysis_service
@@ -40,7 +41,43 @@ ANALYSIS_OUTPUT_FIELDS: tuple[str, ...] = (
     "issues",
     "next_agenda",
     "search_document",
+    "document_summary",
 )
+
+SUMMARY_REQUEST_INPUT_KEYS: tuple[str, ...] = (
+    "focus",
+    "topic",
+    "prompt",
+    "instruction",
+    "query",
+    "length",
+    "len",
+    "summary_length",
+    "target_fields",
+    "contract_version",
+)
+
+SUMMARY_REQUEST_LENGTH_ALIASES: dict[str, str] = {
+    "short": "short",
+    "shorter": "short",
+    "brief": "short",
+    "concise": "short",
+    "간결": "short",
+    "간결하게": "short",
+    "짧게": "short",
+    "짧은": "short",
+    "medium": "medium",
+    "normal": "medium",
+    "standard": "medium",
+    "보통": "medium",
+    "일반": "medium",
+    "적당히": "medium",
+    "long": "long",
+    "detailed": "long",
+    "detail": "long",
+    "상세": "long",
+    "자세히": "long",
+}
 
 def _format_mmss(seconds: Any) -> str | None:
     if seconds is None:
@@ -53,6 +90,101 @@ def _format_mmss(seconds: Any) -> str | None:
         return None
     minutes, remainder = divmod(total_seconds, 60)
     return f"{minutes:02d}:{remainder:02d}"
+
+
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, dict):
+            return dict(dumped)
+
+    dict_method = getattr(value, "dict", None)
+    if callable(dict_method):
+        dumped = dict_method()
+        if isinstance(dumped, dict):
+            return dict(dumped)
+
+    return {}
+
+
+def _normalize_summary_request_target_fields(value: Any) -> list[str]:
+    if value in (None, "", [], {}, ()):
+        return list(ANALYSIS_OUTPUT_FIELDS)
+
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    allowed = set(ANALYSIS_OUTPUT_FIELDS)
+
+    for item in items:
+        field = _normalize_segment_text(item)
+        if not field or field not in allowed:
+            continue
+        if field in seen:
+            continue
+        seen.add(field)
+        normalized.append(field)
+
+    return normalized or list(ANALYSIS_OUTPUT_FIELDS)
+
+
+def _normalize_summary_request_length(value: Any) -> str | None:
+    candidate = _normalize_segment_text(value).lower()
+    if not candidate:
+        return None
+    if candidate in SUMMARY_REQUEST_LENGTH_ALIASES:
+        return SUMMARY_REQUEST_LENGTH_ALIASES[candidate]
+    if "짧" in candidate or "간결" in candidate or "brief" in candidate or "concise" in candidate:
+        return "short"
+    if "상세" in candidate or "자세" in candidate or "detailed" in candidate:
+        return "long"
+    if "보통" in candidate or "medium" in candidate or "normal" in candidate:
+        return "medium"
+    return candidate
+
+
+def _extract_summary_request_candidate(context: Any | None) -> dict[str, Any]:
+    if not context:
+        return {}
+
+    candidate: dict[str, Any] = {}
+    mapping = _coerce_mapping(context)
+    if mapping:
+        direct_has_request_fields = any(key in mapping for key in SUMMARY_REQUEST_INPUT_KEYS)
+        nested = _coerce_mapping(mapping.get("summary_request") or mapping.get("summaryRequest"))
+        if direct_has_request_fields:
+            candidate = mapping
+        elif nested:
+            candidate = nested
+        else:
+            extra = _coerce_mapping(mapping.get("extra"))
+            extra_direct_has_request_fields = any(key in extra for key in SUMMARY_REQUEST_INPUT_KEYS)
+            nested_extra = _coerce_mapping(extra.get("summary_request") or extra.get("summaryRequest"))
+            if extra_direct_has_request_fields:
+                candidate = extra
+            elif nested_extra:
+                candidate = nested_extra
+
+    if not candidate:
+        normalized = normalize_rag_context(context)
+        if normalized and isinstance(normalized.extra, dict):
+            extra = dict(normalized.extra)
+            if any(key in extra for key in SUMMARY_REQUEST_INPUT_KEYS):
+                candidate = extra
+            else:
+                candidate = _coerce_mapping(extra.get("summary_request") or extra.get("summaryRequest"))
+
+    return candidate
 
 def _resolve_script_segment_who(speaker_fields: dict[str, Any]) -> str | None:
     for key in ("speaker_display_name", "participant_name", "speaker_label", "speaker_id", "speaker"):
@@ -388,19 +520,9 @@ def _build_ai_input_contract(
 
 
 def _build_summary_request_contract(context: Any | None) -> dict[str, Any] | None:
-    if not context:
+    candidate = _extract_summary_request_candidate(context)
+    if not candidate:
         return None
-
-    candidate: dict[str, Any] = {}
-    if isinstance(context, dict):
-        candidate = dict(context.get("summary_request") or context.get("summaryRequest") or {})
-        extra = context.get("extra")
-        if not candidate and isinstance(extra, dict):
-            candidate = dict(extra.get("summary_request") or extra.get("summaryRequest") or {})
-    else:
-        normalized = normalize_rag_context(context)
-        if normalized and isinstance(normalized.extra, dict):
-            candidate = dict(normalized.extra.get("summary_request") or normalized.extra.get("summaryRequest") or {})
 
     focus = _normalize_segment_text(candidate.get("focus") or candidate.get("topic"))
     prompt = _normalize_segment_text(
@@ -409,6 +531,7 @@ def _build_summary_request_contract(context: Any | None) -> dict[str, Any] | Non
     length = _normalize_segment_text(
         candidate.get("length") or candidate.get("len") or candidate.get("summary_length")
     )
+    length = _normalize_summary_request_length(length)
 
     if not any((focus, prompt, length)):
         return None
@@ -418,8 +541,150 @@ def _build_summary_request_contract(context: Any | None) -> dict[str, Any] | Non
         "focus": focus or None,
         "prompt": prompt or None,
         "length": length or None,
-        "target_fields": list(ANALYSIS_OUTPUT_FIELDS),
+        "target_fields": _normalize_summary_request_target_fields(candidate.get("target_fields")),
     }
+
+
+def _compact_search_document_context(search_document: Any | None) -> dict[str, Any]:
+    if not isinstance(search_document, dict):
+        return {}
+
+    compact: dict[str, Any] = {}
+    meeting_title = _normalize_segment_text(search_document.get("meeting_title"))
+    project_name = _normalize_segment_text(search_document.get("project_name"))
+    source_kind = _normalize_segment_text(search_document.get("source_kind"))
+    source_name = _normalize_segment_text(search_document.get("source_name"))
+    source_path = _normalize_segment_text(search_document.get("source_path"))
+    source_title = _normalize_segment_text(search_document.get("source_title"))
+    summary = _normalize_segment_text(search_document.get("summary"))
+    keywords = [
+        _normalize_segment_text(item.get("text") if isinstance(item, dict) else item)
+        for item in search_document.get("keywords", [])
+        if _normalize_segment_text(item.get("text") if isinstance(item, dict) else item)
+    ]
+    decisions = [
+        _normalize_segment_text(item)
+        for item in search_document.get("decisions", [])
+        if _normalize_segment_text(item)
+    ]
+    action_items = []
+    for item in search_document.get("action_items", []):
+        if not isinstance(item, dict):
+            continue
+        title = _normalize_segment_text(item.get("title"))
+        description = _normalize_segment_text(item.get("description"))
+        assignee = _normalize_segment_text(item.get("assignee")) or item.get("assignee")
+        due_at = _normalize_segment_text(item.get("due_at")) or item.get("due_at")
+        row = " | ".join(part for part in [title, description, assignee, due_at] if part)
+        if row:
+            action_items.append(row)
+    issues = [
+        _normalize_segment_text(item.get("text") if isinstance(item, dict) else item)
+        for item in search_document.get("issues", [])
+        if _normalize_segment_text(item.get("text") if isinstance(item, dict) else item)
+    ]
+    next_agenda = [
+        _normalize_segment_text(item)
+        for item in search_document.get("next_agenda", [])
+        if _normalize_segment_text(item)
+    ]
+    sections = []
+    for section in search_document.get("sections", []):
+        if not isinstance(section, dict):
+            continue
+        section_type = _normalize_segment_text(section.get("section_type") or section.get("title"))
+        section_title = _normalize_segment_text(section.get("title"))
+        section_text = _normalize_segment_text(section.get("text"))
+        if not section_text:
+            continue
+        header = section_title or section_type or "section"
+        sections.append(f"{header}: {shorten(section_text, width=240, placeholder='...')}")
+    indexable_text = _normalize_segment_text(search_document.get("indexable_text") or search_document.get("search_text"))
+    if meeting_title:
+        compact["meeting_title"] = meeting_title
+    if project_name:
+        compact["project_name"] = project_name
+    if source_kind:
+        compact["source_kind"] = source_kind
+    if source_name:
+        compact["source_name"] = source_name
+    if source_path:
+        compact["source_path"] = source_path
+    if source_title:
+        compact["source_title"] = source_title
+    if summary:
+        compact["search_document_summary"] = summary
+    if keywords:
+        compact["search_document_keywords"] = keywords[:12]
+    if decisions:
+        compact["search_document_decisions"] = decisions[:12]
+    if action_items:
+        compact["search_document_action_items"] = action_items[:12]
+    if issues:
+        compact["search_document_issues"] = issues[:12]
+    if next_agenda:
+        compact["search_document_next_agenda"] = next_agenda[:12]
+    if sections:
+        compact["search_document_sections"] = sections[:12]
+    if indexable_text:
+        compact["search_document_indexable_text"] = shorten(indexable_text, width=600, placeholder="...")
+    retrieval_context = search_document.get("retrieval_context") if isinstance(search_document.get("retrieval_context"), dict) else {}
+    rag_context = search_document.get("rag_context") if isinstance(search_document.get("rag_context"), dict) else {}
+    for source in (retrieval_context, rag_context):
+        for key, value in source.items():
+            if value not in (None, "", [], {}, ()):
+                compact.setdefault(key, value)
+    return compact
+
+
+def _build_summary_regeneration_rag_context(
+    *,
+    transcript: str,
+    summary_request: dict[str, Any] | None = None,
+    search_document: dict[str, Any] | None = None,
+    rag_context: Any | None = None,
+) -> dict[str, Any]:
+    context_snapshot = _build_context_snapshot(rag_context) or {}
+    snapshot = dict(context_snapshot)
+
+    base_extra = dict(snapshot.get("extra") or {})
+    if search_document:
+        compact = _compact_search_document_context(search_document)
+        for key, value in compact.items():
+            if key in {"meeting_title", "project_name", "source_kind", "source_name", "source_path", "source_title"}:
+                snapshot.setdefault(key, value)
+            else:
+                base_extra[key] = value
+        if not snapshot.get("meeting_title"):
+            meeting_title = _normalize_segment_text(search_document.get("meeting_title"))
+            if meeting_title:
+                snapshot["meeting_title"] = meeting_title
+
+    if summary_request:
+        normalized_summary_request = _build_summary_request_contract(summary_request)
+        focus = _normalize_segment_text((normalized_summary_request or {}).get("focus"))
+        prompt = _normalize_segment_text((normalized_summary_request or {}).get("prompt"))
+        length = _normalize_segment_text((normalized_summary_request or {}).get("length"))
+        if focus:
+            existing_focus = list(snapshot.get("analysis_focus") or [])
+            if focus not in existing_focus:
+                existing_focus.insert(0, focus)
+            snapshot["analysis_focus"] = existing_focus[:3]
+            base_extra["summary_request_focus"] = focus
+        if prompt:
+            base_extra["summary_request_prompt"] = prompt
+        if length:
+            base_extra["summary_request_length"] = length
+        if normalized_summary_request:
+            base_extra["summary_request"] = normalized_summary_request
+
+    if transcript:
+        base_extra.setdefault("source_excerpt", shorten(_normalize_segment_text(transcript), width=240, placeholder="..."))
+
+    if base_extra:
+        snapshot["extra"] = base_extra
+
+    return {key: value for key, value in snapshot.items() if value not in (None, "", [], {}, ())}
 
 @dataclass(slots=True)
 class AIAnalysisPayload:
@@ -436,6 +701,8 @@ class AIAnalysisPayload:
     model_name: str | None = None
     prompt_version: str | None = None
     summary_request: dict[str, Any] | None = None
+    search_document: dict[str, Any] | None = None
+    document_summary: dict[str, Any] | None = None
     extra_data: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -454,6 +721,8 @@ class AIAnalysisPayload:
             "model_name": self.model_name,
             "prompt_version": self.prompt_version,
             "summary_request": self.summary_request,
+            "search_document": self.search_document,
+            "document_summary": self.document_summary,
             "extra_data": self.extra_data,
         }
 
@@ -630,13 +899,22 @@ def _attach_analysis_contract_metadata(
     if analysis.summary_request is not None:
         analysis.extra_data["summary_request"] = analysis.summary_request
     if search_document is not None:
+        analysis.search_document = search_document
         analysis.extra_data["search_document"] = search_document
+    document_summary = analysis.extra_data.get("document_summary")
+    if isinstance(document_summary, dict):
+        analysis.document_summary = document_summary
 
 def build_project_rag_context(project: dict[str, Any] | None = None, **overrides: Any) -> dict[str, Any]:
     base = {
         "project_name": None,
         "project_key": None,
         "project_category": None,
+        "source_kind": None,
+        "source_name": None,
+        "source_path": None,
+        "source_title": None,
+        "meeting_title": None,
         "ticket_rules": [],
         "glossary": [],
         "example_tickets": [],
@@ -686,26 +964,26 @@ def _build_context_snapshot(context: Any | None) -> dict[str, Any] | None:
     if not normalized:
         return None
 
-    snapshot = normalized.to_dict()
-    return {
-        key: value
-        for key, value in snapshot.items()
-        if key in {
-            "project_name",
-            "project_key",
-            "project_category",
-            "analysis_focus",
-            "ticket_rules",
-            "glossary",
-            "example_tickets",
-            "preferred_keywords",
-            "participants",
-            "admins",
-            "integration_targets",
-            "note",
-        }
-        and value not in (None, "", [], {}, ())
-    }
+    return normalized.to_search_context()
+
+
+def _ensure_search_source_metadata(
+    context_snapshot: dict[str, Any] | None,
+    *,
+    source_kind: str,
+    source_name: str | None = None,
+    source_path: str | None = None,
+    source_title: str | None = None,
+) -> dict[str, Any]:
+    snapshot = dict(context_snapshot or {})
+    snapshot.setdefault("source_kind", source_kind)
+    if source_name:
+        snapshot.setdefault("source_name", source_name)
+    if source_path:
+        snapshot.setdefault("source_path", source_path)
+    if source_title:
+        snapshot.setdefault("source_title", source_title)
+    return {key: value for key, value in snapshot.items() if value not in (None, "", [], {}, ())}
 
 
 def _build_document_analysis_context(document: Any, rag_context: Any | None = None) -> dict[str, Any]:
@@ -730,6 +1008,8 @@ def _build_document_analysis_context(document: Any, rag_context: Any | None = No
             "source_kind": "document",
             "source_title": getattr(document, "metadata", {}).get("source_title") if getattr(document, "metadata", None) else None,
             "source_name": getattr(document, "source_name", None),
+            "source_path": getattr(document, "source_path", None),
+            "participants": getattr(document, "metadata", {}).get("participants") if getattr(document, "metadata", None) else None,
             "document_extraction": document_extraction,
         }
     )
@@ -738,10 +1018,64 @@ def _build_document_analysis_context(document: Any, rag_context: Any | None = No
     analysis_context["source_kind"] = "document"
     analysis_context["source_title"] = getattr(document, "metadata", {}).get("source_title") if getattr(document, "metadata", None) else None
     analysis_context["source_name"] = getattr(document, "source_name", None)
+    analysis_context["source_path"] = getattr(document, "source_path", None)
+    analysis_context["participants"] = getattr(document, "metadata", {}).get("participants") if getattr(document, "metadata", None) else None
     analysis_context["document_extraction"] = document_extraction
     if extra:
         analysis_context["extra"] = extra
     return analysis_context
+
+
+def _build_search_retrieval_context(
+    *,
+    context_snapshot: dict[str, Any] | None,
+    analysis_data: dict[str, Any],
+    sections: list[dict[str, Any]],
+    chunks: list[dict[str, Any]],
+    indexable_text: str,
+) -> dict[str, Any]:
+    section_types = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        section_type = _normalize_segment_text(section.get("section_type") or section.get("title"))
+        if section_type:
+            section_types.append(section_type)
+
+    retrieval_context: dict[str, Any] = {
+        "contract_version": "v2",
+        "source_kind": _normalize_segment_text(context_snapshot.get("source_kind")) if context_snapshot else None,
+        "source_name": _normalize_segment_text(context_snapshot.get("source_name")) if context_snapshot else None,
+        "source_path": _normalize_segment_text(context_snapshot.get("source_path")) if context_snapshot else None,
+        "source_title": _normalize_segment_text(context_snapshot.get("source_title")) if context_snapshot else None,
+        "meeting_title": _normalize_segment_text(context_snapshot.get("meeting_title"))
+        if context_snapshot
+        else _normalize_segment_text(analysis_data.get("meeting_title")) or None,
+        "project_name": _normalize_segment_text(context_snapshot.get("project_name")) if context_snapshot else None,
+        "section_types": list(dict.fromkeys(section_types)),
+        "section_count": len(sections),
+        "chunk_count": len(chunks),
+        "keyword_count": len(analysis_data.get("keywords", []) or []),
+        "decision_count": len(analysis_data.get("decisions", []) or []),
+        "action_item_count": len(analysis_data.get("action_items", []) or []),
+        "issue_count": len(analysis_data.get("issues", []) or []),
+        "next_agenda_count": len(analysis_data.get("next_agenda", []) or []),
+        "indexed_fields": [
+            "meeting_title",
+            "project_name",
+            "summary",
+            "keywords",
+            "decisions",
+            "action_items",
+            "issues",
+            "next_agenda",
+            "sections",
+            "chunks",
+            "indexable_text",
+        ],
+        "searchable_text_preview": shorten(_normalize_segment_text(indexable_text), width=300, placeholder="...") if indexable_text else "",
+    }
+    return {key: value for key, value in retrieval_context.items() if value not in (None, "", [], {}, ())}
 
 def _build_meeting_search_document(
     *,
@@ -838,19 +1172,33 @@ def _build_meeting_search_document(
 
     title = None
     project_name = None
+    rag_context_contract: dict[str, Any] = {}
     if context_snapshot:
         title = _normalize_segment_text(context_snapshot.get("meeting_title")) or None
         project_name = _normalize_segment_text(context_snapshot.get("project_name")) or None
+        rag_context_contract = {
+            key: value
+            for key, value in context_snapshot.items()
+            if value not in (None, "", [], {}, ())
+        }
     if not title:
         title = _normalize_segment_text(analysis_data.get("meeting_title")) or None
 
-    indexed_text = _join_search_parts(
+    indexable_text = _join_search_parts(
         title,
         project_name,
         [section["text"] for section in sections if section.get("text")],
         [chunk["search_text"] for chunk in search_chunks],
         transcript,
         masked_transcript,
+    )
+
+    search_retrieval_context = _build_search_retrieval_context(
+        context_snapshot=context_snapshot,
+        analysis_data=analysis_data,
+        sections=sections,
+        chunks=search_chunks,
+        indexable_text=indexable_text,
     )
 
     document = MeetingSearchDocument(
@@ -860,6 +1208,10 @@ def _build_meeting_search_document(
         masked_source_text=masked_transcript,
         meeting_title=title,
         project_name=project_name,
+        source_kind=_normalize_segment_text(context_snapshot.get("source_kind")) if context_snapshot else None,
+        source_name=_normalize_segment_text(context_snapshot.get("source_name")) if context_snapshot else None,
+        source_path=_normalize_segment_text(context_snapshot.get("source_path")) if context_snapshot else None,
+        source_title=_normalize_segment_text(context_snapshot.get("source_title")) if context_snapshot else None,
         summary=_normalize_segment_text(analysis_data.get("summary")),
         keywords=keywords,
         keyword_items=keyword_items,
@@ -869,8 +1221,11 @@ def _build_meeting_search_document(
         next_agenda=next_agenda,
         sections=sections,
         chunks=search_chunks,
-        indexed_text=indexed_text,
-        search_text=indexed_text,
+        indexable_text=indexable_text,
+        indexed_text=indexable_text,
+        search_text=indexable_text,
+        retrieval_context=search_retrieval_context,
+        rag_context=rag_context_contract,
     )
     return document.model_dump()
 
@@ -1344,6 +1699,33 @@ class AIEngine:
             analysis=analysis,
         )
 
+    def regenerate_summary(
+        self,
+        transcript: str,
+        *,
+        masked_transcript: str | None = None,
+        summary_request: dict[str, Any] | None = None,
+        search_document: dict[str, Any] | None = None,
+        rag_context: Any | None = None,
+    ) -> AIProcessingResult:
+        """Regenerate summary using the current transcript and search contract."""
+        prompt_context = _build_summary_regeneration_rag_context(
+            transcript=transcript,
+            summary_request=summary_request,
+            search_document=search_document,
+            rag_context=rag_context,
+        )
+        result = self.process_text(transcript, rag_context=prompt_context)
+        if summary_request is not None:
+            summary_contract = _build_summary_request_contract({"summary_request": summary_request})
+            if summary_contract is not None:
+                result.analysis.summary_request = summary_contract
+                result.analysis.extra_data["summary_request"] = summary_contract
+                result.analysis.extra_data["summary_request_contract"] = summary_contract
+        if masked_transcript:
+            result.masked_transcript = masked_transcript
+        return result
+
     def process_document(self, file_path: str, rag_context: Any | None = None) -> AIProcessingResult:
         document = load_document_file(file_path)
         document.masked_text = mask_personal_information(document.text)
@@ -1394,6 +1776,13 @@ class AIEngine:
 
     def process_audio(self, file_path: str, rag_context: Any | None = None) -> AIProcessingResult:
         context_snapshot = _build_context_snapshot(rag_context)
+        context_snapshot = _ensure_search_source_metadata(
+            context_snapshot,
+            source_kind="audio",
+            source_name=Path(file_path).name,
+            source_path=file_path,
+            source_title=Path(file_path).stem,
+        )
         participant_names = list(context_snapshot.get("participants") or []) if context_snapshot else []
         transcriber = getattr(self.stt_service, "transcribe_with_segments", None)
         if callable(transcriber):
@@ -1501,10 +1890,22 @@ class AIEngine:
         if not callable(parallel_transcribe):
             return self.process_audio(file_path, rag_context=rag_context)
 
-        transcript, raw_segments = parallel_transcribe(file_path, n_workers=n_workers)
+        context_snapshot = _build_context_snapshot(rag_context)
+        context_snapshot = _ensure_search_source_metadata(
+            context_snapshot,
+            source_kind="audio",
+            source_name=Path(file_path).name,
+            source_path=file_path,
+            source_title=Path(file_path).stem,
+        )
+        participant_names = list(context_snapshot.get("participants") or []) if context_snapshot else []
+        transcript, raw_segments = parallel_transcribe(
+            file_path,
+            n_workers=n_workers,
+            participant_names=participant_names,
+        )
 
         masked_transcript = mask_personal_information(transcript)
-        context_snapshot = _build_context_snapshot(rag_context)
         preprocessing = None
         get_last_preprocessing = getattr(self.stt_service, "get_last_preprocessing", None)
         if callable(get_last_preprocessing):
@@ -1601,6 +2002,13 @@ class AIEngine:
             raise ValueError("At least one audio file path is required.")
 
         context_snapshot = _build_context_snapshot(rag_context)
+        context_snapshot = _ensure_search_source_metadata(
+            context_snapshot,
+            source_kind="audio_batch",
+            source_name=Path(file_paths[0]).name,
+            source_path=file_paths[0],
+            source_title=_derive_batch_source_title(file_paths),
+        )
         participant_names = list(context_snapshot.get("participants") or []) if context_snapshot else []
         file_results: list[AIFileProcessingResult] = []
         transcript_segments: list[str] = []

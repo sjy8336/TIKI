@@ -18,6 +18,7 @@ class SummaryRequestPayload(BaseModel):
             "issues",
             "next_agenda",
             "search_document",
+            "document_summary",
         ]
     )
 

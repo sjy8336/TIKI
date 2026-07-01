@@ -86,8 +86,12 @@ def transcribe_chunks_parallel(
     Returns a mapping of ``chunk_index → raw_whisper_result``.
     Segment filtering and assembly are left to the caller.
     """
-    effective_workers = min(n_workers, len(chunks))
     resolved_device_name = device_name or _resolve_device_name()
+    effective_workers = min(n_workers, len(chunks))
+    if resolved_device_name == "cuda":
+        # A single shared GPU is usually faster and far more stable with one
+        # worker than with multiple concurrent Whisper model copies.
+        effective_workers = 1
     logger.info(
         "Parallel STT: %d chunks, %d workers, model=%s, device=%s",
         len(chunks),
