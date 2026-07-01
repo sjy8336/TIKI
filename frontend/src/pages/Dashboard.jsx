@@ -1,141 +1,17 @@
 import { useState, useEffect, useRef, useMemo, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import { Navigate } from "react-router-dom";
-import { clearAuthSession } from "../api/apiClient";
+import { clearAuthSession, listProjectMeetings, listProjects, listProjectTickets } from "../api/apiClient";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
 import ToastPopup from "../components/toastpopup";
-
-// 가상의 팀원 목록 (스타트업 '네오테크' 시나리오 반영)
-const TEAM_MEMBERS = [
-  { name: "정아름", role: "프론트엔드 리드", avatar: "user" },
-  { name: "김민수", role: "백엔드 리드", avatar: "user" },
-  { name: "송지영", role: "PM & 아키텍트", avatar: "user" },
-  { name: "김소현", role: "서비스 기획", avatar: "user" },
-  { name: "채하율", role: "데이터 엔지니어", avatar: "user" },
-  { name: "박디자이너", role: "UI/UX 디자이너", avatar: "user" }
-];
-
-const TRANSCRIPT_MOCK = [
-  { time: "01:15", speaker: "김소현", text: "이번 스프린트에서는 TIKI 브랜드 전용 컬러 팔레트를 프론트엔드에 완전히 정착시켜야 해요." },
-  { time: "03:12", speaker: "정아름", text: "네, 알겠습니다. TIKI 컬러 팔레트 프론트엔드 환경에 CSS 변수 정의 및 테마 반영 작업은 제가 맡을게요." },
-  { time: "07:45", speaker: "송지영", text: "좋습니다. 백엔드 세션 처리도 이슈가 있어요." },
-  { time: "11:45", speaker: "김민수", text: "네, 그 부분은 제가 API 규격에 맞춰 세션 리프레시 토큰 흐름을 재설계하겠습니다." },
-  { time: "21:10", speaker: "채하율", text: "대시보드 UI MVP 디자인 최종 시안을 어제 전달받았어요." },
-  { time: "24:02", speaker: "박디자이너", text: "디자인팀에서 마이그레이션이 끝나는 대로 피그마에 최종 업로드할게요." }
-];
-
-const PROJECTS = {
-  TIKI: { key: "TIKI", name: "TIKI 앱 개발", color: "#0099CC", bg: "#EEF3FF", border: "rgba(0,153,204,0.32)" },
-  MKT: { key: "MKT", name: "마케팅 캠페인 Q3", color: "#EF4444", bg: "#FCE8E6", border: "rgba(239,68,68,0.3)" },
-  DS: { key: "DS", name: "데이터 인프라 구축", color: "#10B981", bg: "#E6F4EA", border: "rgba(16,185,129,0.3)" }
-};
-
-const MEETING_TITLES = {
-  TIKI: "네오테크 6월 3주차 스프린트 회의",
-  MKT: "마케팅 캠페인 Q3 킥오프 회의",
-  DS: "데이터 인프라 구축 점검 회의"
-};
 
 const PRIORITY_EN = {
   "높음": { label: "높음", bg: "#FCE8E6", text: "#EF4444" },
   "보통": { label: "보통", bg: "#EEF3FF", text: "#0099CC" },
   "낮음": { label: "낮음", bg: "#F1F4F8", text: "#5A6F8A" }
 };
-
-const INITIAL_ACTION_ITEMS = [
-  {
-    id: 1,
-    title: "[TIKI 서비스] 컬러 팔레트 프론트엔드 환경에 CSS 변수 정의 및 테마 반영 작업",
-    priority: "보통",
-    projectKey: "TIKI",
-    assignee: "정아름",
-    assignees: ["정아름"],
-    avatar: "user",
-    status: "검증 전",
-    dueDate: "2026-06-23",
-    meetingDate: "2026-06-16",
-    description: "회의록 03분 12초 영역 기인. 메인 배경(#F8FAFF), 서피스(#FFFFFF), 주요 액션(#0099CC) 및 테두리 변수를 Tailwind 설정 혹은 전역 CSS에 반영하여 디자인 컴포넌트 전체의 일관성을 확보할 것.",
-    contextTime: "03:12",
-    jiraLink: ""
-  },
-  {
-    id: 2,
-    title: "로그인 만료 세션 예외 처리 및 토큰 리프레시 로직 보완",
-    priority: "낮음",
-    projectKey: "TIKI",
-    assignee: "김소현",
-    assignees: ["김소현", "김민수", "송지영"],
-    avatar: "user",
-    status: "연동 완료",
-    dueDate: "2026-06-30",
-    meetingDate: "2026-06-16",
-    description: "회의록 11분 45초 영역 기인. 사용자가 장시간 자리를 비우거나 브라우저를 종료했을 때 세션 만료가 뜨지 않는 버그 방지. Redis 연동 세션 스펙을 검토하고 자동 갱신 API 연동 수행.",
-    contextTime: "11:45",
-    jiraLink: "https://jira.atlassian.com/browse/TIKI-102"
-  },
-  {
-    id: 3,
-    title: "대시보드 UI MVP 디자인 최종 시안 Figma 업로드 및 검토 요청",
-    priority: "낮음",
-    projectKey: "TIKI",
-    assignee: "채하율",
-    assignees: ["채하율"],
-    avatar: "user",
-    status: "연동 완료",
-    dueDate: "2026-06-18",
-    meetingDate: "2026-06-16",
-    description: "회의록 24분 02초 영역 기인. 시제품 자재 및 컴포넌트 단위 디자인 가이드 Figma 업로드 완료 후 Jira 연계 에픽 생성.",
-    contextTime: "24:02",
-    jiraLink: "https://jira.atlassian.com/browse/TIKI-104"
-  },
-  {
-    id: 4,
-    title: "Q3 캠페인 랜딩페이지 카피 및 A/B 테스트 시안 정리",
-    priority: "보통",
-    projectKey: "MKT",
-    assignee: "송지영",
-    assignees: ["송지영"],
-    avatar: "user",
-    status: "진행중",
-    dueDate: "2026-06-20",
-    meetingDate: "2026-06-17",
-    description: "마케팅 캠페인 회의 기인. 랜딩페이지 카피 2종, 헤드라인 A/B 테스트 시안을 정리하고 디자인팀에 전달.",
-    contextTime: "09:40",
-    jiraLink: ""
-  },
-  {
-    id: 5,
-    title: "데이터 파이프라인 야간 배치 실패 알림 연동",
-    priority: "높음",
-    projectKey: "DS",
-    assignee: "채하율",
-    assignees: ["채하율", "김민수"],
-    avatar: "user",
-    status: "검증 전",
-    dueDate: "2026-06-19",
-    meetingDate: "2026-06-17",
-    description: "데이터 인프라 회의 기인. 야간 배치 실패 시 Slack 알림이 누락되는 문제 해결 및 모니터링 대시보드 연동.",
-    contextTime: "15:02",
-    jiraLink: ""
-  },
-  {
-    id: 6,
-    title: "정아름 - 디자인 시스템 컴포넌트 네이밍 컨벤션 문서화",
-    priority: "낮음",
-    projectKey: "TIKI",
-    assignee: "정아름",
-    assignees: ["정아름"],
-    avatar: "user",
-    status: "검증 전",
-    dueDate: "2026-07-03",
-    meetingDate: "2026-06-16",
-    description: "회의록 31분 20초 영역 기인. 팀 전체가 참고할 수 있도록 디자인 시스템 컴포넌트의 네이밍 규칙과 명명 기준을 정리해 문서로 남길 것.",
-    contextTime: "31:20",
-    jiraLink: ""
-  }
-];
 
 const STATUS_TABS = ["전체", "검증 전", "진행중", "연동 완료"];
 
@@ -173,7 +49,17 @@ const TOAST_ICON_RULE = {
   success: "#10B981"
 };
 
-const CURRENT_USER_NAME = "정아름";
+const PROJECT_OVERRIDE_STORAGE_KEY = "tiki_project_overrides";
+const MANUAL_MEETING_RECORDS_KEY = "tiki_manual_minutes_records";
+
+const readJsonObject = (key) => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
 
 function LucideIcon({ name, size = 16, className = "" }) {
   const icons = {
@@ -370,7 +256,7 @@ function getDDayInfo(dueDateStr) {
 }
 
 function getTodayOrTomorrowLabel(dueDateStr) {
-  const today = new Date("2026-06-18T00:00:00");
+  const today = new Date();
   const due = new Date(`${dueDateStr}T00:00:00`);
   const diffDays = Math.round((due - today) / (1000 * 60 * 60 * 24));
 
@@ -381,17 +267,20 @@ function getTodayOrTomorrowLabel(dueDateStr) {
 
 function formatAssignees(assignees, fallbackName) {
   const list = assignees && assignees.length > 0 ? assignees : [fallbackName];
-  const includesMe = list.includes(CURRENT_USER_NAME);
-
-  if (includesMe) {
-    return list.join(", ");
-  }
-  return `담당자 ${list.length}명`;
+  return list.filter(Boolean).join(', ') || fallbackName || '';
 }
 
-function isAssignedToMe(item) {
-  const list = item.assignees && item.assignees.length > 0 ? item.assignees : [item.assignee];
-  return list.includes(CURRENT_USER_NAME);
+function isAssignedToMe(item, aliases = []) {
+  const normalizedAliases = aliases.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (normalizedAliases.length === 0) return false;
+  const assignees = [
+    item?.assignee,
+    ...(Array.isArray(item?.assignees) ? item.assignees : []),
+    item?.assigneeEmail,
+  ]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+  return assignees.some((value) => normalizedAliases.includes(value));
 }
 
 function ProjectBadge({ project, size = "sm" }) {
@@ -732,7 +621,8 @@ export default function App() {
       window.removeEventListener("tiki-auth-changed", syncAuthSession);
     };
   }, []);
-  const [actionItems, setActionItems] = useState(INITIAL_ACTION_ITEMS);
+  const [projects, setProjects] = useState([]);
+  const [actionItems, setActionItems] = useState([]);
   const [statusFilter, setStatusFilter] = useState("전체");
   const [projectFilter, setProjectFilter] = useState("전체");
   const [searchQuery, setSearchQuery] = useState("");
@@ -772,6 +662,10 @@ export default function App() {
   });
 
   const [toast, setToast] = useState({ show: false, message: "", type: "info" });
+  const userAliases = useMemo(
+    () => [user?.name, user?.email].map((value) => String(value || "").trim()).filter(Boolean),
+    [user?.name, user?.email]
+  );
 
   const triggerToast = (msg, type = "info") => {
     setToast({ show: true, message: msg, type });
@@ -829,6 +723,143 @@ export default function App() {
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [isAssigneeOpen, isDueDateOpen, isStatusSortOpen, isProjectFilterOpen]);
+
+  const mapTicketStatus = (s) => {
+    if (s === 'synced') return '연동 완료';
+    if (s === 'ready') return '진행중';
+    return '검증 전';
+  };
+
+  const mapTicketPriority = (p) => {
+    if (p === 'high' || p === 'urgent') return '높음';
+    if (p === 'low') return '낮음';
+    return '보통';
+  };
+
+  const mapMeetingActionItem = (item, project, meeting, index) => ({
+    id: item.id || `${meeting.id || meeting.title}-action-${index + 1}`,
+    title: item.title || item.text || "해야 할 일",
+    text: item.text || item.title || "해야 할 일",
+    description: item.description || meeting.summary || "",
+    priority: item.priority || "보통",
+    projectKey: project.id,
+    projectName: project.name,
+    projectColor: project.color || "#0099CC",
+    assignee: item.assignee || "",
+    assignees: Array.isArray(item.assignees) && item.assignees.length > 0
+      ? item.assignees
+      : item.assignee ? [item.assignee] : [],
+    avatar: "user",
+    status: item.status === "연동완료" ? "연동 완료" : item.status === "검토완료" ? "진행중" : item.status || "검증 전",
+    dueDate: item.dueDate || item.due || "",
+    meetingDate: meeting.date || meeting.created_at?.slice?.(0, 10) || "",
+    contextTime: item.contextTime || "",
+    jiraLink: item.externalLink || item.jiraLink || "",
+    source: item.source || meeting.title || "",
+  });
+
+  const readLocalManualActionItems = (projectList) => {
+    const projectMap = new Map(projectList.map((project) => [String(project.id), project]));
+    const overrides = readJsonObject(PROJECT_OVERRIDE_STORAGE_KEY);
+    const manualRecords = readJsonObject(MANUAL_MEETING_RECORDS_KEY);
+
+    const overrideItems = Object.entries(overrides).flatMap(([projectId, override]) => {
+      const project = projectMap.get(String(projectId));
+      if (!project || !Array.isArray(override?.myActionItems)) return [];
+      return override.myActionItems.map((item, index) =>
+        mapMeetingActionItem(item, project, { id: `local-${projectId}`, title: item.source || "직접 작성 회의록" }, index)
+      );
+    });
+
+    const manualItems = Object.values(manualRecords).flatMap((record) => {
+      const project = projectMap.get(String(record?.projectId || ""));
+      if (!project || !Array.isArray(record?.actions)) return [];
+      return record.actions.map((item, index) =>
+        mapMeetingActionItem(
+          {
+            ...item,
+            id: `${record.id || "manual"}-action-${index + 1}`,
+            title: item.text,
+            description: item.description,
+            status: item.checked ? "연동 완료" : "검증 전",
+            source: record.title,
+            projectId: record.projectId,
+            projectName: record.projectName,
+          },
+          project,
+          record,
+          index
+        )
+      );
+    });
+
+    return [...overrideItems, ...manualItems];
+  };
+
+  useEffect(() => {
+    if (!user || userAliases.length === 0) {
+      setActionItems([]);
+      return;
+    }
+
+    listProjects()
+      .then((projectList) => {
+        const rawProjects = Array.isArray(projectList) ? projectList : [];
+        setProjects(rawProjects);
+        return Promise.all(
+          rawProjects.map((p) =>
+            Promise.all([
+              listProjectTickets(p.id).catch(() => []),
+              listProjectMeetings(p.id).catch(() => []),
+            ]).then(([tickets, meetings]) => ({
+              project: p,
+              tickets: Array.isArray(tickets) ? tickets : [],
+              meetings: Array.isArray(meetings) ? meetings : [],
+            }))
+              .catch(() => ({ project: p, tickets: [], meetings: [] }))
+          )
+        ).then((results) => ({ rawProjects, results }));
+      })
+      .then(({ rawProjects, results }) => {
+        const myItems = results.flatMap(({ project, tickets }) =>
+          tickets
+            .map((t) => ({
+              id: t.id,
+              title: t.title,
+              description: t.description || '',
+              priority: mapTicketPriority(t.priority),
+              projectKey: project.id,
+              projectName: project.name,
+              projectColor: project.color || '#0099CC',
+              assignee: t.assignee || '',
+              assignees: t.assignee ? [t.assignee] : [],
+              avatar: 'user',
+              status: mapTicketStatus(t.status),
+              dueDate: t.due_at ? t.due_at.slice(0, 10) : '',
+              meetingDate: t.created_at ? t.created_at.slice(0, 10) : '',
+              contextTime: '',
+              jiraLink: t.external_syncs?.find((s) => s.provider === 'jira')?.external_url || '',
+            }))
+        );
+        const meetingItems = results.flatMap(({ project, meetings }) =>
+          meetings.flatMap((meeting) =>
+            (Array.isArray(meeting.action_items) ? meeting.action_items : [])
+              .map((item, index) => mapMeetingActionItem(item, project, meeting, index))
+          )
+        );
+        const localItems = readLocalManualActionItems(rawProjects);
+        const merged = [...myItems, ...meetingItems, ...localItems]
+          .filter((item) => isAssignedToMe(item, userAliases));
+        const seen = new Set();
+        setActionItems(merged.filter((item) => {
+          const key = String(item.id || `${item.projectKey}-${item.title}-${item.assignee}`);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }));
+      })
+      .catch(() => {});
+  }, [user, userAliases]);
 
   const handleLogout = () => {
     setUser(null);
@@ -976,9 +1007,11 @@ export default function App() {
           id: Date.now(),
           title: `[보안 마스킹 가동] 신규 업로드된 ${uploadFile?.name || "회의록"} 기반 자동 태스크`,
           priority: "높음",
-          projectKey: "TIKI",
-          assignee: CURRENT_USER_NAME,
-          assignees: [CURRENT_USER_NAME],
+          projectKey: projects[0]?.id || '',
+          projectName: projects[0]?.name || '',
+          projectColor: projects[0]?.color || '#0099CC',
+          assignee: user?.name || '나',
+          assignees: [user?.name || '나'],
           avatar: "user",
           status: "검증 전",
           dueDate: "2026-06-25",
@@ -1009,16 +1042,16 @@ export default function App() {
   const isAnyFilterActive = statusFilter !== "전체" || projectFilter !== "전체" || searchQuery.trim() !== "";
 
   const filteredItems = useMemo(() => {
-    const byAssignee = actionItems.filter((item) => isAssignedToMe(item));
+    const byAssignee = actionItems.filter((item) => isAssignedToMe(item, userAliases));
     const byStatus = statusFilter === "전체" ? byAssignee : byAssignee.filter((item) => item.status === statusFilter);
     const byProject = projectFilter === "전체" ? byStatus : byStatus.filter((item) => item.projectKey === projectFilter);
     const query = searchQuery.trim().toLowerCase();
     if (!query) return byProject;
     return byProject.filter((item) => {
-      const haystack = [item.title, item.assignee, ...(item.assignees || []), PROJECTS[item.projectKey]?.name || ""].join(" ").toLowerCase();
+      const haystack = [item.title, item.assignee, ...(item.assignees || []), item.projectName || ""].join(" ").toLowerCase();
       return haystack.includes(query);
     });
-  }, [actionItems, statusFilter, projectFilter, searchQuery]);
+  }, [actionItems, statusFilter, projectFilter, searchQuery, userAliases]);
 
   const groupedByProject = useMemo(() => {
     const groups = {};
@@ -1033,24 +1066,24 @@ export default function App() {
         return aDone - bDone;
       });
     });
-    return Object.keys(PROJECTS)
+    return Object.keys(groups)
       .filter((key) => groups[key] && groups[key].length > 0)
       .map((key) => ({ projectKey: key, items: groups[key] }));
   }, [filteredItems]);
 
   const firstName = user?.name || "사용자";
-  const myPendingCount = actionItems.filter((item) => item.status !== "연동 완료" && isAssignedToMe(item)).length;
+  const myPendingCount = actionItems.filter((item) => item.status !== "연동 완료" && isAssignedToMe(item, userAliases)).length;
 
   const myActiveItems = useMemo(() => {
     const priorityWeight = { "높음": 3, "보통": 2, "낮음": 1 };
     return actionItems
-      .filter((item) => isAssignedToMe(item) && item.status !== "연동 완료")
+      .filter((item) => isAssignedToMe(item, userAliases) && item.status !== "연동 완료")
       .sort((a, b) => {
         const weightDiff = (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
         if (weightDiff !== 0) return weightDiff;
         return new Date(a.dueDate) - new Date(b.dueDate);
       });
-  }, [actionItems]);
+  }, [actionItems, userAliases]);
 
   const topPriorityItems = myActiveItems.slice(0, 2);
 
@@ -1058,7 +1091,7 @@ export default function App() {
     const priorityWeight = { "높음": 3, "보통": 2, "낮음": 1 };
     return actionItems
       .filter((item) => {
-        if (!isAssignedToMe(item) || item.status === "연동 완료") return false;
+        if (!isAssignedToMe(item, userAliases) || item.status === "연동 완료") return false;
         return getTodayOrTomorrowLabel(item.dueDate) !== null;
       })
       .sort((a, b) => {
@@ -1066,9 +1099,14 @@ export default function App() {
         if (weightDiff !== 0) return weightDiff;
         return new Date(a.dueDate) - new Date(b.dueDate);
       });
-  }, [actionItems]);
+  }, [actionItems, userAliases]);
 
-  const projectFilterOptions = ["전체", ...Object.keys(PROJECTS)];
+  const getProjectMeta = (projectKey) => {
+    const p = projects.find((proj) => proj.id === projectKey);
+    return { name: p?.name || '', color: p?.color || '#0099CC' };
+  };
+
+  const projectFilterOptions = ["전체", ...projects.map((p) => p.id)];
 
   const isPanelOpen = Boolean(selectedItem);
   const isIntegratingSelected = selectedItem && integratingId === selectedItem.id;
@@ -1228,7 +1266,7 @@ export default function App() {
                                 </div>
                                 <p className="mt-1.5 text-[11px] text-[#8A9AB0] flex items-center gap-1.5 flex-wrap">
                                   <LucideIcon name="calendar" size={10} className="text-[#9AA7B8]" />
-                                  <span>출처: {MEETING_TITLES[item.projectKey]}</span>
+                                  <span>출처: {item.projectName || item.projectKey}</span>
                                   <span className="text-[#D7DEE8]">·</span>
                                   <span>{item.contextTime}</span>
                                 </p>
@@ -1316,8 +1354,8 @@ export default function App() {
                       className={`flex w-full items-center justify-between gap-1.5 rounded-xl border py-2 pl-3 pr-2.5 text-sm transition ${isProjectFilterOpen ? "border-[#0099CC]/40 bg-white shadow-[0_0_0_3px_rgba(0,153,204,0.10)]" : "border-[rgba(0,0,0,0.09)] bg-white text-[#0D1B2A] hover:border-[rgba(0,153,204,0.35)]"}`}
                     >
                       <span className="inline-flex items-center gap-2 min-w-0">
-                        {projectFilter !== "전체" && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: PROJECTS[projectFilter].color }}></span>}
-                        <span className="truncate font-medium text-[#0D1B2A]">{projectFilter === "전체" ? "프로젝트: 전체" : PROJECTS[projectFilter].name}</span>
+                        {projectFilter !== "전체" && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: getProjectMeta(projectFilter).color }}></span>}
+                        <span className="truncate font-medium text-[#0D1B2A]">{projectFilter === "전체" ? "프로젝트: 전체" : getProjectMeta(projectFilter).name}</span>
                       </span>
                       <LucideIcon name="chevronDown" size={13} className={`shrink-0 text-[#A0AFBF] transition-transform ${isProjectFilterOpen ? "rotate-180" : ""}`} />
                     </button>
@@ -1325,9 +1363,11 @@ export default function App() {
                       <div className="absolute left-0 right-0 z-20 mt-1.5 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)]">
                         {projectFilterOptions.map((key) => {
                           const isActive = projectFilter === key;
-                          const palette = key === "전체" ? { color: "#0099CC" } : PROJECTS[key];
-                          const label = key === "전체" ? "전체" : PROJECTS[key].name;
-                          const count = key === "전체" ? actionItems.filter((i) => isAssignedToMe(i)).length : actionItems.filter((i) => isAssignedToMe(i) && i.projectKey === key).length;
+                          const palette = key === "전체" ? { color: "#0099CC" } : getProjectMeta(key);
+                          const label = key === "전체" ? "전체" : getProjectMeta(key).name;
+                          const count = key === "전체"
+                            ? actionItems.filter((i) => isAssignedToMe(i, userAliases)).length
+                            : actionItems.filter((i) => isAssignedToMe(i, userAliases) && i.projectKey === key).length;
                           return (
                             <button key={key} type="button" onClick={() => { setProjectFilter(key); setIsProjectFilterOpen(false); }}
                               className={`flex w-full items-center justify-between px-3.5 py-2.5 text-sm transition-colors ${isActive ? "bg-[#F5F7FB] font-semibold text-[#0099CC]" : "text-[#0D1B2A] hover:bg-[#F5F7FB]"}`}
@@ -1359,15 +1399,14 @@ export default function App() {
               )}
 
               {groupedByProject.map(({ projectKey, items }) => {
-                const project = PROJECTS[projectKey];
-                const hideTikiGroupHeader = projectKey === "TIKI";
+                const projectMeta = getProjectMeta(projectKey);
                 return (
                   <section key={projectKey}>
                     <div className="mb-3 flex items-center gap-2">
-                      {!hideTikiGroupHeader && <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: project.color }}></span>}
-                      {!hideTikiGroupHeader && <span className="text-sm font-bold text-[#0D1B2A]">{project.name}</span>}
-                      {!hideTikiGroupHeader && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: project.bg, color: project.color }}>{items.length}개</span>
+                      {projectMeta.name && <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: projectMeta.color }}></span>}
+                      {projectMeta.name && <span className="text-sm font-bold text-[#0D1B2A]">{projectMeta.name}</span>}
+                      {projectMeta.name && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: `${projectMeta.color}22`, color: projectMeta.color }}>{items.length}개</span>
                       )}
                     </div>
 
@@ -1394,9 +1433,9 @@ export default function App() {
                                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: STATUS_DOT[item.status] || "#94A3B8" }}></span>
                                 <span className="text-[11px] font-medium text-[#6B7280]">{getStatusLabel(item.status)}</span>
                               </div>
-                              {item.projectKey === "TIKI" && (
+                              {item.projectName && (
                                 <div className="mb-1 inline-flex items-center gap-1.5">
-                                  <span className="text-[12px] font-normal text-[#9CA3AF]">프로젝트명: TIKI 앱 개발</span>
+                                  <span className="text-[12px] font-normal text-[#9CA3AF]">프로젝트명: {item.projectName}</span>
                                 </div>
                               )}
                               <h4 className={`text-[15px] font-bold leading-snug transition-colors ${isSelected ? "text-[#0099CC]" : "text-[#111827]"}`}>
@@ -1568,15 +1607,15 @@ export default function App() {
                   {/* 프로젝트 + 출처 배지 */}
                   <div className="rounded-2xl border border-[rgba(0,100,180,0.12)] bg-[#F8FAFF] p-3.5">
                     <div className="flex flex-wrap items-center gap-2 mb-2">
-                      {PROJECTS[selectedItem.projectKey] && (
+                      {selectedItem.projectName && (
                         <span
                           className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#EEF3FF] text-[#0099CC]"
                         >
-                          #{PROJECTS[selectedItem.projectKey].name}
+                          #{selectedItem.projectName}
                         </span>
                       )}
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#5A6F8A] bg-white border border-[rgba(0,100,180,0.12)] px-2.5 py-1 rounded-full">
-                        출처: {MEETING_TITLES[selectedItem.projectKey]}
+                        출처: {selectedItem.projectName || '회의록'}
                       </span>
                     </div>
                     <p className="text-xs text-[#5A6F8A]">타임스탬프: {selectedItem.meetingDate} {selectedItem.contextTime}</p>
@@ -1668,18 +1707,28 @@ export default function App() {
                       </button>
                       {isAssigneeOpen && (
                         <div className="absolute left-0 right-0 z-20 bottom-full mb-1.5 overflow-hidden rounded-xl border border-[rgba(0,0,0,0.08)] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)]">
-                          {TEAM_MEMBERS.map((m) => {
-                            const isSelected = editForm.assignee === m.name;
-                            return (
-                              <button key={m.name} type="button"
-                                onClick={() => { setEditForm({ ...editForm, assignee: m.name }); setIsAssigneeOpen(false); }}
-                                className={`flex w-full items-center justify-between px-3.5 py-2.5 text-sm transition-colors cursor-pointer ${isSelected ? "bg-[#F5F7FB] font-semibold text-[#0099CC]" : "text-[#0D1B2A] hover:bg-[#F5F7FB]"}`}
-                              >
-                                <span>{m.name}</span>
-                                {isSelected && <LucideIcon name="check" size={13} className="text-[#0099CC]" />}
-                              </button>
+                          {(() => {
+                            const currentProject = projects.find((p) => p.id === selectedItem?.projectKey);
+                            const memberNames = Array.isArray(currentProject?.members)
+                              ? currentProject.members.map((m) => m?.name || m?.email || '').filter(Boolean)
+                              : [];
+                            const ownerName = currentProject?.owner?.name || currentProject?.team_lead || '';
+                            const allNames = [...new Set([ownerName, ...memberNames].filter(Boolean))];
+                            return allNames.length > 0 ? allNames.map((name) => {
+                              const isSelected = editForm.assignee === name;
+                              return (
+                                <button key={name} type="button"
+                                  onClick={() => { setEditForm({ ...editForm, assignee: name }); setIsAssigneeOpen(false); }}
+                                  className={`flex w-full items-center justify-between px-3.5 py-2.5 text-sm transition-colors cursor-pointer ${isSelected ? "bg-[#F5F7FB] font-semibold text-[#0099CC]" : "text-[#0D1B2A] hover:bg-[#F5F7FB]"}`}
+                                >
+                                  <span>{name}</span>
+                                  {isSelected && <LucideIcon name="check" size={13} className="text-[#0099CC]" />}
+                                </button>
+                              );
+                            }) : (
+                              <div className="px-3.5 py-2.5 text-sm text-[#9AA7B8]">멤버 없음</div>
                             );
-                          })}
+                          })()}
                         </div>
                       )}
                     </div>

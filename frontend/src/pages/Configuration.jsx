@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
+import { inviteProjectMember } from '../api/apiClient';
 
 const icons = {
   save: ["M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z", "M17 21v-8H7v8", "M7 3v5h8"],
@@ -67,17 +68,6 @@ const avatarPalette = ['bg-sky-500', 'bg-violet-500', 'bg-amber-500', 'bg-emeral
 
 const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
 
-const MEMBER_DIRECTORY = [
-  { name: '정아름', email: 'areum.jung@tiki.ai', role: 'PM' },
-  { name: '김민수', email: 'minsu.kim@tiki.ai', role: 'Backend' },
-  { name: '송지영', email: 'jiyoung.song@tiki.ai', role: 'PM' },
-  { name: '김소현', email: 'sohyun.kim@tiki.ai', role: 'ML Engineer' },
-  { name: '채하율', email: 'hayul.chae@tiki.ai', role: 'Frontend' },
-  { name: '박디자이너', email: 'designer.park@tiki.ai', role: 'Designer' },
-  { name: '외부리서처A', email: 'researcher.a@external.com', role: 'QA' },
-  { name: '정다은', email: 'daeun.jung@tiki.ai', role: 'QA' },
-  { name: '한유진', email: 'yujin.han@tiki.ai', role: 'Designer' },
-];
 
 const TOAST_COLORS = {
   info: '#0099CC',
@@ -267,32 +257,30 @@ const Configuration = () => {
     toastTimerRef.current = window.setTimeout(() => setToast({ message: '', type: 'info' }), 2200);
   };
 
-  const matchedMembers = useMemo(() => {
-    const q = inviteQuery.trim().toLowerCase();
-    if (!q) return [];
-    return MEMBER_DIRECTORY
-      .filter((member) => (
-        member.email.toLowerCase().includes(q)
-        || member.name.toLowerCase().includes(q)
-      ))
-      .slice(0, 6);
-  }, [inviteQuery]);
+  const matchedMembers = useMemo(() => [], []);
 
-  const inviteMember = (member) => {
-    if (!member) return;
+  const inviteMember = async () => {
+    const email = inviteQuery.trim().toLowerCase();
+    if (!email || !email.includes('@')) return;
 
-    setFormData((prev) => {
-      const exists = prev.participants.includes(member.name);
-      if (exists) return prev;
-      return { ...prev, participants: [...prev.participants, member.name] };
-    });
-
-    if (adminNames.length === 0) {
-      setAdminNames([member.name]);
+    const projectId = selectedProject?.id;
+    if (!projectId) {
+      showToast('프로젝트 정보가 없습니다.', 'error');
+      return;
     }
 
-    setInviteQuery('');
-    showToast(`초대 메일 발송 완료: ${member.name} (${member.email})`, 'success');
+    try {
+      await inviteProjectMember(projectId, { email, role: 'member' });
+      setFormData((prev) => {
+        const exists = prev.participants.includes(email);
+        if (exists) return prev;
+        return { ...prev, participants: [...prev.participants, email] };
+      });
+      setInviteQuery('');
+      showToast(`초대 완료: ${email}`, 'success');
+    } catch (err) {
+      showToast(err?.message || '초대에 실패했습니다.', 'error');
+    }
   };
 
   const removeParticipant = (name) => {
@@ -664,54 +652,30 @@ const Configuration = () => {
                   </div>
 
                   <div className="mt-6">
-                    <label className={labelClass}>참여 인원 추가 (이름 또는 이메일 검색)</label>
+                    <label className={labelClass}>참여 인원 추가 (이메일 입력)</label>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <div className="relative flex-1">
                         <IIcon name="userPlus" size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                         <input
                           type="email"
                           value={inviteQuery}
-                          placeholder="이메일 또는 이름 입력"
+                          placeholder="초대할 이메일 주소 입력"
                           className={`${inputClass} pl-10`}
                           onChange={(e) => setInviteQuery(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' && matchedMembers.length > 0) {
+                            if (e.key === 'Enter') {
                               e.preventDefault();
-                              inviteMember(matchedMembers[0]);
+                              inviteMember();
                             }
                           }}
                         />
-                        {inviteQuery.trim() && (
-                          <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-20 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-                            {matchedMembers.length === 0 ? (
-                              <p className="px-3.5 py-3 text-xs text-slate-400">일치하는 사용자가 없습니다.</p>
-                            ) : (
-                              matchedMembers.map((member) => (
-                                <button
-                                  key={member.email}
-                                  type="button"
-                                  onClick={() => inviteMember(member)}
-                                  className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-3.5 py-2.5 text-left last:border-b-0 hover:bg-sky-50"
-                                >
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-semibold text-slate-800 truncate">{member.name}</p>
-                                    <p className="text-xs text-slate-400 truncate">{member.email}</p>
-                                  </div>
-                                  <span className="text-[11px] font-semibold text-sky-600 shrink-0">초대</span>
-                                </button>
-                              ))
-                            )}
-                          </div>
-                        )}
                       </div>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (matchedMembers.length > 0) inviteMember(matchedMembers[0]);
-                        }}
-                        disabled={matchedMembers.length === 0}
+                        onClick={() => inviteMember()}
+                        disabled={!inviteQuery.trim().includes('@')}
                         className={`shrink-0 rounded-xl px-5 py-3 text-sm font-semibold text-white transition-colors ${
-                          matchedMembers.length > 0
+                          inviteQuery.trim().includes('@')
                             ? 'bg-sky-600 hover:bg-sky-700'
                             : 'bg-slate-300 cursor-not-allowed'
                         }`}
@@ -719,7 +683,7 @@ const Configuration = () => {
                         추가
                       </button>
                     </div>
-                    <p className="mt-1.5 text-xs text-slate-400">목록에서 사용자를 선택하면 참여 인원에 바로 추가됩니다. 실제 이메일 발송은 백엔드 연동이 붙을 때 연결하는 편이 자연스럽습니다.</p>
+                    <p className="mt-1.5 text-xs text-slate-400">이메일 주소를 입력하고 추가 버튼을 누르면 해당 사용자가 프로젝트에 초대됩니다.</p>
                   </div>
 
                   <div className="mt-6">
