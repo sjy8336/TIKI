@@ -29,6 +29,44 @@ PDF_STRING_PATTERN = re.compile(rb"\((?:\\.|[^\\()])*\)")
 PDF_OPERATORS_WITH_NEWLINE = {b"T*", b"Td", b"TD"}
 TEXT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。])\s+|\n+")
 WHITESPACE_PATTERN = re.compile(r"\s+")
+DOCUMENT_PARTICIPANT_STOPWORDS = {
+    "회의",
+    "회의록",
+    "마케팅팀",
+    "콘텐츠기획팀",
+    "디자인팀",
+    "퍼포먼스",
+    "브랜드",
+    "전원",
+    "작성자",
+    "작성",
+    "검토",
+    "승인",
+    "서명",
+    "참석",
+    "참석자",
+    "불참",
+    "병가",
+    "사전",
+    "공지",
+    "문서번호",
+    "일시",
+    "장소",
+    "배포",
+    "대상",
+    "버전",
+    "현황",
+    "구분",
+    "성명",
+    "직책",
+    "역할",
+    "비고",
+    "주재",
+    "팀장",
+    "담당",
+}
+
+DOCUMENT_PARTICIPANT_NAME_PATTERN = re.compile(r"(?<![가-힣])[가-힣]{2,4}(?![가-힣])")
 
 
 def _normalize_text(value: Any) -> str:
@@ -50,19 +88,52 @@ def _infer_document_title(pages: list[str], metadata: dict[str, Any], path: Path
     if explicit_title:
         return explicit_title
 
+    title_markers = ("문서번호", "회의일시", "작성자", "작성일", "배포 대상", "버전", "참석자 현황")
     for page in pages:
-        for line in page.splitlines():
-            candidate = _normalize_text(line)
-            if not candidate:
-                continue
-            candidate = re.sub(r"^[\s\-\*\d\.\)\(\[\]#]+", "", candidate).strip()
-            if not candidate:
-                continue
-            if len(candidate) <= 60 and not candidate.endswith((".", ":", ";")):
-                return candidate
-            break
+        candidate = _normalize_text(page)
+        if not candidate:
+            continue
+
+        for marker in title_markers:
+            if marker in candidate:
+                candidate = candidate.split(marker, 1)[0]
+                break
+
+        candidate = re.sub(r"^회\s*의\s*록\s*", "", candidate)
+        candidate = re.sub(r"^[\s\-\*\d\.\)\(\[\]#]+", "", candidate).strip()
+        candidate = re.sub(r"\s+", " ", candidate).strip(" -_/")
+        if not candidate:
+            continue
+        if len(candidate) <= 90:
+            return candidate
 
     return path.stem
+
+
+def _extract_document_participants(pages: list[str]) -> list[str]:
+    participants: list[str] = []
+    seen: set[str] = set()
+    focus_pages = pages[:2] if pages else []
+
+    for page in focus_pages:
+        for marker in ("참석", "불참", "작성자", "검토", "승인", "서명"):
+            marker_index = page.find(marker)
+            if marker_index < 0:
+                continue
+            snippet = page[max(0, marker_index - 160): marker_index + 260]
+            for token in DOCUMENT_PARTICIPANT_NAME_PATTERN.findall(snippet):
+                if token in DOCUMENT_PARTICIPANT_STOPWORDS:
+                    continue
+                if token.endswith(("팀", "록", "자", "용", "부", "안", "표", "일", "회", "록")):
+                    continue
+                if token in seen:
+                    continue
+                seen.add(token)
+                participants.append(token)
+                if len(participants) >= 20:
+                    return participants
+
+    return participants
 
 
 def _decode_pdf_literal_string(token: bytes) -> bytes:
@@ -542,6 +613,7 @@ def load_document_file(file_path: str | Path) -> DocumentExtractionResult:
     text = _normalize_paragraph("\n\n".join(page for page in pages if page.strip()))
     chunks = _split_text_into_chunks(pages)
     source_title = _infer_document_title(pages, metadata, path)
+    participants = _extract_document_participants(pages)
     masked_text = text
 
     return DocumentExtractionResult(
@@ -556,6 +628,7 @@ def load_document_file(file_path: str | Path) -> DocumentExtractionResult:
         page_count=metadata.get("page_count"),
         metadata={
             **metadata,
+            "participants": participants,
             "source_title": source_title,
             "file_extension": extension,
         },

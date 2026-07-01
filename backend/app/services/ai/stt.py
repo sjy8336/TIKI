@@ -20,12 +20,14 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 logger = logging.getLogger(__name__)
 GENERIC_SPEAKER_LABEL_PREFIX = "팀원"
-MIN_MINOR_SPEAKER_TURN_SECONDS = 4.0
-MIN_MINOR_SPEAKER_RATIO = 0.02
+# 너무 짧은 끼어들기만 기타로 보정하고, 실제 화자는 가급적 유지한다.
+MIN_MINOR_SPEAKER_TURN_SECONDS = 3.0
+MIN_MINOR_SPEAKER_RATIO = 0.015
 MIN_MINOR_SPEAKER_COUNT_TRIGGER = 5
-MIN_MINOR_SPEAKER_MULTI_TURN_SECONDS = 4.5
-MIN_MINOR_SPEAKER_MULTI_TURN_RATIO = 0.04
+MIN_MINOR_SPEAKER_MULTI_TURN_SECONDS = 4.0
+MIN_MINOR_SPEAKER_MULTI_TURN_RATIO = 0.03
 MIN_MINOR_SPEAKER_MULTI_TURN_MAX_COUNT = 2
+MIN_MINOR_SPEAKER_MERGE_GAP_SECONDS = 0.9
 LIGHT_PROFILE_MAX_DURATION_SECONDS = 90.0
 TranscriptionProfile = Literal["light", "balanced", "premium", "small", "medium", "large"]
 DEFAULT_TRANSCRIPTION_PROFILE: TranscriptionProfile = "balanced"
@@ -358,6 +360,103 @@ def _is_minor_speaker_bucket(
     return (speech_seconds / total_speech_seconds) <= MIN_MINOR_SPEAKER_RATIO
 
 
+def _find_neighbor_speaker_id(
+    ordered_turns: list[dict[str, Any]],
+    *,
+    turn_index: int,
+    direction: int,
+    skip_speaker_id: str,
+) -> tuple[str | None, float]:
+    step = -1 if direction < 0 else 1
+    probe_index = turn_index + step
+    while 0 <= probe_index < len(ordered_turns):
+        probe = ordered_turns[probe_index]
+        probe_speaker_id = str(probe.get("speaker_id") or probe.get("speaker") or probe.get("speaker_label") or "").strip()
+        if probe_speaker_id and probe_speaker_id != skip_speaker_id:
+            try:
+                if direction < 0:
+                    gap = float(ordered_turns[turn_index].get("start_seconds") or 0.0) - float(probe.get("end_seconds") or 0.0)
+                else:
+                    gap = float(probe.get("start_seconds") or 0.0) - float(ordered_turns[turn_index].get("end_seconds") or 0.0)
+            except (TypeError, ValueError):
+                gap = float("inf")
+            return probe_speaker_id, max(0.0, gap)
+        probe_index += step
+    return None, float("inf")
+
+
+def _merge_minor_speaker_bucket(
+    *,
+    minor_speaker_id: str,
+    speaker_stats: dict[str, dict[str, Any]],
+    ordered_turns: list[dict[str, Any]],
+    minor_speaker_ids: set[str],
+    speaker_merge_targets: dict[str, str],
+    active_speaker_ids: set[str],
+) -> bool:
+    minor_bucket = speaker_stats.get(minor_speaker_id)
+    if not minor_bucket:
+        return False
+
+    try:
+        speech_seconds = float(minor_bucket.get("speech_seconds") or 0.0)
+        turn_count = int(minor_bucket.get("turn_count") or 0)
+    except (TypeError, ValueError):
+        return False
+
+    if speech_seconds <= 0 or turn_count <= 0:
+        return False
+    if speech_seconds > MIN_MINOR_SPEAKER_MULTI_TURN_SECONDS or turn_count > MIN_MINOR_SPEAKER_MULTI_TURN_MAX_COUNT:
+        return False
+
+    candidate_scores: dict[str, float] = {}
+    for turn_index, turn in enumerate(ordered_turns):
+        speaker_id = str(turn.get("speaker_id") or turn.get("speaker") or turn.get("speaker_label") or "").strip()
+        if speaker_id != minor_speaker_id:
+            continue
+
+        for direction in (-1, 1):
+            neighbor_id, gap_seconds = _find_neighbor_speaker_id(
+                ordered_turns,
+                turn_index=turn_index,
+                direction=direction,
+                skip_speaker_id=minor_speaker_id,
+            )
+            if not neighbor_id or neighbor_id in minor_speaker_ids or neighbor_id not in active_speaker_ids:
+                continue
+            if gap_seconds > MIN_MINOR_SPEAKER_MERGE_GAP_SECONDS:
+                continue
+
+            score = MIN_MINOR_SPEAKER_MERGE_GAP_SECONDS - gap_seconds
+            if score <= 0:
+                continue
+            candidate_scores[neighbor_id] = candidate_scores.get(neighbor_id, 0.0) + score
+
+    if not candidate_scores:
+        return False
+
+    best_target_id, best_score = sorted(candidate_scores.items(), key=lambda item: (-item[1], item[0]))[0]
+    if best_score < 0.25:
+        return False
+
+    target_bucket = speaker_stats.get(best_target_id)
+    if not target_bucket:
+        return False
+
+    target_bucket["speech_seconds"] = float(target_bucket.get("speech_seconds") or 0.0) + speech_seconds
+    target_bucket["turn_count"] = int(target_bucket.get("turn_count") or 0) + turn_count
+    target_bucket["first_start_seconds"] = min(
+        float(target_bucket.get("first_start_seconds") or 0.0),
+        float(minor_bucket.get("first_start_seconds") or 0.0),
+    )
+    target_bucket["last_end_seconds"] = max(
+        float(target_bucket.get("last_end_seconds") or 0.0),
+        float(minor_bucket.get("last_end_seconds") or 0.0),
+    )
+    speaker_merge_targets[minor_speaker_id] = best_target_id
+    return True
+
+
 def _speaker_overlap_seconds(
     segment_start: float,
     segment_end: float,
@@ -451,14 +550,41 @@ def _attach_speaker_labels(
 
     total_speech_seconds = sum(float(bucket.get("speech_seconds") or 0.0) for bucket in speaker_stats.values())
     raw_speaker_count = len(speaker_stats)
-    minor_speaker_ids = {
+    candidate_minor_speaker_ids = {
         speaker_id
         for speaker_id, bucket in speaker_stats.items()
         if _is_minor_speaker_bucket(bucket, total_speech_seconds=total_speech_seconds, speaker_count=raw_speaker_count)
     }
-    active_speaker_ids = [speaker_id for speaker_id in ordered_speaker_ids if speaker_id not in minor_speaker_ids]
+    minor_speaker_ids = set(candidate_minor_speaker_ids)
+    merged_minor_speaker_ids: set[str] = set()
+    speaker_merge_targets: dict[str, str] = {}
+    active_speaker_id_set = set(ordered_speaker_ids) - candidate_minor_speaker_ids
+
+    for minor_speaker_id in sorted(
+        candidate_minor_speaker_ids,
+        key=lambda speaker_id: (
+            float(speaker_stats.get(speaker_id, {}).get("speech_seconds") or 0.0),
+            int(speaker_stats.get(speaker_id, {}).get("turn_count") or 0),
+            speaker_order.get(speaker_id, 10_000),
+        ),
+    ):
+        if _merge_minor_speaker_bucket(
+            minor_speaker_id=minor_speaker_id,
+            speaker_stats=speaker_stats,
+            ordered_turns=ordered_turns,
+            minor_speaker_ids=minor_speaker_ids,
+            speaker_merge_targets=speaker_merge_targets,
+            active_speaker_ids=active_speaker_id_set,
+        ):
+            merged_minor_speaker_ids.add(minor_speaker_id)
+            minor_speaker_ids.discard(minor_speaker_id)
+
+    active_speaker_ids = [speaker_id for speaker_id in ordered_speaker_ids if speaker_id not in candidate_minor_speaker_ids]
     if not active_speaker_ids and speaker_stats:
+        candidate_minor_speaker_ids = set()
         minor_speaker_ids = set()
+        merged_minor_speaker_ids = set()
+        speaker_merge_targets = {}
         active_speaker_ids = list(ordered_speaker_ids)
 
     participant_names_normalized = _normalize_participant_names(participant_names)
@@ -535,6 +661,7 @@ def _attach_speaker_labels(
 
         if best_turn is not None and best_overlap > 0:
             speaker_id = str(best_turn.get("speaker_id") or best_turn.get("speaker") or best_turn.get("speaker_label") or "")
+            speaker_id = speaker_merge_targets.get(speaker_id, speaker_id)
             if speaker_id:
                 if speaker_id in minor_speaker_ids:
                     speaker_fields = {
@@ -620,9 +747,12 @@ def _attach_speaker_labels(
         "turn_count": active_turn_count,
         "raw_speaker_count": len(speaker_stats),
         "raw_turn_count": len(speaker_turns),
+        "merged_minor_speaker_count": len(merged_minor_speaker_ids),
         "discarded_speaker_count": len(minor_speaker_ids),
         "discarded_turn_count": len(speaker_turns) - active_turn_count,
         "ignored_speaker_ids": sorted(minor_speaker_ids),
+        "merged_minor_speaker_ids": sorted(merged_minor_speaker_ids),
+        "speaker_merge_targets": dict(sorted(speaker_merge_targets.items())),
         "speakers": [speaker_display_names.get(speaker_id, speaker_aliases[speaker_id]) for speaker_id in active_speaker_ids],
         "speaker_participant_mapping": speaker_participant_mapping,
         "total_speech_seconds": round(total_speech_seconds, 3),
@@ -635,6 +765,12 @@ def _attach_speaker_labels(
             len(active_speaker_ids) - expected_participant_count if expected_participant_count else None
         ),
         "validation_status": validation_status,
+        "label_mode": "participant" if participant_names_normalized else "generic",
+        "label_strategy": (
+            "참가자 이름 목록 기준 매핑 + 짧은 화자 병합"
+            if participant_names_normalized
+            else "참가자 이름이 없으면 팀원 1, 팀원 2, 팀원 3... 순번 기반 기본 라벨로 표기하고 짧은 화자는 인접 화자와 병합"
+        ),
     }
     return annotated_segments, summary
 
@@ -684,7 +820,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
     @staticmethod
     def _resolve_compute_type_name(device_name: str, whisper_engine: str) -> str:
         if whisper_engine == WHISPER_ENGINE_FASTER:
-            return detect_whisper_runtime_config().compute_type
+            return "float16" if device_name == "cuda" else "int8"
         return "float16" if device_name == "cuda" else "float32"
 
     @staticmethod
@@ -874,6 +1010,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 if turn.get("speaker_id") or turn.get("speaker_label") or turn.get("speaker")
             }
         )
+        vad_summary = getattr(diarization_service, "_last_vad_summary", None)
         logger.info(
             "Speaker diarization finished for %s (speakers=%d, turns=%d)",
             audio_path.name,
@@ -888,12 +1025,14 @@ class WhisperSpeechToTextService(SpeechToTextService):
             "model_name": getattr(diarization_service, "model_name", None),
             "speakers": speaker_ids,
             "expected_speaker_count": expected_speaker_count if expected_speaker_count and expected_speaker_count > 0 else None,
+            **(vad_summary or {}),
         }
 
     def transcribe_with_segments_parallel(
         self,
         audio_path: str,
         n_workers: int = 2,
+        participant_names: list[str] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Parallel variant: splits audio into chunks and transcribes them concurrently.
 
@@ -1023,6 +1162,20 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 len(preprocessing.chunks),
                 preprocessing.strategy,
             )
+            speaker_turns, diarization_summary = self._diarize_audio(
+                path,
+                preprocessing=preprocessing,
+                expected_speaker_count=len(participant_names) if participant_names else None,
+            )
+            structured_segments, attachment_summary = _attach_speaker_labels(
+                structured_segments,
+                speaker_turns,
+                meeting_duration_seconds=preprocessing.duration_seconds,
+                participant_names=participant_names,
+            )
+            diarization_summary.update(attachment_summary)
+            self._last_diarization_summary = diarization_summary
+
             return " ".join(segments).strip(), structured_segments
         except Exception as exc:
             if not use_openai_fallback:
