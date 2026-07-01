@@ -918,6 +918,19 @@ def _normalize_meeting_title_value(value: Any) -> str:
     return shorten(title, width=60, placeholder="...") if title else ""
 
 
+def _is_filename_like_source_title(value: Any) -> bool:
+    title = _normalize_text_value(value)
+    if not title:
+        return True
+
+    lowered = title.lower()
+    if re.fullmatch(r"[a-z0-9._ -]+", lowered) and ("_" in lowered or "-" in lowered):
+        return True
+    if not re.search(r"[가-힣]", title) and not re.search(r"\s", title) and len(title) <= 40:
+        return True
+    return False
+
+
 def _build_meeting_title(
     *,
     transcript: str = "",
@@ -1376,6 +1389,142 @@ def _compact_next_agenda_text(text: Any, *, max_chars: int = 96) -> str:
     return cleaned if cleaned.endswith(".") else f"{cleaned}."
 
 
+def _unique_list(values: list[str], *, limit: int) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _compact_summary_text(value, max_chars=120)
+        if not cleaned:
+            continue
+        signature = cleaned.lower()
+        if signature in seen:
+            continue
+        seen.add(signature)
+        normalized.append(cleaned)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _format_korean_date_short(date_value: str | None) -> str:
+    if not date_value:
+        return "미정"
+    try:
+        parsed = datetime.fromisoformat(str(date_value)).date()
+    except ValueError:
+        return str(date_value)
+
+    weekday_map = ("월", "화", "수", "목", "금", "토", "일")
+    weekday = weekday_map[parsed.weekday()]
+    return f"{parsed.year}.{parsed.month}.{parsed.day}({weekday})"
+
+
+def _format_document_action_item(item: dict[str, Any]) -> str:
+    title = _normalize_text_value(item.get("title")) or "해야 할 일"
+    assignee = _normalize_assignee_value(item.get("assignee"))
+    due_at = _format_korean_date_short(_normalize_due_at_value(item.get("due_at")))
+    if assignee and due_at != "미정":
+        return f"* {title} {assignee} · {due_at}"
+    if assignee:
+        return f"* {title} {assignee}"
+    if due_at != "미정":
+        return f"* {title} · {due_at}"
+    return f"* {title}"
+
+
+def _build_document_summary_report(
+    *,
+    title: str,
+    summary: str,
+    keywords: list[dict[str, Any]] | None,
+    decisions: list[str] | None,
+    action_items: list[dict[str, Any]] | None,
+    issues: list[dict[str, Any]] | None,
+    next_agenda: list[str] | None,
+    key_points: list[str] | None,
+    highlights: list[str] | None,
+) -> str:
+    display_title = _normalize_meeting_title_value(title) if title else ""
+    if not display_title:
+        display_title = _compact_summary_text(title or "문서 요약", max_chars=48)
+    if not display_title:
+        display_title = "문서 요약"
+
+    keyword_texts = _unique_list(
+        [
+            _normalize_text_value(item.get("text") if isinstance(item, dict) else item)
+            for item in (keywords or [])
+        ],
+        limit=6,
+    )
+    if not keyword_texts:
+        keyword_texts = _unique_list(highlights or [], limit=6)
+
+    summary_text = _normalize_document_summary_value(summary)
+    decision_texts = _unique_list(decisions or [], limit=6)
+    issue_texts = [
+        f"* {item.get('text') or '이슈'} | {str(item.get('level', 'medium')).strip().lower()}"
+        for item in (issues or [])
+        if isinstance(item, dict) and _normalize_text_value(item.get("text"))
+    ]
+    agenda_texts = _unique_list(next_agenda or [], limit=6)
+    insight_texts = _unique_list((key_points or [])[:4], limit=4)
+
+    report_lines: list[str] = [f"[회의 요약] {display_title}", ""]
+
+    report_lines.append("핵심 키워드")
+    report_lines.append(", ".join(keyword_texts) if keyword_texts else "없음")
+    report_lines.append("")
+
+    report_lines.append("전체 요약")
+    report_lines.append(summary_text or "요약할 내용이 없습니다.")
+    report_lines.append("")
+
+    report_lines.append("주요 결정")
+    report_lines.append(f"{len(decision_texts)}건")
+    if decision_texts:
+        report_lines.extend([f"* {item}" for item in decision_texts])
+    else:
+        report_lines.append("* 없음")
+    report_lines.append("")
+
+    report_lines.append("해야 할 일")
+    report_lines.append(f"{len(action_items or [])}/{len(action_items or [])}")
+    if action_items:
+        report_lines.extend(
+            _format_document_action_item(item)
+            for item in action_items
+            if isinstance(item, dict)
+        )
+    else:
+        report_lines.append("* 없음")
+    report_lines.append("")
+
+    report_lines.append("인사이트")
+    if insight_texts:
+        report_lines.extend([f"* {item}" for item in insight_texts])
+    else:
+        report_lines.append("* 없음")
+    report_lines.append("")
+
+    report_lines.append("이슈 & 리스크")
+    report_lines.append(f"{len(issue_texts)}건")
+    if issue_texts:
+        report_lines.extend(issue_texts)
+    else:
+        report_lines.append("* 없음")
+    report_lines.append("")
+
+    report_lines.append("다음 회의 안건")
+    report_lines.append(f"{len(agenda_texts)}건")
+    if agenda_texts:
+        report_lines.extend([f"{index}. {item}" for index, item in enumerate(agenda_texts, start=1)])
+    else:
+        report_lines.append("없음")
+
+    return "\n".join(report_lines).strip()
+
+
 def _build_document_summary_payload(
     *,
     summary: str,
@@ -1384,6 +1533,7 @@ def _build_document_summary_payload(
     action_items: list[dict[str, Any]] | None = None,
     issues: list[dict[str, Any]] | None = None,
     next_agenda: list[str] | None = None,
+    meeting_title: str | None = None,
     context: Any | None = None,
 ) -> dict[str, Any]:
     source_title = _extract_source_title(context)
@@ -1432,28 +1582,45 @@ def _build_document_summary_payload(
         if text:
             key_point_candidates.append(text)
 
-    def _unique(values: list[str], limit: int) -> list[str]:
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            cleaned = _compact_summary_text(value, max_chars=120)
-            if not cleaned:
-                continue
-            signature = cleaned.lower()
-            if signature in seen:
-                continue
-            seen.add(signature)
-            normalized.append(cleaned)
-            if len(normalized) >= limit:
-                break
-        return normalized
+    normalized_keywords = _unique_list(
+        [
+            _normalize_text_value(item.get("text") if isinstance(item, dict) else item)
+            for item in (keywords or [])
+        ],
+        limit=MAX_DOCUMENT_HIGHLIGHTS,
+    )
+    normalized_decisions = _unique_list(decisions or [], limit=MAX_DOCUMENT_KEY_POINTS)
+    normalized_action_items = _normalize_action_items_value(action_items or [])
+    normalized_issues = _normalize_issues_value(issues or [])
+    normalized_next_agenda = _normalize_next_agenda_value(next_agenda or [], MAX_NEXT_AGENDA)
+    formatted_report = _build_document_summary_report(
+        title=meeting_title or source_title or "문서 요약",
+        summary=normalized_summary,
+        keywords=keywords,
+        decisions=normalized_decisions,
+        action_items=normalized_action_items,
+        issues=normalized_issues,
+        next_agenda=normalized_next_agenda,
+        key_points=_unique_list(key_point_candidates, limit=MAX_DOCUMENT_KEY_POINTS),
+        highlights=_unique_list(highlight_candidates, limit=MAX_DOCUMENT_HIGHLIGHTS),
+    )
 
     return {
         "source_kind": "document",
         "source_title": source_title or None,
         "summary": normalized_summary,
-        "highlights": _unique(highlight_candidates, MAX_DOCUMENT_HIGHLIGHTS),
-        "key_points": _unique(key_point_candidates, MAX_DOCUMENT_KEY_POINTS),
+        "keywords": normalized_keywords,
+        "decisions": normalized_decisions,
+        "action_items": normalized_action_items,
+        "issues": normalized_issues,
+        "next_agenda": normalized_next_agenda,
+        "highlights": _unique_list(highlight_candidates, limit=MAX_DOCUMENT_HIGHLIGHTS),
+        "key_points": _unique_list(key_point_candidates, limit=MAX_DOCUMENT_KEY_POINTS),
+        "decision_count": len(normalized_decisions),
+        "action_item_count": len(normalized_action_items),
+        "issue_count": len(normalized_issues),
+        "next_agenda_count": len(normalized_next_agenda),
+        "formatted_report": formatted_report,
     }
 
 
@@ -1943,6 +2110,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         if not normalized:
             document_summary = _build_document_summary_payload(
                 summary="",
+                meeting_title=None,
                 context=context,
             ) if source_kind == "document" else None
             return {
@@ -2058,10 +2226,10 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
                 action_items=action_items,
                 issues=issues,
                 next_agenda=next_agenda,
-            )
+        )
         if source_kind == "document":
             source_title = _extract_source_title(context)
-            if source_title:
+            if source_title and not _is_filename_like_source_title(source_title):
                 meeting_title = _normalize_meeting_title_value(source_title) or meeting_title
         document_summary = _build_document_summary_payload(
             summary=summary,
@@ -2070,6 +2238,7 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
             action_items=action_items,
             issues=issues,
             next_agenda=next_agenda,
+            meeting_title=meeting_title,
             context=context,
         ) if source_kind == "document" else None
 
@@ -3777,7 +3946,7 @@ class LangChainAnalysisService(LLMAnalysisService):
                 )
             if source_kind == "document":
                 source_title = _extract_source_title(context)
-                if source_title:
+                if source_title and not _is_filename_like_source_title(source_title):
                     meeting_title = _normalize_meeting_title_value(source_title) or meeting_title
             document_summary = _build_document_summary_payload(
                 summary=summary,
@@ -3786,6 +3955,7 @@ class LangChainAnalysisService(LLMAnalysisService):
                 action_items=action_items,
                 issues=normalized_issues,
                 next_agenda=normalized_next_agenda,
+                meeting_title=meeting_title,
                 context=context,
             ) if source_kind == "document" else None
 
