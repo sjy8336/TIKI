@@ -6,6 +6,7 @@ import MobileTab from '../components/MobileTab';
 import ToastPopup from '../components/toastpopup';
 
 const MANUAL_MEETING_RECORDS_KEY = 'tiki_manual_minutes_records';
+const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
 const PROJECTLIST_CHEVRON_COLOR = '#A0AFBF';
 
 const stateLabels = {
@@ -57,18 +58,51 @@ const writeManualMeetingRecords = (next) => {
   }
 };
 
+const readProjectOverrides = () => {
+  try {
+    const raw = localStorage.getItem(PROJECT_OVERRIDE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
 const formatDueDate = (raw) => {
   const value = String(raw || '').trim();
   if (!value) return '미정';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return value.replace(/-/g, '.');
-  }
-  return value;
+  return normalizeDueLabel(value) || value;
 };
 
 const formatDisplayDate = (raw) => {
   const value = String(raw || '').trim();
   if (!value) return '-';
+  return value;
+};
+
+const formatPublishedDate = (raw) => {
+  const value = String(raw || '').trim();
+  if (!value) return '-';
+
+  if (/^\d{4}년\s*\d{1,2}월\s*\d{1,2}일$/.test(value)) return value;
+
+  const ymd = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (ymd) {
+    return `${Number(ymd[1])}년 ${Number(ymd[2])}월 ${Number(ymd[3])}일`;
+  }
+
+  const mdhm = value.match(/^(\d{2})-(\d{2})\s+\d{2}:\d{2}$/);
+  if (mdhm) {
+    const year = new Date().getFullYear();
+    return `${year}년 ${Number(mdhm[1])}월 ${Number(mdhm[2])}일`;
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return `${parsed.getFullYear()}년 ${parsed.getMonth() + 1}월 ${parsed.getDate()}일`;
+  }
+
   return value;
 };
 
@@ -132,6 +166,16 @@ const parseDueToDateStr = (due) => {
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     return raw;
+  }
+
+  const dottedMatched = raw.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})$/);
+  if (dottedMatched) {
+    const year = Number(dottedMatched[1]);
+    const month = Number(dottedMatched[2]);
+    const day = Number(dottedMatched[3]);
+    if (year >= 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return toDateStr(year, month - 1, day);
+    }
   }
 
   const legacyMatched = raw.match(/^(\d{1,2})\/(\d{1,2})$/);
@@ -203,6 +247,8 @@ function LucideIcon({ name, size = 14, color = 'currentColor', strokeWidth = 2, 
       return <svg {...common}><path d="m6 9 6 6 6-6" /></svg>;
     case 'pencil':
       return <svg {...common}><path d="m16.5 3.5 4 4L8 20l-4 1 1-4 11.5-13.5Z" /></svg>;
+    case 'shield':
+      return <svg {...common}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>;
     default:
       return null;
   }
@@ -224,7 +270,7 @@ function Spinner({ size = 14, color = '#fff' }) {
   );
 }
 
-function Modal({ open, onClose, title, children, footer, maxWidth = 448, bodyOverflowY = 'auto' }) {
+function Modal({ open, onClose, title, children, footer, maxWidth = 448, bodyOverflowY = 'auto', bodyHeight }) {
   if (!open) return null;
 
   return (
@@ -244,7 +290,7 @@ function Modal({ open, onClose, title, children, footer, maxWidth = 448, bodyOve
             <LucideIcon name="x" size={16} />
           </button>
         </div>
-        <div className="px-5 py-4" style={{ overflowY: bodyOverflowY }}>{children}</div>
+        <div className="px-5 py-4" style={{ overflowY: bodyOverflowY, height: bodyHeight }}>{children}</div>
         {footer && <div className="px-5 py-4 border-t border-[rgba(0,100,180,0.08)] flex items-center justify-end gap-2">{footer}</div>}
       </div>
     </div>
@@ -521,7 +567,7 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
             <div key={`${log.time}-${idx}`} className="flex items-center gap-2 text-xs">
               <span className="text-emerald-500 flex-shrink-0"><LucideIcon name="arrow-up" size={12} /></span>
               <span className="text-slate-600 flex-1 truncate">{log.label}</span>
-              <span className="text-slate-400 flex-shrink-0">{log.time}</span>
+              <span className="text-slate-400 flex-shrink-0">{formatPublishedDate(log.time)}</span>
             </div>
           ))}
         </div>
@@ -558,6 +604,7 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
   const totalDone = services.reduce((sum, svc) => sum + svc.tickets.filter((t) => t.status === 'done').length, 0);
   const totalTickets = services.reduce((sum, svc) => sum + svc.tickets.length, 0);
   const latestLog = auditLog[auditLog.length - 1] || null;
+  const hasIssued = Boolean(latestLog);
 
   return (
     <div
@@ -570,11 +617,19 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
           <span
             className="text-xs font-bold px-2 py-0.5 rounded-full"
             style={{
-              background: totalDone === totalTickets ? 'rgba(16,185,129,0.1)' : 'rgba(0,153,204,0.1)',
-              color: totalDone === totalTickets ? '#10B981' : '#0099CC',
+              background: hasIssued
+                ? totalDone === totalTickets
+                  ? 'rgba(16,185,129,0.1)'
+                  : 'rgba(0,153,204,0.1)'
+                : 'rgba(0,153,204,0.1)',
+              color: hasIssued
+                ? totalDone === totalTickets
+                  ? '#10B981'
+                  : '#0099CC'
+                : '#0099CC',
             }}
           >
-            {totalDone}/{totalTickets} 완료
+            {hasIssued ? `${totalDone}/${totalTickets} 연동 완료` : `0/${totalTickets}`}
           </span>
         </div>
 
@@ -582,10 +637,8 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: '#10B981' }} />
             <span className="text-xs text-slate-400">
-              최근 생성일:&nbsp;
-              <span className="font-semibold text-slate-600">{latestLog.time}</span>
-              &nbsp;
-              <span className="text-slate-400">({latestLog.user})</span>
+              최근 발행일:&nbsp;
+              <span className="font-semibold text-slate-600">{formatPublishedDate(latestLog.time)}</span>
             </span>
           </div>
         )}
@@ -604,8 +657,7 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
       {isMobile && latestLog && (
         <p className="text-xs text-slate-400 mt-2.5 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
-          최근 생성일: <span className="font-semibold text-slate-600">{latestLog.time}</span>
-          &nbsp;({latestLog.user})
+          최근 발행일: <span className="font-semibold text-slate-600">{formatPublishedDate(latestLog.time)}</span>
         </p>
       )}
     </div>
@@ -901,14 +953,14 @@ function buildInitialServices(minutes) {
     id: `MAN-${idx + 1}`,
     title: item.text || '액션 아이템',
     assignee: item.assignee || '미지정',
-    status: item.checked ? 'done' : 'todo',
+    status: 'todo',
   }));
 
   const notionTickets = (baseDecisions.length > 0 ? baseDecisions : [{ text: '결정 사항 없음' }]).map((item, idx) => ({
     id: `DOC-${idx + 1}`,
     title: item.text || '결정 사항',
     assignee: '회의록',
-    status: item.checked ? 'done' : 'progress',
+    status: 'progress',
   }));
 
   return [
@@ -940,7 +992,7 @@ export default function MeetingManualDetail() {
   const [detailSvc, setDetailSvc] = useState(null);
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueStep, setIssueStep] = useState(1);
-  const [selectedIssueSvc, setSelectedIssueSvc] = useState('jira');
+  const [selectedIssueSvc, setSelectedIssueSvc] = useState('');
   const [issueCheckedItems, setIssueCheckedItems] = useState(new Set());
   const [issueMode, setIssueMode] = useState('merged');
   const [issueTitle, setIssueTitle] = useState('');
@@ -1018,11 +1070,7 @@ export default function MeetingManualDetail() {
 
   const [minutes, setMinutes] = useState(initialRecord);
   const [services, setServices] = useState(() => (initialRecord ? buildInitialServices(initialRecord) : []));
-  const [auditLog, setAuditLog] = useState(() => (
-    initialRecord
-      ? [{ svcId: 'notion', label: '직접 작성 회의록 저장', time: formatDisplayDate(initialRecord.date || initialRecord.rawDate), user: '작성자' }]
-      : []
-  ));
+  const [auditLog, setAuditLog] = useState([]);
 
   const summaryActions = useMemo(
     () => (Array.isArray(minutes?.actions) ? minutes.actions : []).map((action) => ({
@@ -1130,18 +1178,6 @@ export default function MeetingManualDetail() {
       return next;
     });
 
-    setServices((prev) =>
-      prev.map((svc) => {
-        if (svc.id !== 'jira') return svc;
-        return {
-          ...svc,
-          tickets: svc.tickets.map((ticket, idx) => {
-            if (idx !== index) return ticket;
-            return { ...ticket, status: ticket.status === 'done' ? 'todo' : 'done' };
-          }),
-        };
-      })
-    );
   }, [persistMinutes]);
 
   const backToMeetings = () => {
@@ -1164,10 +1200,8 @@ export default function MeetingManualDetail() {
   }, []);
 
   const openIssueModal = useCallback(() => {
-    setSelectedIssueSvc('jira');
-    const defaults = new Set();
-    issueActionItems.forEach((_, idx) => defaults.add(idx));
-    setIssueCheckedItems(defaults);
+    setSelectedIssueSvc('');
+    setIssueCheckedItems(new Set());
     setIssueStep(1);
     setIssueMode('merged');
     const first = issueActionItems[0];
@@ -1290,7 +1324,7 @@ export default function MeetingManualDetail() {
           id: `MAN-${idx + 1}`,
           title: item.text || '액션 아이템',
           assignee: item.assignee || '미지정',
-          status: item.checked ? 'done' : 'todo',
+          status: 'todo',
         }));
         return { ...svc, tickets };
       }
@@ -1299,7 +1333,7 @@ export default function MeetingManualDetail() {
           id: `DOC-${idx + 1}`,
           title: item.text || '결정 사항',
           assignee: '회의록',
-          status: item.checked ? 'done' : 'progress',
+          status: 'progress',
         }));
         return { ...svc, tickets };
       }
@@ -1332,7 +1366,7 @@ export default function MeetingManualDetail() {
         id: `DOC-${idx + 1}`,
         title: item.text || '결정 사항',
         assignee: '회의록',
-        status: item.checked ? 'done' : 'progress',
+        status: 'progress',
       }));
       return { ...svc, tickets };
     }));
@@ -1468,7 +1502,7 @@ export default function MeetingManualDetail() {
         id: `MAN-${idx + 1}`,
         title: item.text || '액션 아이템',
         assignee: item.assignee || '미지정',
-        status: item.checked ? 'done' : 'todo',
+        status: 'todo',
       }));
       return { ...svc, tickets };
     }));
@@ -1515,6 +1549,7 @@ export default function MeetingManualDetail() {
     if (issueCheckedItems.size === 0) return;
 
     const isMultiple = issueCheckedItems.size > 1;
+    if (!selectedIssueSvc) return;
     if (issueMode === 'merged' && isMultiple && !String(issueAssignee || '').trim()) return;
 
     setIssuing(true);
@@ -1538,8 +1573,8 @@ export default function MeetingManualDetail() {
     );
 
     const now = new Date();
-    const time = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    setAuditLog((prev) => [...prev, { svcId: targetSvc, label: `직접 작성 항목 연동 (${issueCheckedItems.size}건)`, time, user: '작성자' }]);
+    const time = `${now.getFullYear()}년 ${now.getMonth() + 1}월 ${now.getDate()}일`;
+    setAuditLog((prev) => [...prev, { svcId: targetSvc, label: `직접 작성 항목 연동 (${issueCheckedItems.size}건)`, time }]);
 
     setIssuing(false);
     setIssueOpen(false);
@@ -1571,6 +1606,34 @@ export default function MeetingManualDetail() {
   }
 
   const participants = Array.isArray(minutes.participants) ? minutes.participants : [];
+  const adminNameSet = useMemo(() => {
+    const names = new Set();
+    const pid = String(minutes?.projectId || location.state?.projectId || '').trim();
+    const overrides = readProjectOverrides();
+    const override = pid ? overrides[pid] : null;
+
+    [minutes?.admins, location.state?.projectAdmins, location.state?.project?.admins, override?.admins].forEach((source) => {
+      if (!Array.isArray(source)) return;
+      source.forEach((name) => {
+        const normalized = String(name || '').trim();
+        if (normalized && participants.includes(normalized)) names.add(normalized);
+      });
+    });
+
+    if (names.size === 0) {
+      const fallbackLead = String(
+        minutes?.teamLead
+          || location.state?.project?.teamLead
+          || override?.teamLead
+          || ''
+      ).trim();
+      if (fallbackLead && participants.includes(fallbackLead)) {
+        names.add(fallbackLead);
+      }
+    }
+
+    return names;
+  }, [location.state, minutes, participants]);
   const visibleParticipants = participants.slice(0, 4);
   const hiddenCount = Math.max(participants.length - visibleParticipants.length, 0);
   const hasRichContent = Boolean(
@@ -1735,13 +1798,13 @@ export default function MeetingManualDetail() {
             )}
 
             <div className="rounded-xl p-4 space-y-3 bg-blue-50 border border-blue-100">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-bold text-slate-800">핵심 키워드 / 전체 요약</p>
-                {isEditMode && <EditSaveButton onClick={saveSummarySection} />}
-              </div>
+              {isEditMode ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-slate-800">핵심 키워드 / 전체 요약</p>
+                    <EditSaveButton onClick={saveSummarySection} />
+                  </div>
 
-              <div>
-                {isEditMode ? (
                   <EditField label="핵심 키워드" hint="쉼표(,)로 구분해서 입력하세요">
                     <input
                       value={editDraft.keywordsInput}
@@ -1764,23 +1827,7 @@ export default function MeetingManualDetail() {
                       </div>
                     )}
                   </EditField>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {(Array.isArray(minutes.keywords) ? minutes.keywords : []).length > 0 ? (
-                      minutes.keywords.map((word) => (
-                        <span key={word} className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
-                          {String(word).startsWith('#') ? word : `#${word}`}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-xs text-slate-400">키워드가 없습니다.</span>
-                    )}
-                  </div>
-                )}
-              </div>
 
-              <div className="border-t border-blue-100 pt-3">
-                {isEditMode ? (
                   <EditField label="전체 요약">
                     <textarea
                       value={editDraft.summaryInput}
@@ -1791,10 +1838,30 @@ export default function MeetingManualDetail() {
                       style={{ fontFamily: 'inherit' }}
                     />
                   </EditField>
-                ) : (
-                  <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-line">{minutes.summary || '요약 내용이 없습니다.'}</p>
-                )}
-              </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">핵심 키워드</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(Array.isArray(minutes.keywords) ? minutes.keywords : []).length > 0 ? (
+                        minutes.keywords.map((word) => (
+                          <span key={word} className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
+                            {String(word).startsWith('#') ? word : `#${word}`}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-xs text-slate-400">키워드가 없습니다.</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-blue-100 pt-3">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">전체 요약</p>
+                    <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-line">{minutes.summary || '요약 내용이 없습니다.'}</p>
+                  </div>
+                </>
+              )}
             </div>
 
             <Divider label="협업" />
@@ -1814,7 +1881,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="주요 결정 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.decisions ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.decisions ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -1872,7 +1939,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="해야 할 일 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.actions ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.actions ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -1985,7 +2052,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="이슈 리스크 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.issues ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.issues ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -2082,7 +2149,7 @@ export default function MeetingManualDetail() {
                     className="w-7 h-7 rounded-lg text-[#5A6F8A] hover:bg-[#F8FAFF] flex items-center justify-center"
                     aria-label="다음 안건 접기/펼치기"
                   >
-                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.nextAgenda ? '' : 'rotate-180'}`} />
+                    <LucideIcon name="chevron-down" size={14} className={`transition-transform ${collapsedSections.nextAgenda ? 'rotate-180' : ''}`} />
                   </button>
                 </div>
               </div>
@@ -2158,7 +2225,8 @@ export default function MeetingManualDetail() {
         onClose={issuing ? undefined : () => setIssueOpen(false)}
         title="업무 보내기"
         maxWidth={500}
-        bodyOverflowY={issueStep === 1 ? 'hidden' : 'auto'}
+        bodyOverflowY="auto"
+        bodyHeight={isMobile ? '56vh' : '460px'}
         footer={(
           issueStep === 1 ? (
             <>
@@ -2262,9 +2330,10 @@ export default function MeetingManualDetail() {
                 보낼 업무 선택
                 {issueCheckedItems.size > 0 && <span className="ml-2 text-cyan-500 normal-case">({issueCheckedItems.size}개 선택됨)</span>}
               </p>
-              <div className="space-y-1.5 max-h-52 overflow-y-auto">
+              <div className="space-y-1.5">
                 {issueActionItems.length > 0 ? issueActionItems.map((item, idx) => {
                   const checked = issueCheckedItems.has(idx);
+                  const canSelectItem = Boolean(selectedIssueSvc);
                   return (
                     <div
                       key={`${item.text}-${idx}`}
@@ -2279,6 +2348,7 @@ export default function MeetingManualDetail() {
                       style={{
                         borderColor: checked ? 'rgba(16,185,129,0.35)' : 'rgba(0,100,180,0.12)',
                         background: checked ? '#F0FDF9' : '#fff',
+                        cursor: 'pointer',
                       }}
                     >
                       <div
@@ -2355,7 +2425,7 @@ export default function MeetingManualDetail() {
                 </span>
                 <span className="text-xs font-bold" style={{ color: '#0099CC' }}>
                   {selectedIssueSvcObj?.name} 생성 예정 · {issueCheckedItems.size}건
-                  {issueMode === 'individual' && <span className="ml-1.5 text-purple-500">→ {issueCheckedItems.size}개 티켓</span>}
+                  {issueMode === 'individual' && <span className="ml-1.5 text-purple-500">→ {issueCheckedItems.size}개 업무</span>}
                 </span>
               </div>
               <div className="space-y-1">
@@ -2542,7 +2612,9 @@ export default function MeetingManualDetail() {
               <p className="text-xs text-slate-400 mb-2">총 {participantsModalMembers.length}명 참여</p>
               <div className="space-y-2 pr-1">
                 {participantsModalMembers.length > 0 ? (
-                  participantsModalMembers.map((name, idx) => (
+                  participantsModalMembers.map((name, idx) => {
+                    const isAdmin = adminNameSet.has(name);
+                    return (
                     <div
                       key={`${name}-${idx}`}
                       className="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200"
@@ -2554,12 +2626,21 @@ export default function MeetingManualDetail() {
                         {String(name || '?').slice(0, 1)}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-slate-900 truncate">{name}</p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="text-sm font-semibold text-slate-900 truncate">{name}</p>
+                          {isAdmin && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 text-[10px] font-bold">
+                              <LucideIcon name="shield" size={9} />
+                              관리자
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-slate-400">{ROLE_MAP[name] || 'Team Member'}</p>
                       </div>
                       <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-600">참여 중</span>
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="text-sm text-[#7C8EA6]">참여자 정보가 없습니다.</p>
                 )}

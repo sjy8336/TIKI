@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import logging
+import platform
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -19,10 +21,135 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 logger = logging.getLogger(__name__)
 DIARIZATION_MERGE_GAP_SECONDS = 0.6
+TORCH_THREAD_LIMIT = 8
+VAD_MIN_SPEECH_SECONDS = 0.35
+VAD_MIN_GAP_SECONDS = 0.25
+VAD_SPEECH_PAD_SECONDS = 0.12
+VAD_SEPARATOR_SECONDS = 0.08
+VAD_FALLBACK_ENERGY_THRESHOLD = 0.01
+
+
+@dataclass(slots=True)
+class _SpeechWindow:
+    compressed_start_seconds: float
+    compressed_end_seconds: float
+    original_start_seconds: float
+    original_end_seconds: float
 
 
 def _clean_label(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _merge_intervals(intervals: list[tuple[float, float]], *, max_gap_seconds: float) -> list[tuple[float, float]]:
+    if not intervals:
+        return []
+
+    merged: list[tuple[float, float]] = []
+    for start_seconds, end_seconds in sorted(intervals, key=lambda interval: (interval[0], interval[1])):
+        if end_seconds <= start_seconds:
+            continue
+        if not merged:
+            merged.append((start_seconds, end_seconds))
+            continue
+
+        previous_start, previous_end = merged[-1]
+        if start_seconds - previous_end <= max_gap_seconds:
+            merged[-1] = (previous_start, max(previous_end, end_seconds))
+        else:
+            merged.append((start_seconds, end_seconds))
+    return merged
+
+
+def _estimate_energy_intervals(samples: np.ndarray, sample_rate: int) -> list[tuple[float, float]]:
+    if samples.size == 0:
+        return []
+
+    frame_size = max(1, int(sample_rate * 0.03))
+    hop_size = max(1, int(frame_size * 0.5))
+    active_frames: list[tuple[float, float]] = []
+
+    for start_index in range(0, max(len(samples) - frame_size + 1, 1), hop_size):
+        frame = samples[start_index : start_index + frame_size]
+        if frame.size == 0:
+            continue
+        energy = float(np.sqrt(np.mean(np.square(frame, dtype=np.float32), dtype=np.float32)))
+        if energy >= VAD_FALLBACK_ENERGY_THRESHOLD:
+            start_seconds = start_index / float(sample_rate)
+            end_seconds = min(len(samples), start_index + frame_size) / float(sample_rate)
+            active_frames.append((start_seconds, end_seconds))
+
+    return _merge_intervals(active_frames, max_gap_seconds=VAD_MIN_GAP_SECONDS)
+
+
+def _build_compacted_waveform(
+    samples: np.ndarray,
+    sample_rate: int,
+    intervals: list[tuple[float, float]],
+) -> tuple[np.ndarray, list[_SpeechWindow]]:
+    compacted_chunks: list[np.ndarray] = []
+    windows: list[_SpeechWindow] = []
+    cursor_samples = 0
+    separator_samples = max(1, int(sample_rate * VAD_SEPARATOR_SECONDS))
+    padding_samples = max(0, int(sample_rate * VAD_SPEECH_PAD_SECONDS))
+    total_intervals = len(intervals)
+
+    for index, (start_seconds, end_seconds) in enumerate(intervals):
+        start_sample = max(0, int(round(start_seconds * sample_rate)) - padding_samples)
+        end_sample = min(len(samples), int(round(end_seconds * sample_rate)) + padding_samples)
+        if end_sample <= start_sample:
+            continue
+
+        chunk = np.asarray(samples[start_sample:end_sample], dtype=np.float32)
+        if chunk.size == 0:
+            continue
+
+        compressed_start_seconds = cursor_samples / float(sample_rate)
+        compressed_end_seconds = (cursor_samples + len(chunk)) / float(sample_rate)
+        windows.append(
+            _SpeechWindow(
+                compressed_start_seconds=compressed_start_seconds,
+                compressed_end_seconds=compressed_end_seconds,
+                original_start_seconds=start_sample / float(sample_rate),
+                original_end_seconds=end_sample / float(sample_rate),
+            )
+        )
+        compacted_chunks.append(chunk)
+        cursor_samples += len(chunk)
+
+        if index < total_intervals - 1:
+            compacted_chunks.append(np.zeros(separator_samples, dtype=np.float32))
+            cursor_samples += separator_samples
+
+    if not compacted_chunks:
+        return np.asarray(samples, dtype=np.float32), []
+
+    return np.concatenate(compacted_chunks).astype(np.float32, copy=False), windows
+
+
+def _map_compacted_time_to_original(
+    time_seconds: float,
+    windows: list[_SpeechWindow],
+    *,
+    prefer: str = "start",
+) -> float:
+    if not windows:
+        return time_seconds
+
+    prefer_start = prefer != "end"
+    for index, window in enumerate(windows):
+        if window.compressed_start_seconds <= time_seconds <= window.compressed_end_seconds:
+            offset_seconds = time_seconds - window.compressed_start_seconds
+            return window.original_start_seconds + offset_seconds
+
+        if time_seconds < window.compressed_start_seconds:
+            if prefer_start:
+                return window.original_start_seconds
+            if index > 0:
+                return windows[index - 1].original_end_seconds
+            return window.original_start_seconds
+
+    return windows[-1].original_end_seconds
 
 
 def _normalize_diarization_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -114,14 +241,55 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError("torch is required for pyannote diarization but is not installed.") from exc
 
-        if torch.cuda.is_available():
+        if platform.system() == "Darwin":
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+            return "cpu"
+
+        if platform.system() in {"Windows", "Linux"} and torch.cuda.is_available():
             return "cuda"
 
-        mps = getattr(torch.backends, "mps", None)
-        if mps is not None and mps.is_available():
-            return "mps"
-
         return "cpu"
+
+    @staticmethod
+    def _configure_torch_threads() -> None:
+        try:
+            import torch
+        except ImportError:  # pragma: no cover - dependency should exist when this runs
+            return
+
+        cpu_threads = min(TORCH_THREAD_LIMIT, os.cpu_count() or TORCH_THREAD_LIMIT)
+        try:
+            torch.set_num_threads(cpu_threads)
+        except Exception:  # pragma: no cover - best effort tuning
+            logger.debug("Failed to set torch num threads", exc_info=True)
+        try:
+            torch.set_num_interop_threads(1)
+        except Exception:  # pragma: no cover - best effort tuning
+            logger.debug("Failed to set torch interop threads", exc_info=True)
+
+    @staticmethod
+    def _clear_device_cache(device_name: str) -> None:
+        try:
+            import torch
+        except ImportError:  # pragma: no cover - dependency should exist when this runs
+            return
+
+        if device_name == "cuda" and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:  # pragma: no cover - best effort cleanup
+                logger.debug("Failed to clear CUDA cache", exc_info=True)
+
+        if device_name == "mps":
+            mps = getattr(torch, "mps", None)
+            if mps is None:
+                mps = getattr(torch.backends, "mps", None)
+            if mps is not None and hasattr(mps, "empty_cache"):
+                try:
+                    mps.empty_cache()
+                except Exception:  # pragma: no cover - best effort cleanup
+                    logger.debug("Failed to clear MPS cache", exc_info=True)
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -155,12 +323,67 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
 
         return pipeline
 
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _load_silero_vad_model():
+        try:
+            from silero_vad import load_silero_vad
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "silero-vad is required for VAD-assisted diarization. Install backend dependencies to enable it."
+            ) from exc
+
+        return load_silero_vad()
+
+    def _extract_speech_windows(self, samples: np.ndarray, sample_rate: int) -> tuple[np.ndarray, list[_SpeechWindow]]:
+        if samples.size == 0:
+            return np.asarray(samples, dtype=np.float32), []
+
+        try:
+            from silero_vad import get_speech_timestamps
+
+            vad_model = self._load_silero_vad_model()
+            speech_timestamps = get_speech_timestamps(
+                audio=np.asarray(samples, dtype=np.float32),
+                model=vad_model,
+                sampling_rate=sample_rate,
+                threshold=0.5,
+                min_speech_duration_ms=int(VAD_MIN_SPEECH_SECONDS * 1000),
+                min_silence_duration_ms=int(VAD_MIN_GAP_SECONDS * 1000),
+                speech_pad_ms=int(VAD_SPEECH_PAD_SECONDS * 1000),
+            )
+            intervals = [
+                (timestamp["start"] / float(sample_rate), timestamp["end"] / float(sample_rate))
+                for timestamp in speech_timestamps
+                if timestamp.get("end", 0) > timestamp.get("start", 0)
+            ]
+        except Exception as exc:  # pragma: no cover - fallback path
+            logger.warning("silero-vad unavailable for diarization, falling back to energy filter: %s", exc)
+            intervals = _estimate_energy_intervals(samples, sample_rate)
+
+        intervals = _merge_intervals(intervals, max_gap_seconds=VAD_MIN_GAP_SECONDS)
+        intervals = [
+            (max(0.0, start_seconds), min(len(samples) / float(sample_rate), end_seconds))
+            for start_seconds, end_seconds in intervals
+            if end_seconds - start_seconds >= VAD_MIN_SPEECH_SECONDS
+        ]
+
+        if not intervals:
+            intervals = [(0.0, len(samples) / float(sample_rate))]
+
+        compacted_waveform, windows = _build_compacted_waveform(np.asarray(samples, dtype=np.float32), sample_rate, intervals)
+        if not windows:
+            return np.asarray(samples, dtype=np.float32), []
+
+        return compacted_waveform, windows
+
     def diarize(
         self,
         audio_path: str,
         *,
         samples: Any | None = None,
         sample_rate: int | None = None,
+        num_speakers: int | None = None,
     ) -> list[dict[str, Any]]:
         if not self.enabled:
             return []
@@ -178,35 +401,68 @@ class PyannoteSpeakerDiarizationService(SpeakerDiarizationService):
             samples = preprocessor.load_audio(path)
             sample_rate = preprocessor.sample_rate
 
-        waveform = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0)
         device_name = self._resolve_device_name()
+        self._configure_torch_threads()
         pipeline = self._load_pipeline(self.model_name, self.token, device_name)
+        compacted_samples, speech_windows = self._extract_speech_windows(np.asarray(samples, dtype=np.float32), sample_rate)
+        compacted_waveform = torch.from_numpy(np.asarray(compacted_samples, dtype=np.float32)).unsqueeze(0)
+        total_speech_seconds = sum(window.original_end_seconds - window.original_start_seconds for window in speech_windows) if speech_windows else float(len(samples) / float(sample_rate))
+        logger.info(
+            "Starting diarization inference for %s (device=%s, sample_rate=%s, waveform_shape=%s, speech_windows=%s, num_speakers=%s)",
+            path.name,
+            device_name,
+            sample_rate,
+            tuple(compacted_waveform.shape),
+            len(speech_windows) if speech_windows else 0,
+            num_speakers if num_speakers else "auto",
+        )
         try:
-            diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate})
-        except Exception as exc:
             try:
-                diarization = pipeline(str(path))
-            except Exception as path_exc:
-                raise RuntimeError(f"Failed to diarize audio with {self.model_name}: {exc}") from path_exc
+                inference_kwargs: dict[str, Any] = {}
+                if num_speakers and num_speakers > 0:
+                    inference_kwargs["num_speakers"] = num_speakers
+                with torch.inference_mode():
+                    diarization = pipeline({"waveform": compacted_waveform, "sample_rate": sample_rate}, **inference_kwargs)
+            except Exception as exc:
+                try:
+                    with torch.inference_mode():
+                        diarization = pipeline(str(path), **({"num_speakers": num_speakers} if num_speakers and num_speakers > 0 else {}))
+                except Exception as path_exc:
+                    raise RuntimeError(f"Failed to diarize audio with {self.model_name}: {exc}") from path_exc
 
-        annotation = getattr(diarization, "speaker_diarization", diarization)
-        if not hasattr(annotation, "itertracks"):
-            raise RuntimeError("Diarization pipeline returned an unsupported result type.")
+            annotation = getattr(diarization, "speaker_diarization", diarization)
+            if not hasattr(annotation, "itertracks"):
+                raise RuntimeError("Diarization pipeline returned an unsupported result type.")
 
-        turns: list[dict[str, Any]] = []
-        for turn, _track, speaker in annotation.itertracks(yield_label=True):
-            turns.append(
-                {
-                    "start_seconds": round(float(turn.start), 3),
-                    "end_seconds": round(float(turn.end), 3),
-                    "speaker_id": str(speaker),
-                }
+            turns: list[dict[str, Any]] = []
+            for turn, _track, speaker in annotation.itertracks(yield_label=True):
+                mapped_start = _map_compacted_time_to_original(float(turn.start), speech_windows, prefer="start")
+                mapped_end = _map_compacted_time_to_original(float(turn.end), speech_windows, prefer="end")
+                if mapped_end <= mapped_start:
+                    continue
+                turns.append(
+                    {
+                        "start_seconds": round(mapped_start, 3),
+                        "end_seconds": round(mapped_end, 3),
+                        "speaker_id": str(speaker),
+                    }
+                )
+
+            logger.info(
+                "Diarization inference completed for %s (turns=%d, speakers=%d, speech_seconds=%.3f, original_seconds=%.3f)",
+                path.name,
+                len(turns),
+                len({turn["speaker_id"] for turn in turns}),
+                total_speech_seconds,
+                len(samples) / float(sample_rate),
             )
-
-        return _normalize_diarization_turns(turns)
+            return _normalize_diarization_turns(turns)
+        finally:
+            self._clear_device_cache(device_name)
 
 
 def build_speaker_diarization_service() -> SpeakerDiarizationService:
-    if not settings.diarization_enabled:
+    enabled = bool(settings.diarization_enabled or settings.huggingface_token)
+    if not enabled:
         return NoopSpeakerDiarizationService()
-    return PyannoteSpeakerDiarizationService()
+    return PyannoteSpeakerDiarizationService(enabled=enabled)

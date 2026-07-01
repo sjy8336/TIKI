@@ -4,6 +4,11 @@ const iconPaths = {
     home: ['M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', 'M9 22V12h6v10'],
     folder: ['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'],
     plus: ['M12 5v14', 'M5 12h14'],
+    layoutTemplate: [
+        'M4 3h16a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z',
+        'M4 14h7a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z',
+        'M17 14h3a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z',
+    ],
     user: ['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z'],
 };
 
@@ -31,11 +36,24 @@ function Icon({ name, size = 20, color = 'currentColor', sw = 1.8 }) {
     );
 }
 
-const TABS = [
-    { id: 'home', icon: 'home', label: '홈', to: '/dashboard' },
-    { id: 'projects', icon: 'folder', label: '프로젝트', to: '/project-list' },
-    { id: 'upload', icon: 'plus', label: '업로드', to: '/upload' },
+const LOGGED_IN_TABS = [
+    { id: 'home', icon: 'home', label: '홈', to: '/upload', matchPaths: ['/upload'] },
+    {
+        id: 'projects',
+        icon: 'folder',
+        label: '프로젝트',
+        to: '/project-list',
+        matchPaths: ['/project-list', '/project/', '/create-project', '/meeting-create'],
+    },
+    { id: 'dashboard', icon: 'layoutTemplate', label: '대시보드', to: '/dashboard', matchPaths: ['/dashboard'] },
     { id: 'mypage', icon: 'user', label: '마이페이지', to: '/mypage' },
+];
+
+const LOGGED_OUT_TABS = [
+    { id: 'home', icon: 'home', label: '홈', to: '/onboarding', matchPaths: ['/onboarding'] },
+    { id: 'intro', icon: 'folder', label: '기능소개', to: '/landing', matchPaths: ['/landing'] },
+    { id: 'pricing', icon: 'plus', label: '요금제', to: '/subscription' },
+    { id: 'auth', icon: 'user', label: '로그인/회원가입', to: '/login', matchPaths: ['/login', '/signup'] },
 ];
 
 /**
@@ -47,36 +65,37 @@ export default function MobileTab({ active, onChange }) {
     const navigate = useNavigate();
     const location = useLocation();
     const isLoggedIn = Boolean(localStorage.getItem('tiki_access_token'));
+    const tabs = isLoggedIn ? LOGGED_IN_TABS : LOGGED_OUT_TABS;
 
-    const routeActiveTab = TABS.find((tab) => location.pathname.startsWith(tab.to))?.id;
-    const isUploadRoute = location.pathname.startsWith('/upload');
-    const activeTab = isUploadRoute && active === 'home'
-        ? 'home'
-        : (routeActiveTab ?? active ?? 'home');
+    const routeActiveTab = tabs.find((tab) => {
+        if (tab.matchPaths && tab.matchPaths.length > 0) {
+            return tab.matchPaths.some((path) => location.pathname.startsWith(path));
+        }
+        return location.pathname.startsWith(tab.to);
+    })?.id;
+    const intentTab = location.state?.mobileTab;
+    const hasIntentTab = tabs.some((tab) => tab.id === intentTab);
+    const activeTab = routeActiveTab ?? (hasIntentTab ? intentTab : undefined) ?? active ?? (isLoggedIn ? 'home' : 'intro');
 
     return (
         <div
             className="fixed inset-x-0 bottom-0 z-[100] border-t border-[rgba(0,100,180,0.12)] bg-[rgba(248,250,255,0.94)] backdrop-blur-[16px]"
             style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
         >
-            <div className="grid grid-cols-4">
-                {TABS.map((tab) => {
+            <div className="grid" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
+                {tabs.map((tab) => {
                     const isActive = activeTab === tab.id;
-                    const isUpload = tab.id === 'upload';
-                    const targetPath = tab.id === 'home'
-                        ? '/upload'
-                        : (isLoggedIn ? tab.to : '/login');
 
                     return (
                         <button
                             key={tab.id}
                             onClick={() => {
                                 onChange?.(tab.id);
-                                navigate(targetPath);
+                                navigate(tab.to);
                             }}
                             className={cn(
                                 'relative flex flex-col items-center justify-center gap-1 py-3 transition-colors duration-150 focus:outline-none',
-                                isActive ? (isUpload ? 'text-[#0099CC]' : 'text-[#0099CC]') : 'text-[#5A6F8A]'
+                                isActive ? 'text-[#0099CC]' : 'text-[#5A6F8A]'
                             )}
                         >
                             {/* 활성 인디케이터 — 상단 라인 */}
@@ -91,19 +110,15 @@ export default function MobileTab({ active, onChange }) {
                             <span
                                 className={cn(
                                     'flex items-center justify-center rounded-[10px] transition-all duration-150',
-                                    isUpload
-                                        ? cn(
-                                              'h-9 w-9',
-                                              isActive ? 'bg-[rgba(0,153,204,0.12)]' : 'bg-[rgba(0,100,180,0.06)]'
-                                          )
-                                        : cn('h-9 w-9', isActive ? 'bg-[rgba(0,153,204,0.1)]' : '')
+                                    'h-9 w-9',
+                                    isActive ? 'bg-[rgba(0,153,204,0.1)]' : ''
                                 )}
                             >
                                 <Icon
                                     name={tab.icon}
-                                    size={isUpload ? 22 : 20}
+                                    size={20}
                                     color={isActive ? '#0099CC' : '#5A6F8A'}
-                                    sw={isUpload ? 2.4 : isActive ? 2.2 : 1.8}
+                                    sw={isActive ? 2.2 : 1.8}
                                 />
                             </span>
 

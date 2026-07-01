@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import logging
+import platform
 import re
 from abc import ABC, abstractmethod
 from functools import lru_cache
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -121,6 +123,18 @@ WHISPER_ENGINE_ALIASES: dict[str, str] = {
     "faster-whisper": WHISPER_ENGINE_FASTER,
 }
 
+WhisperDevice = Literal["cuda", "cpu"]
+
+
+@dataclass(frozen=True)
+class WhisperRuntimeConfig:
+    """WhisperModel 로딩에 필요한 실행 환경 설정."""
+
+    device: WhisperDevice
+    compute_type: str
+    cpu_threads: int | None = None
+    num_workers: int | None = None
+
 
 def _normalize_transcription_profile(value: Any | None) -> TranscriptionProfile:
     normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower()
@@ -137,6 +151,34 @@ def _build_generic_speaker_label(index: int) -> str:
 def _normalize_whisper_engine(value: Any | None) -> str:
     normalized = re.sub(r"\s+", "-", str(value or "")).strip().lower()
     return WHISPER_ENGINE_ALIASES.get(normalized, WHISPER_ENGINE_AUTO)
+
+
+def _has_cuda_gpu() -> bool:
+    """NVIDIA CUDA GPU 사용 가능 여부를 확인한다."""
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    try:
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def detect_whisper_runtime_config() -> WhisperRuntimeConfig:
+    """
+    현재 하드웨어 환경에 맞는 WhisperModel 실행 설정을 반환한다.
+
+    우선순위:
+    1) macOS(Darwin) -> cpu / int8, cpu_threads=8, num_workers=4
+    2) Windows/Linux + CUDA 가능 -> cuda / float16
+    3) 그 외 -> cpu / int8, cpu_threads=8, num_workers=4
+    """
+    if platform.system() in {"Windows", "Linux"} and _has_cuda_gpu():
+        return WhisperRuntimeConfig(device="cuda", compute_type="float16")
+
+    return WhisperRuntimeConfig(device="cpu", compute_type="int8", cpu_threads=8, num_workers=4)
 
 
 class _FasterWhisperTranscriptionAdapter:
@@ -624,28 +666,13 @@ class WhisperSpeechToTextService(SpeechToTextService):
 
     @staticmethod
     def _resolve_device_name() -> str:
-        try:
-            import torch
-        except ImportError as exc:  # pragma: no cover - dependency should exist in backend env
-            raise RuntimeError("torch is required for Whisper transcription but is not installed.") from exc
-
-        if torch.cuda.is_available():
-            return "cuda"
-
-        mps = getattr(torch.backends, "mps", None)
-        if mps is not None and mps.is_available():
-            return "mps"
-
-        return "cpu"
+        return detect_whisper_runtime_config().device
 
     @staticmethod
     def _resolve_whisper_engine_name(device_name: str) -> str:
         configured = _normalize_whisper_engine(settings.whisper_engine)
         if configured != WHISPER_ENGINE_AUTO:
             return configured
-
-        if device_name == "mps":
-            return WHISPER_ENGINE_OPENAI
 
         try:
             import faster_whisper  # noqa: F401
@@ -657,9 +684,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
     @staticmethod
     def _resolve_compute_type_name(device_name: str, whisper_engine: str) -> str:
         if whisper_engine == WHISPER_ENGINE_FASTER:
-            if device_name == "cuda":
-                return "float16"
-            return "int8"
+            return detect_whisper_runtime_config().compute_type
         return "float16" if device_name == "cuda" else "float32"
 
     @staticmethod
@@ -676,11 +701,22 @@ class WhisperSpeechToTextService(SpeechToTextService):
                     "faster-whisper is not installed. Add it to backend requirements before using the fast STT path."
                 ) from exc
 
+            runtime = detect_whisper_runtime_config()
             compute_type = WhisperSpeechToTextService._resolve_compute_type_name(resolved_device_name, resolved_engine)
+            cpu_threads = runtime.cpu_threads if resolved_device_name == "cpu" else None
+            num_workers = runtime.num_workers if resolved_device_name == "cpu" else None
             logger.info("Loading faster-whisper model: %s", model_name)
             logger.info("Using Whisper device: %s (compute_type=%s)", resolved_device_name, compute_type)
+            model_kwargs: dict[str, Any] = {
+                "device": resolved_device_name,
+                "compute_type": compute_type,
+            }
+            if cpu_threads is not None:
+                model_kwargs["cpu_threads"] = cpu_threads
+            if num_workers is not None:
+                model_kwargs["num_workers"] = num_workers
             return _FasterWhisperTranscriptionAdapter(
-                WhisperModel(model_name, device=resolved_device_name, compute_type=compute_type),
+                WhisperModel(model_name, **model_kwargs),
                 model_name=model_name,
                 device_name=resolved_device_name,
                 compute_type=compute_type,
@@ -713,7 +749,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
             except Exception as exc:
                 if self.whisper_engine == WHISPER_ENGINE_OPENAI:
                     raise
-                logger.warning(
+                logger.error(
                     "Whisper engine '%s' failed for %s; retrying with openai-whisper: %s",
                     self.whisper_engine,
                     path.name,
@@ -754,7 +790,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
             except Exception as exc:
                 if self.whisper_engine == WHISPER_ENGINE_OPENAI:
                     raise
-                logger.warning(
+                logger.error(
                     "Whisper engine '%s' failed for %s; retrying with openai-whisper: %s",
                     self.whisper_engine,
                     path.name,
@@ -764,7 +800,11 @@ class WhisperSpeechToTextService(SpeechToTextService):
                     preprocessing,
                     whisper_engine=WHISPER_ENGINE_OPENAI,
                 )
-            speaker_turns, diarization_summary = self._diarize_audio(path, preprocessing=preprocessing)
+            speaker_turns, diarization_summary = self._diarize_audio(
+                path,
+                preprocessing=preprocessing,
+                expected_speaker_count=len(participant_names) if participant_names else None,
+            )
             segments, attachment_summary = _attach_speaker_labels(
                 segments,
                 speaker_turns,
@@ -790,6 +830,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
         audio_path: Path,
         *,
         preprocessing: AudioPreprocessingResult | None = None,
+        expected_speaker_count: int | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         diarization_service = self._get_diarization_service()
         if diarization_service is None:
@@ -801,11 +842,21 @@ class WhisperSpeechToTextService(SpeechToTextService):
             }
 
         try:
-            speaker_turns = diarization_service.diarize(
-                str(audio_path),
-                samples=getattr(preprocessing, "samples", None),
-                sample_rate=getattr(preprocessing, "sample_rate", None),
-            )
+            logger.info("Starting speaker diarization for %s", audio_path.name)
+            diarize_kwargs = {
+                "samples": getattr(preprocessing, "samples", None),
+                "sample_rate": getattr(preprocessing, "sample_rate", None),
+            }
+            if expected_speaker_count and expected_speaker_count > 0:
+                diarize_kwargs["num_speakers"] = expected_speaker_count
+
+            try:
+                speaker_turns = diarization_service.diarize(str(audio_path), **diarize_kwargs)
+            except TypeError as exc:
+                if "num_speakers" not in str(exc):
+                    raise
+                diarize_kwargs.pop("num_speakers", None)
+                speaker_turns = diarization_service.diarize(str(audio_path), **diarize_kwargs)
         except Exception as exc:
             logger.warning("Speaker diarization skipped for %s: %s", audio_path.name, exc)
             return [], {
@@ -823,6 +874,12 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 if turn.get("speaker_id") or turn.get("speaker_label") or turn.get("speaker")
             }
         )
+        logger.info(
+            "Speaker diarization finished for %s (speakers=%d, turns=%d)",
+            audio_path.name,
+            len(speaker_ids),
+            len(speaker_turns),
+        )
         return speaker_turns, {
             "enabled": True,
             "status": "applied" if speaker_turns else "empty",
@@ -830,6 +887,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
             "turn_count": len(speaker_turns),
             "model_name": getattr(diarization_service, "model_name", None),
             "speakers": speaker_ids,
+            "expected_speaker_count": expected_speaker_count if expected_speaker_count and expected_speaker_count > 0 else None,
         }
 
     def transcribe_with_segments_parallel(
@@ -873,6 +931,11 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 device_name=self.device_name,
             )
             if use_openai_fallback and any(raw.get("error") for raw in raw_results.values()):
+                logger.error(
+                    "Parallel Whisper engine '%s' failed for %s; retrying with openai-whisper",
+                    self.whisper_engine,
+                    path.name,
+                )
                 raise RuntimeError("parallel transcription failed for one or more chunks")
 
             # Assemble results in chunk order with the same filtering logic used
@@ -1039,7 +1102,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 logger.debug("Failed to clear MPS cache", exc_info=True)
 
     def _get_diarization_service(self):
-        if not settings.diarization_enabled:
+        if not (settings.diarization_enabled or settings.huggingface_token):
             return None
         if self._diarization_service is None:
             from app.services.ai.diarization import build_speaker_diarization_service

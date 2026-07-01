@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
+import ToastPopup from "../components/toastpopup";
 import { clearAuthSession } from "../api/apiClient";
 
 /* ─── 데이터 ─────────────────────────────────────────── */
@@ -101,7 +102,7 @@ const SUMMARY_DATA = {
   actions: [
     { text: "STT 응답 속도 벤치마크 문서 작성",       assignee: "김지훈",  due: "6/18", status: "todo" },
     { text: "화자 분리 모델 정확도 테스트 결과 공유", assignee: "박소현",  due: "6/20", status: "todo" },
-    { text: "Jira API 연동 PoC 완료",                 assignee: "이민준",  due: null,   status: "done" },
+    { text: "Jira API 연동 PoC 완료",                 assignee: "이민준",  due: "6/17", status: "done" },
     { text: "업로드 UI 사용자 테스트 세션 진행",      assignee: "최아로미", due: "6/25", status: "todo" },
   ],
   issues: [
@@ -161,6 +162,10 @@ function fmtAuditTime(dateStr) {
   }
 
   return raw;
+}
+
+function isGeneratedAuditLog(log) {
+  return /^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(String(log?.time || "").trim());
 }
 
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -281,10 +286,24 @@ function normalizeInlineAgendaDateLabel(text) {
   });
 }
 
-function formatNextAgendaItem(item) {
+function normalizeFullDateLabel(text) {
+  const normalized = normalizeInlineAgendaDateLabel(text);
+  return normalized.replace(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/g, (matched, month, day, offset, input) => {
+    const prefix = input.slice(Math.max(0, offset - 8), offset);
+    if (/\d{4}년\s*$/.test(prefix)) return matched;
+    const dateStr = parseDueToDateStr(`${month}/${day}`);
+    return dateStr ? formatDueFromDateStr(dateStr) : matched;
+  });
+}
+
+function normalizeMobileAgendaDateLabel(text) {
+  return normalizeFullDateLabel(text);
+}
+
+function formatNextAgendaItem(item, useMobileFormat = false) {
   const topic = (item?.topic || "").trim();
   if (!topic) return "";
-  return normalizeInlineAgendaDateLabel(topic);
+  return useMobileFormat ? normalizeMobileAgendaDateLabel(topic) : normalizeInlineAgendaDateLabel(topic);
 }
 
 function DueDateCalendar({ value, onSelect, onClose, placement = "bottom" }) {
@@ -599,17 +618,6 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
             </div>
           </div>
 
-          {/* 모바일: 게이지 옆에 미니 통계 */}
-          <div className="flex md:hidden flex-col gap-1.5">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
-              <span className="text-slate-500">완료 <b className="text-slate-800">{done}</b></span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "#CBD5E1" }} />
-              <span className="text-slate-500">남음 <b className="text-slate-800">{remaining}</b></span>
-            </div>
-          </div>
         </div>
 
         {/* 구분선 (데스크탑) — 좌우 형제와의 거리는 부모의 gap-10이 동일하게 처리 */}
@@ -675,56 +683,29 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
   );
 }
 
-/* ─── Toast ──────────────────────────────────────────── */
-function Toast({ msg, color }) {
-  if (!msg) return null;
-  return (
-    <div
-      className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 w-fit max-w-[calc(100vw-2rem)] px-4 py-2.5 rounded-full text-white text-xs font-semibold shadow-lg pointer-events-none whitespace-nowrap overflow-hidden text-ellipsis"
-      style={{ background: color }}
-    >
-      {msg}
-    </div>
-  );
-}
-
 /* ─── Modal Wrapper ──────────────────────────────────── */
-function Modal({ open, onClose, title, children, footer, maxWidth = 448, bodyOverflowY = "auto" }) {
+function Modal({ open, onClose, title, children, footer, maxWidth = 448, bodyOverflowY = "auto", bodyHeight }) {
   if (!open) return null;
+
   return (
     <div
       className="fixed inset-0 z-50 flex justify-center p-4"
-      style={{
-        alignItems: "center",
-        paddingBottom: "76px",
-      }}
+      style={{ alignItems: "center", paddingBottom: "76px" }}
     >
       <div
         className="absolute inset-0"
         style={{ backdropFilter: "blur(8px)", background: "rgba(13,27,42,0.4)" }}
         onClick={onClose}
       />
-      <div
-        className="relative bg-white border border-slate-200 rounded-2xl w-full shadow-xl flex flex-col"
-        style={{
-          maxWidth,
-          maxHeight: "min(560px, calc(100vh - 92px))",
-        }}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
-          <span className="font-bold text-sm text-slate-900">{title}</span>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none cursor-pointer">
-            <LucideIcon name="x" size={18} />
+      <div className="relative self-center w-full rounded-2xl bg-white border border-[rgba(0,100,180,0.12)] shadow-[0_18px_50px_rgba(13,27,42,0.22)]" style={{ maxWidth }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[rgba(0,100,180,0.08)]">
+          <h3 className="text-base font-bold text-[#0D1B2A]">{title}</h3>
+          <button type="button" onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-[#F8FAFF] text-[#5A6F8A] flex items-center justify-center">
+            <LucideIcon name="x" size={16} />
           </button>
         </div>
-        <div className="px-6 py-5 flex-1" style={{ overflowY: bodyOverflowY }}>
-          {children}
-        </div>
-        {footer && (
-          <div className="px-6 pb-5 pt-2 flex justify-end gap-2 border-t border-slate-100 flex-shrink-0">
-            {footer}
-          </div>
-        )}
+        <div className="px-5 py-4" style={{ overflowY: bodyOverflowY, height: bodyHeight }}>{children}</div>
+        {footer && <div className="px-5 py-4 border-t border-[rgba(0,100,180,0.08)] flex items-center justify-end gap-2">{footer}</div>}
       </div>
     </div>
   );
@@ -806,9 +787,9 @@ function CustomDropdown({
 }
 
 /* ─── 연동 서비스 뱃지 (실시간 카운트 반영) ─────────── */
-function IntegrationBadge({ svc, onClick }) {
-  const done = svc.tickets.filter(t => t.status === "done").length;
+function IntegrationBadge({ svc, onClick, issuedCount }) {
   const total = svc.tickets.length;
+  const done = Math.min(Math.max(issuedCount ?? 0, 0), total);
   const isEmpty = done === 0;
   const allDone = done === total;
 
@@ -856,8 +837,12 @@ function IntegrationBadge({ svc, onClick }) {
 function ServiceDetailModal({ open, onClose, svc, auditLog }) {
   if (!svc) return null;
 
-  const done = svc.tickets.filter(t => t.status === "done").length;
-  const pct = Math.round((done / svc.tickets.length) * 100);
+  const totalTickets = svc.tickets.length;
+  const done = Math.min(
+    auditLog.filter((log) => log.svcId === svc.id && isGeneratedAuditLog(log)).length,
+    totalTickets
+  );
+  const pct = totalTickets > 0 ? Math.round((done / totalTickets) * 100) : 0;
   const statusLabel = { done: "완료", progress: "진행 중", todo: "대기" };
   const statusCls = {
     done:     "bg-emerald-100 text-emerald-700",
@@ -877,7 +862,7 @@ function ServiceDetailModal({ open, onClose, svc, auditLog }) {
       <div className="mb-4">
         <div className="flex justify-between mb-1.5">
           <span className="text-xs text-slate-400">전체 진행률</span>
-          <span className="text-xs font-bold text-slate-900">{done} / {svc.tickets.length} 완료</span>
+          <span className="text-xs font-bold text-slate-900">{done} / {totalTickets} 완료</span>
         </div>
         <div className="h-1.5 rounded-full bg-slate-100">
           <div
@@ -1036,7 +1021,7 @@ function IndividualTicketRow({ item, index }) {
 }
 
 /* ─── 2단계 발행 모달 (로딩 스피너 + 에러 핸들링 포함) ─ */
-function IssueModal({ open, onClose, onIssued, services }) {
+function IssueModal({ open, onClose, onIssued, services, isMobile }) {
   const [step, setStep] = useState(1);
   const [selectedSvc, setSelectedSvc] = useState(null);
   const [checkedItems, setCheckedItems] = useState(new Set());
@@ -1182,7 +1167,8 @@ function IssueModal({ open, onClose, onIssued, services }) {
       onClose={issuing ? undefined : handleClose}
       title="업무 보내기"
       maxWidth={500}
-      bodyOverflowY={step === 1 ? "hidden" : "auto"}
+      bodyOverflowY="auto"
+      bodyHeight={isMobile ? "56vh" : "460px"}
       footer={
         step === 1 ? (
           <>
@@ -1279,7 +1265,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                 <span className="ml-2 text-cyan-500 normal-case">({checkedItems.size}개 선택됨)</span>
               )}
             </p>
-            <div className="space-y-1.5 max-h-52 overflow-y-auto">
+            <div className="space-y-1.5">
               {ACTION_ITEMS_FOR_ISSUE.map((item, idx) => {
                 const checked = checkedItems.has(idx);
                 return (
@@ -1303,10 +1289,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-slate-800 leading-snug">{item.text}</p>
-                      <div className="mt-0.5 flex items-center justify-between gap-2">
-                        <p className="text-xs text-slate-400">{item.assignee || "미정"}</p>
-                        <span className="text-xs text-slate-400">{getDueLabel(idx)}</span>
-                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">{item.assignee || "미정"} · {getDueLabel(idx)}</p>
                     </div>
                   </div>
                 );
@@ -1433,7 +1416,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                   onBlur={e => (e.target.style.borderColor = "rgba(0,100,180,0.12)")}
                 />
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-2 gap-3">
                 <div className="min-w-0">
                   <label className="text-xs font-semibold text-slate-400 block mb-1.5">담당자</label>
                   <CustomDropdown
@@ -1460,7 +1443,7 @@ function IssueModal({ open, onClose, onIssued, services }) {
                     disabled={issuing}
                   />
                 </div>
-                <div className="min-w-0 sm:col-span-2">
+                <div className="min-w-0 col-span-2">
                   <label className="text-xs font-semibold text-slate-400 block mb-1.5">마감일</label>
                   <div ref={mergedDuePickerRef} className="relative" data-due-picker-root>
                     <button
@@ -1693,7 +1676,12 @@ function EditableDecision({ text, onSave }) {
           />
           <div className="flex gap-1.5 mt-1.5">
             <button
-              onClick={() => { onSave(val); setEditing(false); }}
+              onClick={() => {
+                const normalized = normalizeFullDateLabel(val);
+                setVal(normalized);
+                onSave(normalized);
+                setEditing(false);
+              }}
               className="text-xs font-bold px-2.5 py-1 rounded text-white bg-cyan-500"
             >
               저장
@@ -1826,7 +1814,7 @@ function Divider({ label }) {
 
 /* ─── AI Summary Panel ───────────────────────────────── */
 function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptVisible, onToggleTranscript, transcriptEnabled, isMobile, summaryCollapsed, onToggleSummary, actions, onToggleAction }) {
-  const [decisions, setDecisions] = useState(summaryData.decisions);
+  const [decisions, setDecisions] = useState((summaryData.decisions || []).map((item) => normalizeFullDateLabel(item)));
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [keywordsText, setKeywordsText] = useState("");
@@ -1852,13 +1840,18 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
   const resetEditDraft = useCallback(() => {
     setKeywordsText((summaryData.keywords || []).map((k) => k.text).join(", "));
     setSummaryText(summaryData.summary || "");
-    setDecisionsDraft([...(summaryData.decisions || [])]);
+    setDecisionsDraft((summaryData.decisions || []).map((item) => normalizeFullDateLabel(item)));
     setActionsDraft((summaryData.actions || []).map((a) => ({
       ...a,
       due: normalizeDueLabel(a.due),
     })));
     setIssuesDraft((summaryData.issues || []).map((i) => ({ ...i })));
-    setNextAgendaDraft((summaryData.next_agenda || []).map((item) => parseNextAgendaItem(item)));
+    setNextAgendaDraft(
+      (summaryData.next_agenda || []).map((item) => {
+        const parsed = parseNextAgendaItem(item);
+        return { ...parsed, topic: normalizeFullDateLabel(parsed.topic) };
+      })
+    );
   }, [summaryData]);
 
   const buildKeywordItems = useCallback(() => {
@@ -1871,7 +1864,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
 
   const buildDecisions = useCallback(() => {
     return decisionsDraft
-      .map((v) => (v || "").trim())
+      .map((v) => normalizeFullDateLabel(v || "").trim())
       .filter(Boolean);
   }, [decisionsDraft]);
 
@@ -1897,7 +1890,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
 
   const buildNextAgenda = useCallback(() => {
     return nextAgendaDraft
-      .map((v) => formatNextAgendaItem(v))
+      .map((v) => formatNextAgendaItem(v, true))
       .filter(Boolean);
   }, [nextAgendaDraft]);
 
@@ -1943,7 +1936,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
   }, [resetEditDraft]);
 
   useEffect(() => {
-    setDecisions(summaryData.decisions);
+    setDecisions((summaryData.decisions || []).map((item) => normalizeFullDateLabel(item)));
   }, [summaryData.decisions]);
 
   useEffect(() => {
@@ -2148,6 +2141,9 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                         onChange={(e) =>
                           setDecisionsDraft((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))
                         }
+                        onBlur={(e) =>
+                          setDecisionsDraft((prev) => prev.map((v, i) => (i === idx ? normalizeFullDateLabel(e.target.value) : v)))
+                        }
                         className={EDIT_INPUT_CLS}
                         style={{ fontFamily: "inherit" }}
                         placeholder={`주요 결정 ${idx + 1}`}
@@ -2329,6 +2325,9 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                           onChange={(e) =>
                             setNextAgendaDraft((prev) => prev.map((v, i) => (i === idx ? { ...v, topic: e.target.value } : v)))
                           }
+                          onBlur={(e) =>
+                            setNextAgendaDraft((prev) => prev.map((v, i) => (i === idx ? { ...v, topic: normalizeFullDateLabel(e.target.value) } : v)))
+                          }
                           className={`${EDIT_INPUT_CLS} bg-white`}
                           style={{ fontFamily: "inherit" }}
                           placeholder={`다음 회의 안건 ${idx + 1}`}
@@ -2488,7 +2487,7 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                         >
                           {i + 1}
                         </span>
-                        <p className="text-sm text-slate-800 leading-relaxed">{normalizeInlineAgendaDateLabel(item)}</p>
+                        <p className="text-sm text-slate-800 leading-relaxed">{isMobile ? normalizeMobileAgendaDateLabel(item) : normalizeInlineAgendaDateLabel(item)}</p>
                       </div>
                     ))}
                   </div>
@@ -2730,9 +2729,19 @@ function AudioPlayer({ curTime, playing, spdIdx, onSeek, onTogglePlay, onCycleSp
 
 /* ─── 연동 컨트롤 타워 ───────────────────────────────── */
 function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen, isMobile }) {
-  const totalDone = services.reduce((sum, s) => sum + s.tickets.filter(t => t.status === "done").length, 0);
   const totalTickets = services.reduce((sum, s) => sum + s.tickets.length, 0);
-  const latestLog = auditLog[auditLog.length - 1] || null;
+  const generatedLogs = auditLog.filter(isGeneratedAuditLog);
+  const generatedCountByService = generatedLogs.reduce((acc, log) => {
+    if (!log?.svcId) return acc;
+    acc[log.svcId] = (acc[log.svcId] || 0) + 1;
+    return acc;
+  }, {});
+  const totalDone = services.reduce(
+    (sum, s) => sum + Math.min(generatedCountByService[s.id] || 0, s.tickets.length),
+    0
+  );
+  const latestGeneratedLog = generatedLogs[generatedLogs.length - 1] || null;
+  const hasGenerated = Boolean(latestGeneratedLog);
 
   return (
     <div
@@ -2745,15 +2754,23 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
           <span
             className="text-xs font-bold px-2 py-0.5 rounded-full"
             style={{
-              background: totalDone === totalTickets ? "rgba(16,185,129,0.1)" : "rgba(0,153,204,0.1)",
-              color: totalDone === totalTickets ? "#10B981" : "#0099CC",
+              background: hasGenerated
+                ? totalDone === totalTickets
+                  ? "rgba(16,185,129,0.1)"
+                  : "rgba(0,153,204,0.1)"
+                : "rgba(0,153,204,0.1)",
+              color: hasGenerated
+                ? totalDone === totalTickets
+                  ? "#10B981"
+                  : "#0099CC"
+                : "#0099CC",
             }}
           >
-            {totalDone}/{totalTickets} 완료
+            {hasGenerated ? `${totalDone}/${totalTickets} 연동 완료` : `0/${totalTickets}`}
           </span>
         </div>
 
-        {!isMobile && latestLog && (
+        {!isMobile && latestGeneratedLog && (
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <span
               className="w-1.5 h-1.5 rounded-full flex-shrink-0"
@@ -2761,9 +2778,7 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
             />
             <span className="text-xs text-slate-400">
               최근 생성일:&nbsp;
-              <span className="font-semibold text-slate-600">{fmtAuditTime(latestLog.time)}</span>
-              &nbsp;
-              <span className="text-slate-400">({latestLog.user})</span>
+              <span className="font-semibold text-slate-600">{fmtAuditTime(latestGeneratedLog.time)}</span>
             </span>
           </div>
         )}
@@ -2771,7 +2786,12 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
 
       <div className="flex flex-wrap items-center gap-2">
         {services.map(svc => (
-          <IntegrationBadge key={svc.id} svc={svc} onClick={onBadgeClick} />
+          <IntegrationBadge
+            key={svc.id}
+            svc={svc}
+            onClick={onBadgeClick}
+            issuedCount={generatedCountByService[svc.id] || 0}
+          />
         ))}
 
         <div className="hidden sm:block w-px h-5 bg-slate-200 mx-1" />
@@ -2779,11 +2799,10 @@ function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen
         <IssueButton onClick={onIssueOpen} />
       </div>
 
-      {isMobile && latestLog && (
+      {isMobile && latestGeneratedLog && (
         <p className="text-xs text-slate-400 mt-2.5 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
-          최근 생성일: <span className="font-semibold text-slate-600">{fmtAuditTime(latestLog.time)}</span>
-          &nbsp;({latestLog.user})
+          최근 생성일: <span className="font-semibold text-slate-600">{fmtAuditTime(latestGeneratedLog.time)}</span>
         </p>
       )}
     </div>
@@ -2829,7 +2848,7 @@ export default function TikiSprint12() {
   const [bmFilter, setBmFilter] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   const [shownCount, setShownCount] = useState(PAGE_SIZE);
-  const [toast, setToast] = useState({ msg: "", color: "#10B981" });
+  const [toast, setToast] = useState({ show: false, message: "", type: "success" });
 
   const [services, setServices] = useState(INITIAL_INTEGRATION_SERVICES);
   const [auditLog, setAuditLog] = useState([
@@ -3011,9 +3030,9 @@ export default function TikiSprint12() {
     };
   }, [isAnyModalOpen]);
 
-  const showToast = useCallback((msg, color = "#10B981") => {
-    setToast({ msg, color });
-    setTimeout(() => setToast({ msg: "", color }), 2800);
+  const showToast = useCallback((message, type = "success") => {
+    setToast({ show: true, message, type });
+    setTimeout(() => setToast({ show: false, message: "", type }), 2200);
   }, []);
 
   useEffect(() => {
@@ -3076,7 +3095,7 @@ export default function TikiSprint12() {
     const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
     setAuditLog(prev => [...prev, { svcId, label, time: timeStr, user }]);
 
-    showToast(`[${svcName}] ${label}`, "#10B981");
+    showToast(svcName === "Jira" ? "Jira에 연동되었습니다." : "Notion에 연동되었습니다.");
   }, [showToast]);
 
   const txData = TX
@@ -3143,7 +3162,7 @@ export default function TikiSprint12() {
         user={sessionUser}
         onLogout={() => {
           clearAuthSession();
-          showToast("로그아웃 되었습니다.", "#7C3AED");
+          showToast("로그아웃 되었습니다.");
         }}
       />
 
@@ -3230,7 +3249,7 @@ export default function TikiSprint12() {
               onSaveSummaryEdit={(nextData) => {
                 setSummaryData(nextData);
                 setSummaryActions(nextData.actions.map((a) => ({ ...a })));
-                showToast("AI 요약 내용이 수정되었습니다.", "#0099CC");
+                showToast("AI 요약 내용이 수정되었습니다.");
               }}
               actions={summaryActions}
               onToggleAction={handleToggleAction}
@@ -3323,7 +3342,7 @@ export default function TikiSprint12() {
         onSeek={v => setCurTime(v)}
         onTogglePlay={() => setPlaying(p => !p)}
         onCycleSpeed={() => setSpdIdx(i => (i + 1) % SPEEDS.length)}
-        bottomOffset={isMobile ? 96 : 0}
+        bottomOffset={isMobile ? "calc(74px + env(safe-area-inset-bottom, 0px))" : 0}
       />
 
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
@@ -3340,6 +3359,7 @@ export default function TikiSprint12() {
         onClose={() => setIssueOpen(false)}
         onIssued={handleIssued}
         services={services}
+        isMobile={isMobile}
       />
 
       <Modal open={modal === "participants"} onClose={() => setModal(null)} title="회의 참여자">
@@ -3501,13 +3521,13 @@ export default function TikiSprint12() {
               keywords: nextKeywords,
             };
           });
-          showToast("다시 생성한 설정이 AI 요약에 반영되었습니다.", "#7C3AED");
+          showToast("다시 생성한 설정이 AI 요약에 반영되었습니다.");
         }}
       />
 
       {!isMobile && <Footer />}
 
-      <Toast msg={toast.msg} color={toast.color} />
+      <ToastPopup show={toast.show} message={toast.message} type={toast.type} />
     </div>
   );
 }

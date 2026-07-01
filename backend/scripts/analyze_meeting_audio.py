@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.services.ai.llm_analysis import HeuristicLLMAnalysisService
 from app.services.ai.stt import WhisperSpeechToTextService
 from app.services.ai_engine import AIEngine
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
 
 
 def _build_engine(mode: str, transcription_profile: str) -> AIEngine:
@@ -78,7 +85,9 @@ def main() -> int:
 
     engine = _build_engine(args.mode, args.profile)
     audio_paths = [str(path) for path in args.audio_paths]
+    logging.info("Starting analysis for %d file(s)", len(audio_paths))
     result = engine.process_audio(audio_paths[0]) if len(audio_paths) == 1 else engine.process_audio_batch(audio_paths)
+    logging.info("Analysis completed")
 
     audio_summary = result.analysis.extra_data.get("audio_preprocessing", {})
     stt_routing = result.analysis.extra_data.get("stt_routing", [])

@@ -11,5 +11,6 @@ openai-whisper
 faster-whisper
 openai
 pyannote.audio
+silero-vad
 langchain-core
 langchain-openai

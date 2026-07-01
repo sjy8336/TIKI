@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import Header from "../components/Header";
 import MobileTab from "../components/MobileTab";
 import Footer from "../components/Footer";
+import ToastPopup from "../components/toastpopup";
 
 /* ─── Design Tokens ───────────────────────────────────────────────────────── */
 // bg:        #F8FAFF
@@ -111,11 +112,11 @@ function Hero() {
             </div>
 
             {/* result preview — image */}
-            <div className="relative min-h-[280px] sm:min-h-[340px] overflow-hidden">
+            <div className="relative h-auto sm:h-[340px] overflow-hidden">
               <img
                 src="/images/hero-card.png"
                 alt="회의 결과 미리보기"
-                className="w-full h-full object-cover"
+                className="block w-full h-auto sm:h-full object-contain sm:object-cover sm:object-top"
               />
             </div>
           </div>
@@ -522,6 +523,7 @@ export default function TikiOnboardingPage() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth < 1024 : false
   );
+  const [toast, setToast] = useState({ show: false, message: "", type: "info" });
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -531,6 +533,20 @@ export default function TikiOnboardingPage() {
     const onResize = () => setIsMobile(window.innerWidth < 1024);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const flashToast = sessionStorage.getItem("tiki_flash_toast");
+    if (!flashToast) return;
+
+    setToast({ show: true, message: flashToast, type: "info" });
+    sessionStorage.removeItem("tiki_flash_toast");
+
+    const timer = window.setTimeout(() => {
+      setToast({ show: false, message: "", type: "info" });
+    }, 2200);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   return (
@@ -550,6 +566,7 @@ export default function TikiOnboardingPage() {
       </main>
       {!isMobile ? <Footer /> : null}
       {isMobile ? <MobileTab active="home" /> : null}
+      <ToastPopup show={toast.show} message={toast.message} type={toast.type} />
     </div>
   );
 }
