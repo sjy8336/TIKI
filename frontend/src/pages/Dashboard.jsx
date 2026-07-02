@@ -52,9 +52,20 @@ function getIntegrationLinks(item) {
   const links = item?.integrationLinks && typeof item.integrationLinks === "object" ? item.integrationLinks : {};
   const provider = String(item?.integrationProvider || item?.integrationTool || "").toLowerCase();
   const legacyLink = item?.jiraLink || item?.externalLink || "";
+  const isNotionUrl = (value) => String(value || "").toLowerCase().includes("notion");
+  const isJiraUrl = (value) => String(value || "").toLowerCase().includes("jira");
+  const hasStructuredLinks = Boolean(links.jira || links.notion);
+  const structuredJira = links.jira && !isNotionUrl(links.jira) ? links.jira : "";
+  const structuredNotion = links.notion || (links.jira && isNotionUrl(links.jira) ? links.jira : "");
+  const legacyJira = !hasStructuredLinks && (provider.includes("jira") || (!provider && item?.jiraLink))
+    ? (item?.jiraLink || item?.externalLink || "")
+    : "";
+  const legacyNotion = !hasStructuredLinks && provider.includes("notion")
+    ? legacyLink
+    : "";
   return {
-    jira: links.jira || (provider.includes("jira") ? legacyLink : item?.jiraLink || ""),
-    notion: links.notion || (provider.includes("notion") ? legacyLink : ""),
+    jira: structuredJira || (isJiraUrl(legacyJira) ? legacyJira : ""),
+    notion: structuredNotion || legacyNotion,
   };
 }
 
@@ -68,6 +79,29 @@ function getIntegrationEntries(item) {
 
 function hasExternalLink(item) {
   return getIntegrationEntries(item).length > 0;
+}
+
+function IntegrationLinkButtons({ item }) {
+  const entries = getIntegrationEntries(item);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {entries.map((entry) => (
+        <a
+          key={entry.id}
+          href={entry.url || "#"}
+          onClick={(e) => e.stopPropagation()}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-[12px] font-semibold text-[#0099CC] hover:underline"
+        >
+          <LucideIcon name={entry.id === "notion" ? "arrowUpRight" : "jira"} size={13} className="text-[#0099CC]" />
+          {entry.label} 확인
+        </a>
+      ))}
+    </div>
+  );
 }
 
 function isActionDone(item) {
@@ -385,6 +419,39 @@ function compareDueDate(left, right) {
   if (!leftDate) return 1;
   if (!rightDate) return -1;
   return leftDate - rightDate;
+}
+
+function getDashboardStatusRank(status) {
+  const label = getStatusLabel(status);
+  if (label === "검토대기") return 0;
+  if (label === "검토완료") return 1;
+  if (label === "연동완료") return 2;
+  if (label === "수행완료") return 9;
+  return 5;
+}
+
+function getDashboardDueRank(item) {
+  const due = parseDueDate(item?.dueDate || item?.due);
+  if (!due) return Number.MAX_SAFE_INTEGER;
+  return due.getTime();
+}
+
+function compareDashboardActionItems(left, right) {
+  const leftDone = isActionDone(left) ? 1 : 0;
+  const rightDone = isActionDone(right) ? 1 : 0;
+  if (leftDone !== rightDone) return leftDone - rightDone;
+
+  const dueDiff = getDashboardDueRank(left) - getDashboardDueRank(right);
+  if (dueDiff !== 0) return dueDiff;
+
+  const statusDiff = getDashboardStatusRank(left?.status) - getDashboardStatusRank(right?.status);
+  if (statusDiff !== 0) return statusDiff;
+
+  const priorityRank = { "높음": 0, "보통": 1, "낮음": 2 };
+  const priorityDiff = (priorityRank[left?.priority] ?? 1) - (priorityRank[right?.priority] ?? 1);
+  if (priorityDiff !== 0) return priorityDiff;
+
+  return String(left?.title || "").localeCompare(String(right?.title || ""), "ko");
 }
 
 function formatAssignees(assignees, fallbackName) {
@@ -806,7 +873,7 @@ export default function App() {
       integrationTool: next.integrationProvider || next.integrationTool || null,
       integrationLinks: links,
       externalLink: firstLink,
-      jiraLink: links.jira || firstLink,
+      jiraLink: links.jira || "",
       updatedAt: new Date().toISOString(),
     };
   };
@@ -1201,7 +1268,7 @@ export default function App() {
         status: targetItem?.status === "수행완료" ? "수행완료" : "연동완료",
         integrationLinks: nextLinks,
         externalLink: primaryLink,
-        jiraLink: nextLinks.jira || primaryLink,
+        jiraLink: nextLinks.jira || "",
         integrationProvider: primaryProvider,
         integrationTool: primaryProvider === "notion" ? "Notion" : "Jira",
       };
@@ -1316,45 +1383,32 @@ export default function App() {
       groups[item.projectKey].push(item);
     });
     Object.keys(groups).forEach((key) => {
-      groups[key].sort((a, b) => {
-        const aDone = isActionDone(a) ? 1 : 0;
-        const bDone = isActionDone(b) ? 1 : 0;
-        return aDone - bDone;
-      });
+      groups[key].sort(compareDashboardActionItems);
     });
     return Object.keys(groups)
       .filter((key) => groups[key] && groups[key].length > 0)
-      .map((key) => ({ projectKey: key, items: groups[key] }));
+      .map((key) => ({ projectKey: key, items: groups[key] }))
+      .sort((left, right) => compareDashboardActionItems(left.items[0], right.items[0]));
   }, [filteredItems]);
 
   const firstName = user?.name || "사용자";
   const myTotalActionCount = actionItems.filter((item) => isAssignedToMe(item, userAliases) && !isActionDone(item)).length;
 
   const myActiveItems = useMemo(() => {
-    const priorityWeight = { "높음": 3, "보통": 2, "낮음": 1 };
     return actionItems
       .filter((item) => isAssignedToMe(item, userAliases) && !isActionDone(item))
-      .sort((a, b) => {
-        const weightDiff = (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
-        if (weightDiff !== 0) return weightDiff;
-        return compareDueDate(a, b);
-      });
+      .sort(compareDashboardActionItems);
   }, [actionItems, userAliases]);
 
   const topPriorityItems = myActiveItems.slice(0, 2);
 
   const todayPriorityItems = useMemo(() => {
-    const priorityWeight = { "높음": 3, "보통": 2, "낮음": 1 };
     return actionItems
       .filter((item) => {
         if (!isAssignedToMe(item, userAliases) || isActionDone(item)) return false;
         return getTodayOrTomorrowLabel(item.dueDate) !== null;
       })
-      .sort((a, b) => {
-        const weightDiff = (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
-        if (weightDiff !== 0) return weightDiff;
-        return compareDueDate(a, b);
-      });
+      .sort(compareDashboardActionItems);
   }, [actionItems, userAliases]);
 
   const getProjectMeta = (projectKey) => {
@@ -1718,7 +1772,7 @@ export default function App() {
                               )}
                             </div>
 
-                            <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 sm:w-[180px]">
+                            <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 sm:w-[240px]">
                               {item.status !== "검토대기" && (
                                 <span className={`hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-full border ${STATUS_BADGE_CLASS[item.status] || "border-gray-300 text-gray-500"}`}>
                                   {getStatusLabel(item.status)}
@@ -1730,18 +1784,7 @@ export default function App() {
                                   <LucideIcon name="loader" size={13} className="spin-slow" />연동 중
                                 </span>
                               ) : item.status === "연동완료" ? (
-                                (() => {
-                                  const entry = getIntegrationEntries(item)[0];
-                                  const isNotion = entry?.id === "notion";
-                                  return (
-                                    <a href={entry?.url || "#"} onClick={(e) => e.stopPropagation()} target="_blank" rel="noreferrer"
-                                      className="inline-flex items-center gap-1 text-[12px] font-semibold text-[#0099CC] hover:underline"
-                                    >
-                                      <LucideIcon name={isNotion ? "arrowUpRight" : "jira"} size={13} className="text-[#0099CC]" />
-                                      {isNotion ? "Notion 확인" : "Jira 확인"}
-                                    </a>
-                                  );
-                                })()
+                                <IntegrationLinkButtons item={item} />
                               ) : item.status === "검토대기" ? (
                                 <button type="button" onClick={(e) => { e.stopPropagation(); openPanel(item); }}
                                   className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#0099CC] border border-[#0099CC]/40 hover:bg-[#0099CC] hover:text-white hover:border-[#0099CC] hover:shadow-[0_4px_12px_rgba(0,153,204,0.25)] px-2.5 py-1.5 rounded-lg transition-all duration-150"
@@ -1750,17 +1793,7 @@ export default function App() {
                                 </button>
                               ) : item.status === "수행완료" ? (
                                 hasExternalLink(item) ? (
-                                  (() => {
-                                    const entry = getIntegrationEntries(item)[0];
-                                    return (
-                                      <a href={entry?.url || "#"} onClick={(e) => e.stopPropagation()} target="_blank" rel="noreferrer"
-                                        className="inline-flex items-center gap-1 text-[12px] font-semibold text-[#0099CC] hover:underline"
-                                      >
-                                        <LucideIcon name={entry?.id === "notion" ? "arrowUpRight" : "jira"} size={13} className="text-[#0099CC]" />
-                                        {entry?.label || "외부 툴"} 확인
-                                      </a>
-                                    );
-                                  })()
+                                  <IntegrationLinkButtons item={item} />
                                 ) : (
                                   <button type="button" onClick={(e) => { e.stopPropagation(); openPanel(item); setPanelView("integrate"); }}
                                     className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#0099CC] border border-[#0099CC]/40 hover:bg-[#0099CC] hover:text-white hover:border-[#0099CC] hover:shadow-[0_4px_12px_rgba(0,153,204,0.25)] px-2.5 py-1.5 rounded-lg transition-all duration-150"

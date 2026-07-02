@@ -57,6 +57,13 @@ export async function getCurrentUser() {
   return request('/auth/me');
 }
 
+export async function updateCurrentUser(payload) {
+  return request('/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function lookupUserByEmail(email) {
   const search = new URLSearchParams({ email });
   return request(`/auth/users/lookup?${search.toString()}`);

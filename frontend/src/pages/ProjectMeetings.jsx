@@ -94,9 +94,13 @@ function getActionIntegrationLinks(item) {
     const links = item?.integrationLinks && typeof item.integrationLinks === 'object' ? item.integrationLinks : {};
     const legacyTool = String(item?.integrationTool || '').toLowerCase();
     const legacyLink = item?.externalLink || '';
+    const isNotionUrl = (value) => String(value || '').toLowerCase().includes('notion');
+    const isJiraUrl = (value) => String(value || '').toLowerCase().includes('jira');
+    const structuredJira = links.jira && !isNotionUrl(links.jira) ? links.jira : '';
+    const structuredNotion = links.notion || (links.jira && isNotionUrl(links.jira) ? links.jira : '');
     return {
-        jira: links.jira || (legacyTool === 'jira' ? legacyLink : ''),
-        notion: links.notion || (legacyTool === 'notion' ? legacyLink : ''),
+        jira: structuredJira || (legacyTool === 'jira' && isJiraUrl(legacyLink) ? legacyLink : ''),
+        notion: structuredNotion || (legacyTool === 'notion' ? legacyLink : ''),
     };
 }
 

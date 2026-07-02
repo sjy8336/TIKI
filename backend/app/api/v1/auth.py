@@ -107,8 +107,34 @@ def update_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> UserResponse:
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(current_user, field, value)
+    changes = payload.model_dump(exclude_unset=True)
+
+    if "email" in changes and changes["email"] is not None:
+        next_email = str(changes["email"]).lower().strip()
+        existing_user = db.scalar(
+            select(User).where(User.email == next_email, User.id != current_user.id)
+        )
+        if existing_user is not None:
+            raise AppException(
+                detail="Email is already registered",
+                status_code=409,
+                code="email_already_registered",
+            )
+        current_user.email = next_email
+
+    if "name" in changes and changes["name"] is not None:
+        current_user.name = str(changes["name"]).strip()
+
+    if "role" in changes:
+        current_user.role = changes["role"]
+
+    linked_members = db.scalars(
+        select(ProjectMember).where(ProjectMember.user_id == current_user.id)
+    ).all()
+    for member in linked_members:
+        member.email = current_user.email
+        member.name = current_user.name
+
     db.commit()
     db.refresh(current_user)
     return UserResponse.model_validate(current_user)

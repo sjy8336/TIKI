@@ -35,6 +35,7 @@ class UserLookupResponse(BaseModel):
 
 class UserUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
+    email: EmailStr | None = None
     role: str | None = Field(default=None, max_length=50)
 
 

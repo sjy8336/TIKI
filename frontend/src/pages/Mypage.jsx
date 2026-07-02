@@ -10,6 +10,7 @@ import {
   listProjectMeetings,
   listProjects,
   listProjectTickets,
+  updateCurrentUser,
 } from "../api/apiClient";
 import { PLANS, yearlyDiscount } from "../data/subscriptionPlans";
 
@@ -73,10 +74,14 @@ const NAV_ITEMS = [
 ];
 
 const DEPARTMENTS = [
+  "개발자",
   "마케터",
   "PM",
   "디자이너",
+  "기획자",
+  "운영",
   "기타",
+  "직접 입력",
 ];
 
 const ROLE_LABELS = {
@@ -549,7 +554,7 @@ function getActionTitle(item) {
 }
 
 function isActionDone(item) {
-  return normalizeStatus(item?.status) === "수행완료" || item?.checked === true;
+  return normalizeStatus(item?.status) === "수행완료";
 }
 
 function getActionStatusRank(status) {
@@ -569,8 +574,10 @@ function getIntegrationKind(item) {
   const syncProviders = Array.isArray(item?.external_syncs)
     ? item.external_syncs.map((sync) => String(sync?.provider || "").toLowerCase())
     : [];
-  if (links.notion || provider.includes("notion") || link.includes("notion") || syncProviders.includes("notion")) return "notion";
-  if (links.jira || provider.includes("jira") || link.includes("jira") || syncProviders.includes("jira")) return "jira";
+  const jiraLink = String(links.jira || "").toLowerCase();
+  const notionLink = String(links.notion || "").toLowerCase();
+  if (notionLink || jiraLink.includes("notion") || provider.includes("notion") || link.includes("notion") || syncProviders.includes("notion")) return "notion";
+  if ((jiraLink && !jiraLink.includes("notion")) || provider.includes("jira") || link.includes("jira") || syncProviders.includes("jira")) return "jira";
   if (status === "연동완료") return "jira";
   return "";
 }
@@ -578,8 +585,10 @@ function getIntegrationKind(item) {
 function getIntegrationKinds(item) {
   const links = item?.integrationLinks && typeof item.integrationLinks === "object" ? item.integrationLinks : {};
   const kinds = new Set();
-  if (links.jira) kinds.add("jira");
-  if (links.notion) kinds.add("notion");
+  const jiraLink = String(links.jira || "").toLowerCase();
+  const notionLink = String(links.notion || "").toLowerCase();
+  if (jiraLink && !jiraLink.includes("notion")) kinds.add("jira");
+  if (notionLink || jiraLink.includes("notion")) kinds.add("notion");
   const singleKind = getIntegrationKind(item);
   if (singleKind) kinds.add(singleKind);
   return Array.from(kinds);
@@ -1111,42 +1120,26 @@ function HomeSection({ goTo, name, email, department }) {
 function ProfileSection({ showToast, initialName, initialEmail, initialDepartment }) {
   const fileRef = useRef(null);
   const [name, setName] = useState(initialName);
-  const [bio, setBio] = useState("AI 기반 회의 자동화를 연구합니다.");
+  const [email, setEmail] = useState(initialEmail);
   const [avatar, setAvatar] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState({});
 
-  // 부서: 가입 시 선택한 값을 그대로 표시. "변경" 버튼을 눌러야 수정 모드로 전환됨.
   const initialIsCustom = !!initialDepartment && !DEPARTMENTS.includes(initialDepartment);
-  const [department, setDepartment] = useState(initialDepartment || "");
-  const [isEditingDept, setIsEditingDept] = useState(false);
   const [deptSelect, setDeptSelect] = useState(initialIsCustom ? "직접 입력" : (initialDepartment || ""));
   const [deptCustom, setDeptCustom] = useState(initialIsCustom ? initialDepartment : "");
-  const [deptError, setDeptError] = useState("");
 
   const isCustomDept = deptSelect === "직접 입력";
+  const resolvedDepartment = isCustomDept ? deptCustom.trim() : deptSelect;
 
-  const startEditDept = () => {
-    // 수정 모드 진입 시, 현재 확정된 부서값으로 select를 다시 맞춰줌
-    const curIsCustom = !!department && !DEPARTMENTS.includes(department);
-    setDeptSelect(curIsCustom ? "직접 입력" : department);
-    setDeptCustom(curIsCustom ? department : "");
-    setDeptError("");
-    setIsEditingDept(true);
-  };
-
-  const cancelEditDept = () => {
-    setDeptError("");
-    setIsEditingDept(false);
-  };
-
-  const confirmDept = () => {
-    if (!deptSelect) { setDeptError("부서를 선택해 주세요."); return; }
-    if (isCustomDept && !deptCustom.trim()) { setDeptError("부서명을 입력해 주세요."); return; }
-    setDepartment(isCustomDept ? deptCustom.trim() : deptSelect);
-    setDeptError("");
-    setIsEditingDept(false);
-    showToast("부서가 변경됐습니다.");
-  };
+  useEffect(() => {
+    setName(initialName);
+    setEmail(initialEmail);
+    const nextIsCustom = !!initialDepartment && !DEPARTMENTS.includes(initialDepartment);
+    setDeptSelect(nextIsCustom ? "직접 입력" : (initialDepartment || ""));
+    setDeptCustom(nextIsCustom ? initialDepartment : "");
+    setErrors({});
+  }, [initialName, initialEmail, initialDepartment]);
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
@@ -1156,10 +1149,54 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
     setAvatar(URL.createObjectURL(f));
   };
 
-  const save = () => {
-    if (!name.trim()) { showToast("이름을 입력해 주세요.", "error"); return; }
+  const save = async () => {
+    const nextErrors = {};
+    const nextName = name.trim();
+    const nextEmail = email.trim().toLowerCase();
+    const nextDepartment = resolvedDepartment.trim();
+
+    if (!nextName) nextErrors.name = "이름을 입력해 주세요.";
+    if (!nextEmail) nextErrors.email = "이메일을 입력해 주세요.";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) nextErrors.email = "올바른 이메일 형식이 아닙니다.";
+    if (!deptSelect) nextErrors.department = "부서를 선택해 주세요.";
+    if (isCustomDept && !nextDepartment) nextErrors.department = "부서명을 입력해 주세요.";
+
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      showToast("프로필 정보를 확인해 주세요.", "error");
+      return;
+    }
+
     setSaving(true);
-    setTimeout(() => { setSaving(false); showToast("프로필이 저장됐습니다."); }, 900);
+    try {
+      let serverUser = null;
+      if (localStorage.getItem("tiki_access_token")) {
+        serverUser = await updateCurrentUser({
+          name: nextName,
+          email: nextEmail,
+          role: nextDepartment,
+        });
+      }
+
+      const prevUser = JSON.parse(localStorage.getItem("tiki_user") || "{}");
+      const nextUser = {
+        ...prevUser,
+        ...(serverUser || {}),
+        id: prevUser.id || serverUser?.id,
+        accountId: prevUser.accountId || prevUser.id || serverUser?.id || prevUser.email,
+        name: serverUser?.name || nextName,
+        email: serverUser?.email || nextEmail,
+        role: serverUser?.role ?? nextDepartment,
+        department: nextDepartment,
+      };
+      localStorage.setItem("tiki_user", JSON.stringify(nextUser));
+      window.dispatchEvent(new Event("tiki-auth-changed"));
+      showToast("프로필이 저장됐습니다.");
+    } catch (error) {
+      showToast(error?.status === 409 ? "이미 사용 중인 이메일입니다." : (error?.message || "프로필 저장에 실패했습니다."), "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1169,13 +1206,12 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
         <p className="mt-1 text-[13px] text-[#5A6F8A]">서비스에서 표시될 내 정보를 관리합니다.</p>
       </div>
 
-      {/* Avatar block */}
       <div className="flex items-center gap-5">
         <div className="relative">
           <div className="h-[80px] w-[80px] overflow-hidden rounded-2xl border-2 border-[rgba(0,153,204,.2)] bg-[linear-gradient(135deg,rgba(0,153,204,.15),rgba(124,58,237,.15))] shadow-[0_4px_16px_rgba(0,0,0,.08)]">
             {avatar
               ? <img src={avatar} className="h-full w-full object-cover" alt="avatar" />
-              : <div className="flex h-full w-full items-center justify-center text-[32px] font-black text-[#0099CC] select-none">{name[0]}</div>
+              : <div className="flex h-full w-full items-center justify-center text-[32px] font-black text-[#0099CC] select-none">{(name || "사")[0]}</div>
             }
           </div>
           <button onClick={() => fileRef.current?.click()}
@@ -1186,7 +1222,7 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
         </div>
         <div className="space-y-1.5">
           <p className="text-[14px] font-bold text-[#0D1B2A]">{name || "이름 없음"}</p>
-          <p className="text-[12px] text-[#5A6F8A]">{initialEmail}</p>
+          <p className="text-[12px] text-[#5A6F8A]">{email}</p>
           <div className="flex gap-2 pt-0.5">
             <button onClick={() => fileRef.current?.click()}
               className="rounded-lg border border-[rgba(0,100,180,.15)] bg-white px-3 py-1.5 text-[12px] font-semibold text-[#5A6F8A] transition-colors hover:border-[rgba(0,153,204,.4)] hover:text-[#0099CC]">
@@ -1205,64 +1241,43 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
 
       <Divider />
 
-      {/* Fields */}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="이름 (닉네임)">
-          <Input value={name} onChange={e => setName(e.target.value)} placeholder="이름 입력" />
+        <Field label="이름 (닉네임)" error={errors.name}>
+          <Input
+            value={name}
+            onChange={e => { setName(e.target.value); setErrors((prev) => ({ ...prev, name: "" })); }}
+            placeholder="이름 입력"
+            error={!!errors.name}
+          />
         </Field>
-        <Field label="이메일" hint="이메일은 로그인 ID로, 변경할 수 없습니다.">
-          <Input value={initialEmail} disabled />
+        <Field label="이메일" hint="이메일을 변경해도 기존 프로젝트와 회의록은 계정 ID 기준으로 유지됩니다." error={errors.email}>
+          <Input
+            type="email"
+            value={email}
+            onChange={e => { setEmail(e.target.value); setErrors((prev) => ({ ...prev, email: "" })); }}
+            placeholder="이메일 입력"
+            error={!!errors.email}
+          />
         </Field>
 
-        <Field label="부서">
-          {!isEditingDept ? (
-            <div className="flex items-center justify-between rounded-xl border border-[rgba(0,100,180,.15)] bg-[#F8FAFF] px-3.5 py-2.5">
-              <div className="flex items-center gap-2">
-                <Icon name="briefcase" size={14} color="#5A6F8A" />
-                <span className="text-[13px] font-semibold text-[#0D1B2A]">
-                  {department || "부서 미설정"}
-                </span>
-              </div>
-              <button onClick={startEditDept}
-                className="shrink-0 rounded-lg border border-[rgba(0,100,180,.15)] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#5A6F8A] transition-colors hover:border-[rgba(0,153,204,.4)] hover:text-[#0099CC]">
-                변경
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Select
-                value={deptSelect}
-                onChange={e => { setDeptSelect(e.target.value); setDeptError(""); }}
-                options={DEPARTMENTS}
-                placeholder="부서 선택"
-                error={deptError}
-                autoOpen={isEditingDept}
+        <Field label="부서" error={errors.department}>
+          <div className="space-y-2">
+            <Select
+              value={deptSelect}
+              onChange={e => { setDeptSelect(e.target.value); setErrors((prev) => ({ ...prev, department: "" })); }}
+              options={DEPARTMENTS}
+              placeholder="부서 선택"
+              error={errors.department}
+            />
+            {isCustomDept && (
+              <Input
+                value={deptCustom}
+                onChange={e => { setDeptCustom(e.target.value); setErrors((prev) => ({ ...prev, department: "" })); }}
+                placeholder="부서명을 입력하세요"
+                error={!!errors.department}
               />
-              {isCustomDept && (
-                <Input
-                  value={deptCustom}
-                  onChange={e => { setDeptCustom(e.target.value); setDeptError(""); }}
-                  placeholder="부서명을 입력하세요"
-                  error={!!deptError}
-                />
-              )}
-              {deptError && <p className="text-[12px] text-[#EF4444]">{deptError}</p>}
-              <div className="flex gap-2">
-                <button onClick={confirmDept}
-                  className="rounded-lg bg-[linear-gradient(135deg,#0099CC,#0077AA)] px-3 py-1.5 text-[12px] font-bold text-white">
-                  확인
-                </button>
-                <button onClick={cancelEditDept}
-                  className="rounded-lg border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] px-3 py-1.5 text-[12px] font-semibold text-[#5A6F8A]">
-                  취소
-                </button>
-              </div>
-            </div>
-          )}
-        </Field>
-
-        <Field label="한 줄 소개" className="sm:col-span-2">
-          <Input value={bio} onChange={e => setBio(e.target.value)} placeholder="간단한 소개를 입력하세요" />
+            )}
+          </div>
         </Field>
       </div>
 
