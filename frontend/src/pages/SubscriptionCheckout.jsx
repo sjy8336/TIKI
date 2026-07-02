@@ -206,6 +206,8 @@ export default function SubscriptionCheckout() {
         planId: subscription.plan_id,
         billing: subscription.billing,
         nextBillingAt: subscription.next_billing_at,
+        currentPeriodStartedAt: subscription.current_period_started_at || subscription.updated_at,
+        currentPeriodEndsAt: subscription.current_period_ends_at || subscription.next_billing_at,
       }));
       window.dispatchEvent(new Event('tiki-auth-changed'));
     } catch {

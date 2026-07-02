@@ -24,6 +24,8 @@ class SubscriptionResponse(BaseModel):
     amount: int = 0
     currency: str = "KRW"
     is_paid: bool = False
+    current_period_started_at: datetime
+    current_period_ends_at: datetime | None = None
     next_billing_at: datetime | None = None
     updated_at: datetime
 

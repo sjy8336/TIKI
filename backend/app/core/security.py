@@ -42,7 +42,7 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(user_id: UUID) -> str:
+def create_access_token(user_id: UUID, token_id: str | None = None) -> str:
     expires_at = datetime.now(UTC) + timedelta(
         minutes=settings.access_token_expire_minutes,
     )
@@ -50,12 +50,14 @@ def create_access_token(user_id: UUID) -> str:
         "sub": str(user_id),
         "exp": int(expires_at.timestamp()),
     }
+    if token_id:
+        payload["jti"] = token_id
     body = _b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signature = _sign(body)
     return f"{body}.{signature}"
 
 
-def decode_access_token(token: str) -> UUID | None:
+def decode_access_token_payload(token: str) -> dict[str, object] | None:
     try:
         body, signature = token.split(".", 1)
         if not hmac.compare_digest(_sign(body), signature):
@@ -64,8 +66,19 @@ def decode_access_token(token: str) -> UUID | None:
         payload = json.loads(_b64decode(body))
         if int(payload["exp"]) < int(datetime.now(UTC).timestamp()):
             return None
-        return UUID(payload["sub"])
+        UUID(payload["sub"])
+        return payload
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def decode_access_token(token: str) -> UUID | None:
+    try:
+        payload = decode_access_token_payload(token)
+        if payload is None:
+            return None
+        return UUID(payload["sub"])
+    except (ValueError, KeyError, TypeError):
         return None
 
 

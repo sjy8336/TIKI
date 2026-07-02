@@ -4,12 +4,17 @@ import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
 import {
+  changeCurrentUserPassword,
   clearAuthSession,
+  deleteCurrentUser,
   getProject,
   getSubscription,
+  listAuthSessions,
   listProjectMeetings,
   listProjects,
   listProjectTickets,
+  logoutOtherAuthSessions,
+  revokeAuthSession,
   updateCurrentUser,
 } from "../api/apiClient";
 import { PLANS, yearlyDiscount } from "../data/subscriptionPlans";
@@ -101,6 +106,9 @@ const INTEGRATIONS = [
   { id: "jira",   name: "Jira",   desc: "TIKI 앱 개발 외 3개 프로젝트 연동",  connected: true,  color: "#0052CC", initial: "J" },
   { id: "notion", name: "Notion", desc: "아직 연동되지 않았습니다",             connected: false, color: "#111827", initial: "N" },
 ];
+
+const PROFILE_ALIAS_STORAGE_KEY = "tiki_profile_identity_aliases";
+const PLAN_TIER = { free: 0, pro: 1, team: 2 };
 
 // ── Tiny helpers ──────────────────────────────────────────────────────────
 function Toast({ message, type, onClose }) {
@@ -439,6 +447,68 @@ const readJsonArray = (key) => {
   }
 };
 
+const writeJsonValue = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 로컬 저장 실패 시 현재 화면 갱신은 계속 진행한다.
+  }
+};
+
+function migrateLocalProfileReferences(previousAliases = [], nextName = "", nextEmail = "") {
+  const normalizedAliases = new Set(
+    previousAliases.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+  );
+  if (normalizedAliases.size === 0 || !nextName.trim()) return;
+
+  const isMine = (value) => normalizedAliases.has(String(value || "").trim().toLowerCase());
+  const migrateAction = (item) => {
+    const assignee = isMine(item?.assignee) ? nextName : item?.assignee;
+    const assigneeEmail = isMine(item?.assigneeEmail || item?.assignee_email) ? nextEmail : (item?.assigneeEmail || item?.assignee_email);
+    const assignees = Array.isArray(item?.assignees)
+      ? item.assignees.map((value) => isMine(value) ? nextName : value)
+      : item?.assignee && isMine(item.assignee) ? [nextName] : item?.assignees;
+    return {
+      ...item,
+      assignee,
+      assigneeEmail,
+      assignees,
+    };
+  };
+
+  const overrides = readJsonObject(PROJECT_OVERRIDE_STORAGE_KEY);
+  let touchedOverrides = false;
+  const nextOverrides = Object.fromEntries(Object.entries(overrides).map(([projectId, override]) => {
+    if (!override || typeof override !== "object") return [projectId, override];
+    let touchedProject = false;
+    const myActionItems = Array.isArray(override.myActionItems)
+      ? override.myActionItems.map((item) => {
+        const migrated = migrateAction(item);
+        if (JSON.stringify(migrated) !== JSON.stringify(item)) touchedProject = true;
+        return migrated;
+      })
+      : override.myActionItems;
+    if (touchedProject) touchedOverrides = true;
+    return [projectId, { ...override, myActionItems }];
+  }));
+  if (touchedOverrides) writeJsonValue(PROJECT_OVERRIDE_STORAGE_KEY, nextOverrides);
+
+  const manualRecords = readJsonObject(MANUAL_MEETING_RECORDS_KEY);
+  let touchedManual = false;
+  const nextManualRecords = Object.fromEntries(Object.entries(manualRecords).map(([recordId, record]) => {
+    if (!record || typeof record !== "object" || !Array.isArray(record.actions)) return [recordId, record];
+    let touchedRecord = false;
+    const actions = record.actions.map((item) => {
+      const migrated = migrateAction(item);
+      if (JSON.stringify(migrated) !== JSON.stringify(item)) touchedRecord = true;
+      return migrated;
+    });
+    if (touchedRecord) touchedManual = true;
+    return [recordId, { ...record, actions }];
+  }));
+  if (touchedManual) writeJsonValue(MANUAL_MEETING_RECORDS_KEY, nextManualRecords);
+}
+
 function isTemporaryProject(project) {
   return String(project?.name || "").toLowerCase().includes("codex invitation check");
 }
@@ -665,7 +735,8 @@ function dedupeByKey(items, makeKey) {
   return Array.from(map.values());
 }
 
-function HomeSection({ goTo, name, email, department }) {
+function HomeSection({ goTo, name, email, department, aliases = [] }) {
+  const aliasKey = aliases.join("|");
   const [homeLoading, setHomeLoading] = useState(true);
   const [homeStats, setHomeStats] = useState({
     meetingsThisMonth: 0,
@@ -678,7 +749,7 @@ function HomeSection({ goTo, name, email, department }) {
 
   useEffect(() => {
     let cancelled = false;
-    const userAliases = [name, email].filter(Boolean);
+    const userAliases = [...new Set([name, email, ...aliases].map((value) => String(value || "").trim()).filter(Boolean))];
 
     const mapMeetingActionItem = (item, project, meeting, index) => ({
       id: item?.id || `${meeting?.id || meeting?.title || "meeting"}-action-${index + 1}`,
@@ -925,7 +996,7 @@ function HomeSection({ goTo, name, email, department }) {
     return () => {
       cancelled = true;
     };
-  }, [name, email]);
+  }, [name, email, aliasKey]);
 
   return (
     <div className="space-y-7">
@@ -1179,6 +1250,18 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
       }
 
       const prevUser = JSON.parse(localStorage.getItem("tiki_user") || "{}");
+      const aliases = [
+        ...readJsonArray(PROFILE_ALIAS_STORAGE_KEY),
+        ...(Array.isArray(prevUser.aliases) ? prevUser.aliases : []),
+        prevUser.name,
+        prevUser.email,
+        nextName,
+        nextEmail,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      const uniqueAliases = [...new Set(aliases)];
+      migrateLocalProfileReferences(uniqueAliases, serverUser?.name || nextName, serverUser?.email || nextEmail);
       const nextUser = {
         ...prevUser,
         ...(serverUser || {}),
@@ -1188,8 +1271,10 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
         email: serverUser?.email || nextEmail,
         role: serverUser?.role ?? nextDepartment,
         department: nextDepartment,
+        aliases: uniqueAliases,
       };
       localStorage.setItem("tiki_user", JSON.stringify(nextUser));
+      localStorage.setItem(PROFILE_ALIAS_STORAGE_KEY, JSON.stringify(uniqueAliases));
       window.dispatchEvent(new Event("tiki-auth-changed"));
       showToast("프로필이 저장됐습니다.");
     } catch (error) {
@@ -1305,26 +1390,44 @@ function SecuritySection({ showToast, setModal }) {
     </button>
   );
 
-  const save = () => {
+  const save = async () => {
     const e = {};
     if (!cur) e.cur = "현재 비밀번호를 입력해 주세요.";
     if (!/^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/.test(nw))
       e.nw = "8자 이상, 영문·숫자·특수문자(@$!%*?&)를 모두 포함해야 합니다.";
+    if (cur && nw && cur === nw) e.nw = "새 비밀번호는 현재 비밀번호와 달라야 합니다.";
     if (nw !== cf) e.cf = "새 비밀번호가 일치하지 않습니다.";
     setErrs(e);
     if (Object.keys(e).length) return;
     setSaving(true);
-    setTimeout(() => {
-      setSaving(false); setCur(""); setNw(""); setCf("");
+    try {
+      await changeCurrentUserPassword({ currentPassword: cur, newPassword: nw });
+      setCur("");
+      setNw("");
+      setCf("");
+      setErrs({});
       showToast("비밀번호가 변경됐습니다.");
-    }, 1000);
+    } catch (error) {
+      const message =
+        error?.detail === "Current password is incorrect" ||
+        error?.message === "Current password is incorrect"
+          ? "현재 비밀번호가 올바르지 않습니다."
+          : error?.detail === "New password must be different from current password" ||
+            error?.message === "New password must be different from current password"
+          ? "새 비밀번호는 현재 비밀번호와 달라야 합니다."
+          : error?.message || "비밀번호 변경에 실패했습니다.";
+      setErrs((prev) => ({ ...prev, form: message }));
+      showToast(message, "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">보안</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">계정 보호를 위해 주기적으로 비밀번호를 변경하세요.</p>
+        <p className="mt-1 text-[13px] text-[#5A6F8A]">계정 보호를 위해 현재 비밀번호 확인 후 새 비밀번호로 변경할 수 있습니다.</p>
       </div>
 
       {/* PW change */}
@@ -1343,6 +1446,7 @@ function SecuritySection({ showToast, setModal }) {
           <Input type={show.cf ? "text" : "password"} value={cf}
             onChange={e => setCf(e.target.value)} placeholder="새 비밀번호 재입력" error={errs.cf} rightEl={eyeBtn("cf")} />
         </Field>
+        {errs.form && <p className="text-[12px] font-semibold text-[#EF4444]">{errs.form}</p>}
         <div className="pt-1">
           <SaveButton onClick={save} loading={saving} label="비밀번호 변경" />
         </div>
@@ -1356,13 +1460,90 @@ function SecuritySection({ showToast, setModal }) {
           <div>
             <p className="text-[13px] font-bold text-[#0D1B2A]">계정 탈퇴</p>
             <p className="mt-1 text-[12px] leading-[1.6] text-[#5A6F8A]">
-              탈퇴 시 모든 프로젝트, 회의록, 연동 데이터가<br />
-              영구 삭제되며 복구할 수 없습니다.
+              탈퇴하면 이 계정으로 다시 로그인할 수 없습니다.<br />
+              프로젝트 기록에는 탈퇴한 사용자로 표시됩니다.
             </p>
           </div>
           <button onClick={() => setModal("delete")}
             className="shrink-0 rounded-xl border border-[rgba(239,68,68,.3)] bg-white px-4 py-2 text-[13px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.06)]">
             탈퇴하기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AccountDeleteModal({ onCancel, onDeleted, showToast }) {
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const confirmDelete = async () => {
+    if (!password) {
+      setError("비밀번호를 입력해 주세요.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      await deleteCurrentUser({ password });
+      onDeleted();
+    } catch (err) {
+      const message =
+        err?.detail === "Password is incorrect" || err?.message === "Password is incorrect"
+          ? "비밀번호가 올바르지 않습니다."
+          : err?.message || "계정 탈퇴에 실패했습니다.";
+      setError(message);
+      showToast(message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[2px]">
+      <div className="w-full max-w-[420px] rounded-2xl border border-[rgba(239,68,68,.16)] bg-white p-6 shadow-[0_32px_80px_rgba(0,0,0,.2)]">
+        <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-[rgba(239,68,68,.1)]">
+          <Icon name="alertTriangle" size={20} color="#EF4444" />
+        </div>
+        <h3 className="mb-1.5 text-center text-[16px] font-bold text-[#0D1B2A]">정말 탈퇴하시겠습니까?</h3>
+        <p className="mb-5 text-center text-[13px] leading-[1.65] text-[#5A6F8A]">
+          비밀번호 확인 후 계정이 비활성화됩니다. 이후 이 이메일로 다시 로그인할 수 없습니다.
+        </p>
+        <Field label="현재 비밀번호" error={error}>
+          <Input
+            type={showPassword ? "text" : "password"}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="현재 비밀번호"
+            error={error}
+            rightEl={
+              <button
+                onClick={() => setShowPassword((value) => !value)}
+                className="text-[#9BAABE] transition-colors hover:text-[#0099CC]"
+              >
+                <Icon name={showPassword ? "eyeOff" : "eye"} size={15} color="currentColor" />
+              </button>
+            }
+          />
+        </Field>
+        <div className="mt-6 flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="flex-1 rounded-xl border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] py-2.5 text-[13px] font-semibold text-[#5A6F8A] disabled:opacity-60"
+          >
+            취소
+          </button>
+          <button
+            onClick={confirmDelete}
+            disabled={loading}
+            className="flex-1 rounded-xl bg-[#EF4444] py-2.5 text-[13px] font-bold text-white disabled:opacity-60"
+          >
+            {loading ? "처리 중..." : "탈퇴하기"}
           </button>
         </div>
       </div>
@@ -1420,67 +1601,134 @@ function IntegrationsSection({ showToast }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-function SessionsSection({ showToast, setModal }) {
-  const [devices, setDevices] = useState(DEVICES);
+function SessionsSection({ showToast }) {
+  const [devices, setDevices] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [actionId, setActionId] = useState(null);
 
-  const logoutDevice = (id) => {
-    setDevices(p => p.filter(d => d.id !== id));
-    showToast("해당 기기에서 로그아웃됐습니다.");
+  const loadSessions = useCallback(() => {
+    if (!localStorage.getItem("tiki_access_token")) {
+      setDevices([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    listAuthSessions()
+      .then((sessions) => setDevices(Array.isArray(sessions) ? sessions : []))
+      .catch((error) => {
+        setDevices([]);
+        showToast(error?.message || "세션 목록을 불러오지 못했습니다.", "error");
+      })
+      .finally(() => setLoading(false));
+  }, [showToast]);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  const logoutDevice = async (id) => {
+    setActionId(id);
+    try {
+      await revokeAuthSession(id);
+      setDevices((prev) => prev.filter((session) => session.id !== id));
+      showToast("해당 기기에서 로그아웃됐습니다.");
+    } catch (error) {
+      showToast(error?.message || "해당 기기 로그아웃에 실패했습니다.", "error");
+    } finally {
+      setActionId(null);
+    }
   };
 
-  const ICON_MAP = { monitor: "monitor", smartphone: "smartphone", globe: "globe" };
+  const logoutOthers = async () => {
+    setActionId("all");
+    try {
+      await logoutOtherAuthSessions();
+      setDevices((prev) => prev.filter((session) => session.is_current));
+      showToast("다른 모든 기기에서 로그아웃됐습니다.");
+    } catch (error) {
+      showToast(error?.message || "다른 기기 로그아웃에 실패했습니다.", "error");
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const ICON_MAP = { Windows: "monitor", macOS: "monitor", Linux: "monitor", iOS: "smartphone", Android: "smartphone" };
+  const formatSessionDate = (value) => {
+    if (!value) return "접속 기록 없음";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "접속 기록 없음";
+    return date.toLocaleString("ko-KR", {
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+  const otherSessionsCount = devices.filter((session) => !session.is_current).length;
 
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">세션 관리</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">현재 로그인된 기기를 확인하고 관리하세요.</p>
+        <p className="mt-1 text-[13px] text-[#5A6F8A]">실제로 로그인된 기기를 확인하고, 사용하지 않는 기기를 로그아웃할 수 있습니다.</p>
       </div>
 
       <div className="space-y-2.5">
-        {devices.map(d => (
+        {loading && (
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-[#FAFCFF] p-5 text-center text-[13px] font-semibold text-[#5A6F8A]">
+            세션을 불러오는 중입니다...
+          </div>
+        )}
+        {!loading && devices.length === 0 && (
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-[#FAFCFF] p-5 text-center text-[13px] font-semibold text-[#5A6F8A]">
+            활성화된 로그인 세션이 없습니다. 다시 로그인해 주세요.
+          </div>
+        )}
+        {!loading && devices.map(d => (
           <div key={d.id}
             className={cn(
               "flex items-center gap-4 rounded-2xl border p-4 transition-all",
-              d.current
+              d.is_current
                 ? "border-[rgba(0,153,204,.25)] bg-[rgba(0,153,204,.04)]"
                 : "border-[rgba(0,100,180,.1)] bg-white hover:shadow-[0_2px_12px_rgba(0,60,150,.06)]"
             )}>
             <div className={cn(
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border",
-              d.current ? "border-[rgba(0,153,204,.2)] bg-[rgba(0,153,204,.08)]" : "border-[rgba(0,100,180,.1)] bg-[#F8FAFF]"
+              d.is_current ? "border-[rgba(0,153,204,.2)] bg-[rgba(0,153,204,.08)]" : "border-[rgba(0,100,180,.1)] bg-[#F8FAFF]"
             )}>
-              <Icon name={ICON_MAP[d.icon]} size={17} color={d.current ? "#0099CC" : "#5A6F8A"} />
+              <Icon name={ICON_MAP[d.os] || "globe"} size={17} color={d.is_current ? "#0099CC" : "#5A6F8A"} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px] font-bold text-[#0D1B2A]">{d.name}</span>
-                {d.current && (
+                <span className="text-[13px] font-bold text-[#0D1B2A]">{d.device_name}</span>
+                {d.is_current && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-[rgba(16,185,129,.1)] px-2 py-0.5 text-[10px] font-bold text-[#10B981]">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#10B981]" />
                     현재 기기
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 text-[12px] text-[#5A6F8A]">{d.location} · {d.lastActive}</p>
+              <p className="mt-0.5 text-[12px] text-[#5A6F8A]">
+                {d.ip_address || "IP 확인 중"} · 마지막 활동 {formatSessionDate(d.last_seen_at || d.created_at)}
+              </p>
             </div>
-            {!d.current && (
-              <button onClick={() => logoutDevice(d.id)}
+            {!d.is_current && (
+              <button onClick={() => logoutDevice(d.id)} disabled={actionId === d.id}
                 className="shrink-0 flex items-center gap-1.5 rounded-xl border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.05)] px-3.5 py-2 text-[12px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.1)]">
                 <Icon name="logOut" size={13} color="#EF4444" />
-                로그아웃
+                {actionId === d.id ? "처리 중" : "로그아웃"}
               </button>
             )}
           </div>
         ))}
       </div>
 
-      {devices.filter(d => !d.current).length > 0 && (
+      {otherSessionsCount > 0 && (
         <div className="pt-2">
-          <button onClick={() => setModal("logout-all")}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.04)] py-3 text-[13px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.08)]">
+          <button onClick={logoutOthers} disabled={actionId === "all"}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.04)] py-3 text-[13px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.08)] disabled:opacity-60">
             <Icon name="logOut" size={14} color="#EF4444" />
-            다른 모든 기기에서 로그아웃
+            {actionId === "all" ? "처리 중..." : "다른 모든 기기에서 로그아웃"}
           </button>
         </div>
       )}
@@ -1553,23 +1801,23 @@ function DataSection({ showToast }) {
 function SubscriptionSection({ showToast, isMobile }) {
   const navigate = useNavigate();
   const [planLoading, setPlanLoading] = useState(false);
-  const [currentPlanId, setCurrentPlanId] = useState(() => {
+  const [subscription, setSubscription] = useState(null);
+  const cachedPlanId = (() => {
     try {
       const raw = localStorage.getItem("tiki_user");
       return raw ? (JSON.parse(raw).planId ?? "free") : "free";
     } catch {
       return "free";
     }
-  });
-  const [currentBilling, setCurrentBilling] = useState(() => {
+  })();
+  const cachedBilling = (() => {
     try {
       const raw = localStorage.getItem("tiki_user");
       return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
     } catch {
       return "monthly";
     }
-  });
-  const [nextBillingDate, setNextBillingDate] = useState(null);
+  })();
 
   useEffect(() => {
     if (!localStorage.getItem("tiki_access_token")) return;
@@ -1579,9 +1827,23 @@ function SubscriptionSection({ showToast, isMobile }) {
     getSubscription()
       .then((sub) => {
         if (cancelled) return;
-        setCurrentPlanId(sub.plan_id || "free");
-        setCurrentBilling(sub.billing || "monthly");
-        setNextBillingDate(sub.next_billing_date || null);
+        setSubscription(sub);
+        try {
+          const raw = localStorage.getItem("tiki_user");
+          const user = raw ? JSON.parse(raw) : {};
+          localStorage.setItem("tiki_user", JSON.stringify({
+            ...user,
+            isSubscribed: sub.plan_id !== "free",
+            planId: sub.plan_id || "free",
+            billing: sub.billing || "monthly",
+            nextBillingAt: sub.next_billing_at || null,
+            currentPeriodStartedAt: sub.current_period_started_at || sub.updated_at || null,
+            currentPeriodEndsAt: sub.current_period_ends_at || sub.next_billing_at || null,
+          }));
+          window.dispatchEvent(new Event("tiki-auth-changed"));
+        } catch {
+          // 서버 구독 정보가 원본이므로 로컬 캐시 저장 실패는 무시한다.
+        }
       })
       .catch(() => {
         // Keep locally cached plan info when API lookup fails.
@@ -1595,10 +1857,25 @@ function SubscriptionSection({ showToast, isMobile }) {
     };
   }, []);
 
+  const currentPlanId = subscription?.plan_id || cachedPlanId;
+  const currentBilling = subscription?.billing || cachedBilling;
   const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
   const currentPrice = currentPlan.price[currentBilling] || 0;
   const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
-  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+  const priceLabel =
+    currentPrice === 0
+      ? "무료"
+      : currentBilling === "yearly"
+      ? `${currentPrice.toLocaleString("ko-KR")}원/월 · 연간 결제`
+      : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+  const startedAt = subscription?.current_period_started_at || subscription?.updated_at;
+  const endsAt = subscription?.current_period_ends_at || subscription?.next_billing_at;
+  const formatSubDate = (value) => {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" });
+  };
 
   const topFeatures = [
     currentPlan.features.find((f) => f.label.includes("회의 분석")),
@@ -1606,30 +1883,48 @@ function SubscriptionSection({ showToast, isMobile }) {
     currentPlan.features.find((f) => f.label.includes("팀원 초대")),
     currentPlan.features.find((f) => f.label.includes("해야 할 일")),
   ].filter(Boolean);
+  const includedFeatures = currentPlan.features.filter((feature) => feature.included);
+  const goSubscription = () => navigate("/subscription", { state: { mobileTab: "mypage" } });
 
   return (
     <div className="space-y-8">
-      <div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">구독권 관리</h2>
+        <button
+          onClick={goSubscription}
+          className="inline-flex items-center justify-center rounded-xl bg-[linear-gradient(135deg,#0099CC,#7C3AED)] px-4 py-2 text-[12px] font-bold text-white shadow-[0_8px_18px_rgba(0,153,204,.18)]"
+        >
+          플랜 업그레이드
+        </button>
       </div>
 
       <div className="rounded-2xl border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.07))] p-5">
-        <div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="mb-2 flex items-center gap-2">
-              <Badge label="현재 플랜" variant="cyan" />
-              <p className="text-[16px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge label="이용 중" variant="cyan" />
+              <p className="text-[18px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
               {planLoading && <span className="text-[11px] text-[#5A6F8A]">동기화 중...</span>}
             </div>
-            <p className="text-[13px] text-[#4A5D78]">
-              {billingLabel} 결제 · {priceLabel}
-              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
-            </p>
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              {topFeatures.slice(0, 3).map((feature) => (
+            <p className="text-[13px] text-[#4A5D78]">{billingLabel} 플랜 · {priceLabel}</p>
+            <div className="mt-3 grid gap-2 text-[12px] text-[#4A5D78] sm:grid-cols-2">
+              <div className="rounded-xl bg-white/70 px-3 py-2">
+                <span className="block text-[11px] font-semibold text-[#8A9AB0]">사용 시작일</span>
+                <strong className="text-[#0D1B2A]">{formatSubDate(startedAt) || "가입일 기준 이용 중"}</strong>
+              </div>
+              <div className="rounded-xl bg-white/70 px-3 py-2">
+                <span className="block text-[11px] font-semibold text-[#8A9AB0]">{currentPlanId === "free" ? "사용 기간" : "다음 결제일"}</span>
+                <strong className="text-[#0D1B2A]">{currentPlanId === "free" ? "제한 없이 이용 가능" : formatSubDate(endsAt) || "결제일 확인 중"}</strong>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-white/70 bg-white/70 p-3 sm:w-[240px]">
+            <p className="text-[12px] font-bold text-[#0D1B2A]">현재 플랜 핵심 제공 항목</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {topFeatures.slice(0, 4).map((feature) => (
                 <span
                   key={feature.label}
-                  className="inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#0D1B2A]"
+                  className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
                 >
                   {formatPlanFeatureLabel(feature.label)}
                 </span>
@@ -1644,23 +1939,13 @@ function SubscriptionSection({ showToast, isMobile }) {
           const selected = plan.id === currentPlanId;
           const planPrice = plan.price[currentBilling] || 0;
           const discount = yearlyDiscount(plan);
-          const canNavigateToSubscription = isMobile && !selected;
+          const isUpgrade = (PLAN_TIER[plan.id] ?? 0) > (PLAN_TIER[currentPlanId] ?? 0);
 
           return (
             <div
               key={plan.id}
-              onClick={canNavigateToSubscription ? () => navigate("/subscription", { state: { mobileTab: "mypage" } }) : undefined}
-              role={canNavigateToSubscription ? "button" : undefined}
-              tabIndex={canNavigateToSubscription ? 0 : undefined}
-              onKeyDown={canNavigateToSubscription ? (e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  navigate("/subscription", { state: { mobileTab: "mypage" } });
-                }
-              } : undefined}
               className={cn(
                 "rounded-2xl border p-4 transition-colors",
-                canNavigateToSubscription && "cursor-pointer active:scale-[0.99]",
                 selected
                   ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.06)]"
                   : "border-[rgba(0,100,180,.1)] bg-white"
@@ -1677,24 +1962,37 @@ function SubscriptionSection({ showToast, isMobile }) {
                 <p className="mt-0.5 text-[11px] font-semibold text-[#0099CC]">연간 결제 {discount}% 할인</p>
               )}
               <p className="mt-2 text-[11px] text-[#5A6F8A]">{plan.tagline}</p>
-              {canNavigateToSubscription && (
-                <p className="mt-2 text-[11px] font-semibold text-[#0099CC]">탭하여 구독 페이지로 이동</p>
-              )}
+              <button
+                type="button"
+                onClick={goSubscription}
+                disabled={selected}
+                className={cn(
+                  "mt-3 w-full rounded-xl px-3 py-2 text-[12px] font-bold transition-colors",
+                  selected
+                    ? "cursor-default bg-[rgba(0,153,204,.08)] text-[#0099CC]"
+                    : isUpgrade
+                    ? "bg-[#0099CC] text-white hover:bg-[#0088BB]"
+                    : "border border-[rgba(0,100,180,.12)] bg-white text-[#5A6F8A] hover:bg-[rgba(0,60,150,.04)]"
+                )}
+              >
+                {selected ? "현재 이용 중" : isUpgrade ? "업그레이드" : "플랜 변경"}
+              </button>
             </div>
           );
         })}
       </div>
 
       <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
-        <p className="text-[12px] font-semibold text-[#5A6F8A]">현재 플랜 핵심 제공 항목</p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {topFeatures.map((feature) => (
-            <span
+        <p className="text-[12px] font-semibold text-[#5A6F8A]">현재 플랜 전체 제공 항목</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {includedFeatures.map((feature) => (
+            <div
               key={`current-feature-${feature.label}`}
-              className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
+              className="flex items-center gap-2 rounded-xl border border-[rgba(0,153,204,.12)] bg-[rgba(0,153,204,.04)] px-3 py-2 text-[12px] font-semibold text-[#0D1B2A]"
             >
+              <Icon name="checkCircle" size={14} color="#0099CC" />
               {formatPlanFeatureLabel(feature.label)}
-            </span>
+            </div>
           ))}
         </div>
       </div>
@@ -1781,21 +2079,22 @@ export default function MyPage() {
     navigate("/onboarding", { replace: true });
   }, [navigate]);
 
+  const handleAccountDeleted = useCallback(() => {
+    localStorage.removeItem(PROFILE_ALIAS_STORAGE_KEY);
+    sessionStorage.setItem("tiki_flash_toast", "계정 탈퇴가 완료되었습니다.");
+    clearAuthSession();
+    navigate("/onboarding", { replace: true });
+  }, [navigate]);
+
   const handleModal = (type) => setModal(type);
   const closeModal = () => setModal(null);
 
   const confirmModal = () => {
-    if (modal === "delete") showToast("계정이 삭제됐습니다.", "error");
     if (modal === "logout-all") showToast("다른 기기에서 모두 로그아웃됐습니다.");
     closeModal();
   };
 
   const modalConfig = {
-    "delete": {
-      title: "정말 탈퇴하시겠습니까?",
-      body: "탈퇴 시 보유 중인 모든 프로젝트, 회의록, Jira 연동 데이터가 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-      confirmLabel: "탈퇴하기", danger: true,
-    },
     "logout-all": {
       title: "다른 기기에서 로그아웃",
       body: "현재 기기를 제외한 모든 기기에서 로그아웃됩니다. 계속하시겠습니까?",
@@ -1806,6 +2105,10 @@ export default function MyPage() {
   const activeNav = NAV_ITEMS.find(n => n.id === activeTab);
   const profileName = sessionUser?.name || "사용자";
   const profileEmail = sessionUser?.email || "";
+  const profileAliases = [
+    ...(Array.isArray(sessionUser?.aliases) ? sessionUser.aliases : []),
+    ...readJsonArray(PROFILE_ALIAS_STORAGE_KEY),
+  ];
   const profileDepartment =
     sessionUser?.department ||
     sessionUser?.dept ||
@@ -1899,7 +2202,7 @@ export default function MyPage() {
             </div>
 
             <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 shadow-[0_2px_16px_rgba(0,60,150,.05)] sm:p-7">
-              {activeTab === "home"          && <HomeSection goTo={setActiveTab} name={profileName} email={profileEmail} department={profileDepartment} />}
+              {activeTab === "home"          && <HomeSection goTo={setActiveTab} name={profileName} email={profileEmail} department={profileDepartment} aliases={profileAliases} />}
               {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} />}
               {activeTab === "security"     && <SecuritySection showToast={showToast} setModal={handleModal} />}
               {activeTab === "integrations" && <IntegrationsSection showToast={showToast} />}
@@ -1912,6 +2215,13 @@ export default function MyPage() {
       </div>
 
       {/* Modal */}
+      {modal === "delete" && (
+        <AccountDeleteModal
+          onCancel={closeModal}
+          onDeleted={handleAccountDeleted}
+          showToast={showToast}
+        />
+      )}
       {modal && modalConfig[modal] && (
         <Modal {...modalConfig[modal]} onConfirm={confirmModal} onCancel={closeModal} />
       )}

@@ -43,6 +43,7 @@ def _subscription_response(plan_id: str, billing: str, updated_at: datetime) -> 
     normalized_billing = BillingCycle(billing)
     plan = PLAN_CATALOG[normalized_plan]
     amount = plan[normalized_billing.value]
+    next_billing_at = _next_billing_at(updated_at, normalized_plan, normalized_billing)
     return SubscriptionResponse(
         plan_id=normalized_plan.value,
         billing=normalized_billing.value,
@@ -50,7 +51,9 @@ def _subscription_response(plan_id: str, billing: str, updated_at: datetime) -> 
         plan_name=plan["name"],
         amount=amount,
         is_paid=amount > 0,
-        next_billing_at=_next_billing_at(updated_at, normalized_plan, normalized_billing),
+        current_period_started_at=updated_at,
+        current_period_ends_at=next_billing_at,
+        next_billing_at=next_billing_at,
         updated_at=updated_at,
     )
 

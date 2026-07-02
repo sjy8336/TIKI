@@ -4,7 +4,7 @@ import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
 import { PLANS, FEATURE_COMPARISON, FAQ_ITEMS, yearlyDiscount } from '../data/subscriptionPlans';
-import { getSubscription } from '../api/apiClient';
+import { getSubscription, subscribePlan } from '../api/apiClient';
 
 const cn = (...c) => c.filter(Boolean).join(' ');
 
@@ -452,7 +452,26 @@ export default function Subscription() {
     alreadyMsgTimer.current = setTimeout(() => setAlreadyMsg(''), 2500);
   };
 
-  const handleSelectPlan = (plan, selectedBilling) => {
+  const saveLocalSubscription = (subscription) => {
+    try {
+      const raw = localStorage.getItem('tiki_user');
+      const user = raw ? JSON.parse(raw) : {};
+      localStorage.setItem('tiki_user', JSON.stringify({
+        ...user,
+        isSubscribed: subscription.plan_id !== 'free',
+        planId: subscription.plan_id,
+        billing: subscription.billing,
+        nextBillingAt: subscription.next_billing_at,
+        currentPeriodStartedAt: subscription.current_period_started_at || subscription.updated_at,
+        currentPeriodEndsAt: subscription.current_period_ends_at || subscription.next_billing_at,
+      }));
+      window.dispatchEvent(new Event('tiki-auth-changed'));
+    } catch {
+      // 서버 구독 정보가 원본이므로 로컬 캐시 저장 실패는 무시한다.
+    }
+  };
+
+  const handleSelectPlan = async (plan, selectedBilling) => {
     // 로그인 상태에서 현재 플랜보다 낮거나 같은 플랜 선택 → 토스트
     if (isLoggedIn) {
       const currentTier = PLAN_TIER[currentPlanId] ?? 0;
@@ -475,9 +494,15 @@ export default function Subscription() {
       return;
     }
 
-    // 무료 플랜 업그레이드 → 결제 없이 바로 완료
+    // 무료 플랜 변경 → 결제 없이 서버에 즉시 저장
     if (plan.price.monthly === 0) {
-      navigate('/subscription/complete', { state: { plan, billing: selectedBilling } });
+      try {
+        const subscription = await subscribePlan({ planId: plan.id, billing: selectedBilling });
+        saveLocalSubscription(subscription);
+        navigate('/subscription/complete', { state: { plan, billing: selectedBilling, subscription, paidAmount: 0 } });
+      } catch (error) {
+        showAlreadyMsg(error.message || '구독 정보를 변경하지 못했습니다');
+      }
       return;
     }
 

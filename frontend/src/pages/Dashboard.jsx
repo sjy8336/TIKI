@@ -158,6 +158,7 @@ const TOAST_ICON_RULE = {
 
 const PROJECT_OVERRIDE_STORAGE_KEY = "tiki_project_overrides";
 const MANUAL_MEETING_RECORDS_KEY = "tiki_manual_minutes_records";
+const PROFILE_ALIAS_STORAGE_KEY = "tiki_profile_identity_aliases";
 
 const readJsonObject = (key) => {
   try {
@@ -165,6 +166,15 @@ const readJsonObject = (key) => {
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
+  }
+};
+
+const readJsonArray = (key) => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 };
 
@@ -912,7 +922,7 @@ export default function App() {
                 assignee: persistedItem.assignee,
                 dueDate: persistedItem.dueDate,
                 status: nextStatus,
-                checked: ["수행완료", "연동완료"].includes(nextStatus) ? true : Boolean(action.checked),
+                checked: nextStatus === "수행완료" ? true : Boolean(action.checked),
               }
             : action
         ));
@@ -924,8 +934,13 @@ export default function App() {
 
   const [toast, setToast] = useState({ show: false, message: "", type: "info" });
   const userAliases = useMemo(
-    () => [user?.name, user?.email].map((value) => String(value || "").trim()).filter(Boolean),
-    [user?.name, user?.email]
+    () => [...new Set([
+      user?.name,
+      user?.email,
+      ...(Array.isArray(user?.aliases) ? user.aliases : []),
+      ...readJsonArray(PROFILE_ALIAS_STORAGE_KEY),
+    ].map((value) => String(value || "").trim()).filter(Boolean))],
+    [user?.name, user?.email, user?.aliases]
   );
 
   const triggerToast = (msg, type = "info") => {

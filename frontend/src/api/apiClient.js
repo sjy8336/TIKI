@@ -1,4 +1,15 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8013/api/v1';
+const LOCAL_API_FALLBACKS = [
+  'http://127.0.0.1:8013/api/v1',
+  'http://localhost:8013/api/v1',
+  'http://127.0.0.1:8000/api/v1',
+  'http://localhost:8000/api/v1',
+];
+
+const API_BASE_CANDIDATES = [
+  API_BASE_URL,
+  ...LOCAL_API_FALLBACKS,
+].filter((value, index, array) => value && array.indexOf(value) === index);
 
 class ApiError extends Error {
   constructor(message, { status, detail } = {}) {
@@ -17,10 +28,33 @@ async function request(path, options = {}) {
     ...options.headers,
   };
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  let response;
+  let networkError;
+  for (const baseUrl of API_BASE_CANDIDATES) {
+    try {
+      response = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers,
+      });
+      const contentType = response.headers.get('content-type') || '';
+      const isLikelyFrontendFallback =
+        String(baseUrl).startsWith('/') &&
+        (response.status === 404 || contentType.includes('text/html'));
+      if (isLikelyFrontendFallback) {
+        continue;
+      }
+      break;
+    } catch (error) {
+      networkError = error;
+    }
+  }
+
+  if (!response) {
+    throw new ApiError(
+      '백엔드 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+      { status: 0, detail: networkError?.message ?? null }
+    );
+  }
 
   const data = await response.json().catch(() => null);
 
@@ -61,6 +95,39 @@ export async function updateCurrentUser(payload) {
   return request('/auth/me', {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function changeCurrentUserPassword({ currentPassword, newPassword }) {
+  return request('/auth/me/password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  });
+}
+
+export async function deleteCurrentUser({ password }) {
+  return request('/auth/me', {
+    method: 'DELETE',
+    body: JSON.stringify({ password }),
+  });
+}
+
+export async function listAuthSessions() {
+  return request('/auth/sessions');
+}
+
+export async function revokeAuthSession(sessionId) {
+  return request(`/auth/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function logoutOtherAuthSessions() {
+  return request('/auth/sessions/logout-others', {
+    method: 'POST',
   });
 }
 
