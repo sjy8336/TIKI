@@ -37,6 +37,10 @@ class MeetingSearchDocument(BaseModel):
     contract_version: str = "v2"
     meeting_title: str | None = None
     project_name: str | None = None
+    source_kind: str | None = None
+    source_name: str | None = None
+    source_path: str | None = None
+    source_title: str | None = None
     source_text: str = ""
     masked_source_text: str = ""
     summary: str = ""
@@ -48,5 +52,8 @@ class MeetingSearchDocument(BaseModel):
     next_agenda: list[str] = Field(default_factory=list)
     sections: list[MeetingSearchSection] = Field(default_factory=list)
     chunks: list[MeetingSearchChunk] = Field(default_factory=list)
+    indexable_text: str = ""
     indexed_text: str = ""
     search_text: str = ""
+    retrieval_context: dict[str, Any] = Field(default_factory=dict)
+    rag_context: dict[str, Any] = Field(default_factory=dict)
