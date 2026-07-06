@@ -5,9 +5,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.exceptions import AppException
 from app.db.database import get_db
 from app.models.analysis import AnalysisResult
 from app.models.enums import ProcessingStatus
+from app.models.enums import IntegrationProvider
 from app.models.file import ExtractedContent, UploadedFile
 from app.models.project import Project
 from app.models.ticket import Ticket
@@ -18,6 +20,7 @@ from app.schemas.project import (
     MeetingUpdate,
     MemberInvite,
     MemberResponse,
+    MemberRoleUpdate,
     ProjectCreate,
     ProjectListItem,
     ProjectResponse,
@@ -25,9 +28,11 @@ from app.schemas.project import (
     ProjectUpdate,
     UploadStatusBreakdown,
 )
+from app.schemas.integration import JiraProjectOptionResponse, JiraProjectSelectRequest, ProjectIntegrationsResponse
 from app.schemas.ticket import ExternalSyncResponse, ProjectTicketItem
 from app.schemas.upload import UploadedFileResponse
 from app.services import project_service
+from app.services import external_integration_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -38,6 +43,7 @@ def _to_member_response(member) -> MemberResponse:
         email=member.email,
         name=member.name,
         role=member.role,
+        position=member.user.position if getattr(member, "user", None) else None,
         invite_status=member.invite_status,
         invited_by_name=member.invited_by.name if getattr(member, "invited_by", None) else None,
         project_id=member.project_id,
@@ -64,6 +70,7 @@ def _to_project_response(project: Project) -> ProjectResponse:
         notion_token_configured=bool(project.notion_token),
         owner_id=project.owner_id,
         team_lead=project.owner.name if project.owner else "알 수 없음",
+        team_lead_position=project.owner.position if project.owner else None,
         member_count=accepted_member_count + 1,
         members=[_to_member_response(m) for m in project.members],
         meetings=[MeetingResponse.model_validate(m) for m in project.meetings],
@@ -169,6 +176,62 @@ def delete_project(
     db: Session = Depends(get_db),
 ) -> None:
     project_service.delete_project(db, project_id, current_user.id)
+
+
+@router.get("/{project_id}/integrations", response_model=ProjectIntegrationsResponse)
+def get_project_integrations(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ProjectIntegrationsResponse:
+    statuses = external_integration_service.list_project_integration_status(db, project_id, current_user.id)
+    return ProjectIntegrationsResponse(**statuses)
+
+
+@router.post("/{project_id}/integrations/{provider}/sync-meetings")
+def sync_project_integration_meetings(
+    project_id: UUID,
+    provider: IntegrationProvider,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    statuses = external_integration_service.list_project_integration_status(db, project_id, current_user.id)
+    provider_status = statuses.get(provider.value)
+    if provider_status is None or not provider_status.connected:
+        raise AppException(detail=f"{provider.value} is not connected", status_code=403, code=f"{provider.value}_not_connected")
+    return external_integration_service.sync_project_meeting_resources(db, project_id, provider)
+
+
+@router.delete("/{project_id}/integrations/{provider}", status_code=status.HTTP_204_NO_CONTENT)
+def disconnect_project_integration(
+    project_id: UUID,
+    provider: IntegrationProvider,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    external_integration_service.disconnect_project_integration(db, project_id, provider, current_user.id)
+
+
+@router.get("/{project_id}/integrations/jira/projects", response_model=list[JiraProjectOptionResponse])
+def list_jira_projects(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[JiraProjectOptionResponse]:
+    options = external_integration_service.list_jira_projects(db, project_id, current_user.id)
+    return [JiraProjectOptionResponse(key=option.key, name=option.name) for option in options]
+
+
+@router.put("/{project_id}/integrations/jira/project", response_model=ProjectIntegrationsResponse)
+def set_jira_project(
+    project_id: UUID,
+    payload: JiraProjectSelectRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ProjectIntegrationsResponse:
+    external_integration_service.set_jira_project(db, project_id, current_user.id, payload.key, payload.name)
+    statuses = external_integration_service.list_project_integration_status(db, project_id, current_user.id)
+    return ProjectIntegrationsResponse(**statuses)
 
 
 # ── Project Stats ─────────────────────────────────────────────────────────────
@@ -348,3 +411,15 @@ def remove_member(
     db: Session = Depends(get_db),
 ) -> None:
     project_service.remove_member(db, project_id, member_id, current_user.id)
+
+
+@router.patch("/{project_id}/members/{member_id}", response_model=MemberResponse)
+def update_member_role(
+    project_id: UUID,
+    member_id: UUID,
+    payload: MemberRoleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MemberResponse:
+    member = project_service.update_member_role(db, project_id, member_id, payload, current_user.id)
+    return _to_member_response(member)

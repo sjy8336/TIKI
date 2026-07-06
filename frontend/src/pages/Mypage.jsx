@@ -3,7 +3,22 @@ import { Link, useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
-import { clearAuthSession, getSubscription } from "../api/apiClient";
+import {
+  changeCurrentUserPassword,
+  clearAuthSession,
+  deleteCurrentUser,
+  getProject,
+  getProjectIntegrations,
+  getSubscription,
+  listAuthSessions,
+  listProjectMeetings,
+  listProjects,
+  listProjectTickets,
+  logoutOtherAuthSessions,
+  revokeAuthSession,
+  subscribePlan,
+  updateCurrentUser,
+} from "../api/apiClient";
 import { PLANS, yearlyDiscount } from "../data/subscriptionPlans";
 
 // ── Icons ──────────────────────────────────────────────────────────────────
@@ -66,10 +81,20 @@ const NAV_ITEMS = [
 ];
 
 const DEPARTMENTS = [
-  "마케터",
-  "PM",
+  "기획팀",
+  "개발팀",
+  "디자인팀",
+  "마케팅팀",
+  "직접 입력",
+];
+
+const POSITIONS = [
+  "개발자",
   "디자이너",
-  "기타",
+  "PM",
+  "마케터",
+  "기획자",
+  "직접 입력",
 ];
 
 const ROLE_LABELS = {
@@ -85,10 +110,9 @@ const DEVICES = [
   { id: 3, name: "Chrome · macOS",      location: "Busan, KR", lastActive: "3일 전",       icon: "globe", current: false },
 ];
 
-const INTEGRATIONS = [
-  { id: "jira",   name: "Jira",   desc: "TIKI 앱 개발 외 3개 프로젝트 연동",  connected: true,  color: "#0052CC", initial: "J" },
-  { id: "notion", name: "Notion", desc: "아직 연동되지 않았습니다",             connected: false, color: "#111827", initial: "N" },
-];
+
+const PROFILE_ALIAS_STORAGE_KEY = "tiki_profile_identity_aliases";
+const PLAN_TIER = { free: 0, pro: 1, team: 2 };
 
 // ── Tiny helpers ──────────────────────────────────────────────────────────
 function Toast({ message, type, onClose }) {
@@ -393,63 +417,617 @@ function UsageBar({ label, value, max, unit = "" }) {
   );
 }
 
-const RECENT_MEETINGS = [
-  { id: 1, title: "TIKI 앱 개발 - 스프린트 12 리뷰", date: "6월 24일", actionItems: 5, done: 3 },
-  { id: 2, title: "Q3 로드맵 정렬 회의",              date: "6월 22일", actionItems: 3, done: 3 },
-  { id: 3, title: "디자인 시스템 토큰 점검",           date: "6월 19일", actionItems: 4, done: 1 },
-];
+const PROJECT_OVERRIDE_STORAGE_KEY = "tiki_project_overrides";
+const MANUAL_MEETING_RECORDS_KEY = "tiki_manual_minutes_records";
+const PROJECT_CATALOG_STORAGE_KEY = "tiki_project_catalog";
 
-function HomeSection({ goTo, name, email, department }) {
-  const totalActionItems = RECENT_MEETINGS.reduce((s, m) => s + m.actionItems, 0);
-  const doneActionItems = RECENT_MEETINGS.reduce((s, m) => s + m.done, 0);
-  const [planLoading, setPlanLoading] = useState(false);
-  const [currentPlanId, setCurrentPlanId] = useState(() => {
-    try {
-      const raw = localStorage.getItem("tiki_user");
-      return raw ? (JSON.parse(raw).planId ?? "free") : "free";
-    } catch {
-      return "free";
+const STATUS_LABELS = {
+  synced: "연동완료",
+  ready: "검토완료",
+  done: "수행완료",
+  completed: "수행완료",
+  "검증 전": "검토대기",
+  "진행중": "검토완료",
+  "연동 완료": "연동완료",
+  "완료": "수행완료",
+  "완료히스토리": "수행완료",
+};
+
+const readJsonObject = (key) => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const readJsonArray = (key) => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeJsonValue = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 로컬 저장 실패 시 현재 화면 갱신은 계속 진행한다.
+  }
+};
+
+function migrateLocalProfileReferences(previousAliases = [], nextName = "", nextEmail = "") {
+  const normalizedAliases = new Set(
+    previousAliases.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+  );
+  if (normalizedAliases.size === 0 || !nextName.trim()) return;
+
+  const isMine = (value) => normalizedAliases.has(String(value || "").trim().toLowerCase());
+  const migrateAction = (item) => {
+    const assignee = isMine(item?.assignee) ? nextName : item?.assignee;
+    const assigneeEmail = isMine(item?.assigneeEmail || item?.assignee_email) ? nextEmail : (item?.assigneeEmail || item?.assignee_email);
+    const assignees = Array.isArray(item?.assignees)
+      ? item.assignees.map((value) => isMine(value) ? nextName : value)
+      : item?.assignee && isMine(item.assignee) ? [nextName] : item?.assignees;
+    return {
+      ...item,
+      assignee,
+      assigneeEmail,
+      assignees,
+    };
+  };
+
+  const overrides = readJsonObject(PROJECT_OVERRIDE_STORAGE_KEY);
+  let touchedOverrides = false;
+  const nextOverrides = Object.fromEntries(Object.entries(overrides).map(([projectId, override]) => {
+    if (!override || typeof override !== "object") return [projectId, override];
+    let touchedProject = false;
+    const myActionItems = Array.isArray(override.myActionItems)
+      ? override.myActionItems.map((item) => {
+        const migrated = migrateAction(item);
+        if (JSON.stringify(migrated) !== JSON.stringify(item)) touchedProject = true;
+        return migrated;
+      })
+      : override.myActionItems;
+    if (touchedProject) touchedOverrides = true;
+    return [projectId, { ...override, myActionItems }];
+  }));
+  if (touchedOverrides) writeJsonValue(PROJECT_OVERRIDE_STORAGE_KEY, nextOverrides);
+
+  const manualRecords = readJsonObject(MANUAL_MEETING_RECORDS_KEY);
+  let touchedManual = false;
+  const nextManualRecords = Object.fromEntries(Object.entries(manualRecords).map(([recordId, record]) => {
+    if (!record || typeof record !== "object" || !Array.isArray(record.actions)) return [recordId, record];
+    let touchedRecord = false;
+    const actions = record.actions.map((item) => {
+      const migrated = migrateAction(item);
+      if (JSON.stringify(migrated) !== JSON.stringify(item)) touchedRecord = true;
+      return migrated;
+    });
+    if (touchedRecord) touchedManual = true;
+    return [recordId, { ...record, actions }];
+  }));
+  if (touchedManual) writeJsonValue(MANUAL_MEETING_RECORDS_KEY, nextManualRecords);
+}
+
+function isTemporaryProject(project) {
+  return String(project?.name || "").toLowerCase().includes("codex invitation check");
+}
+
+function normalizeStatus(status) {
+  const raw = String(status || "").trim();
+  return STATUS_LABELS[raw] || raw || "검토대기";
+}
+
+function parseFlexibleDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "-" || raw === "미정") return null;
+  const normalized = raw.replace(/[.]/g, "-");
+  const iso = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  const korean = raw.match(/^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/);
+  const short = raw.match(/^(\d{1,2})[./-](\d{1,2})$/);
+  const [, year, month, day] = iso
+    ? iso
+    : korean
+      ? korean
+      : short
+        ? [null, new Date().getFullYear(), short[1], short[2]]
+        : [];
+  if (!year || !month || !day) return null;
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getMeetingDate(meeting) {
+  return parseFlexibleDate(
+    meeting?.date ||
+    meeting?.rawDate ||
+    meeting?.created_at ||
+    meeting?.createdAt ||
+    meeting?.updated_at ||
+    meeting?.updatedAt
+  );
+}
+
+function formatMeetingDateLabel(meeting) {
+  const date = getMeetingDate(meeting);
+  if (!date) return "날짜 없음";
+  return `${date.getMonth() + 1}월 ${date.getDate()}일`;
+}
+
+function normalizeKeyText(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function getDateKey(value) {
+  const date = parseFlexibleDate(value);
+  if (!date) return "";
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function getMeetingDateKey(meeting) {
+  return getDateKey(
+    meeting?.date ||
+    meeting?.rawDate ||
+    meeting?.created_at ||
+    meeting?.createdAt ||
+    meeting?.updated_at ||
+    meeting?.updatedAt
+  );
+}
+
+function getMeetingDedupeKey(meeting) {
+  const projectKey = normalizeKeyText(meeting?.projectId || meeting?.project_id || meeting?.projectName || meeting?.project_name);
+  const titleKey = normalizeKeyText(meeting?.title || "회의 제목 없음");
+  const dateKey = getMeetingDateKey(meeting);
+  return `${projectKey}::${titleKey}::${dateKey}`;
+}
+
+function getActionDedupeKey(item) {
+  const projectKey = normalizeKeyText(item?.projectId || item?.projectName);
+  const sourceKey = normalizeKeyText(item?.source || item?.meetingTitle || item?.meetingId);
+  const titleKey = normalizeKeyText(getActionTitle(item));
+  const assigneeKey = normalizeKeyText(item?.assignee || (Array.isArray(item?.assignees) ? item.assignees.join(",") : ""));
+  return `${projectKey}::${sourceKey}::${titleKey}::${assigneeKey}`;
+}
+
+function mergePreferRicher(prev, next) {
+  const prevActionCount = Array.isArray(prev?.action_items) ? prev.action_items.length : Number(prev?.actionItems || 0);
+  const nextActionCount = Array.isArray(next?.action_items) ? next.action_items.length : Number(next?.actionItems || 0);
+  const base = nextActionCount >= prevActionCount ? { ...prev, ...next } : { ...next, ...prev };
+  return {
+    ...base,
+    date: base.date || prev?.date || next?.date || "",
+    rawDate: base.rawDate || prev?.rawDate || next?.rawDate || "",
+    created_at: base.created_at || prev?.created_at || next?.created_at || "",
+    createdAt: base.createdAt || prev?.createdAt || next?.createdAt || "",
+    action_items: Array.isArray(base.action_items)
+      ? base.action_items
+      : Array.isArray(prev?.action_items)
+        ? prev.action_items
+        : Array.isArray(next?.action_items)
+          ? next.action_items
+          : [],
+  };
+}
+
+function isSameMonth(date, target = new Date()) {
+  if (!date) return false;
+  return date.getFullYear() === target.getFullYear() && date.getMonth() === target.getMonth();
+}
+
+function getActionTitle(item) {
+  return String(item?.title || item?.text || item?.label || "").trim();
+}
+
+function isActionDone(item) {
+  return normalizeStatus(item?.status) === "수행완료";
+}
+
+function getActionStatusRank(status) {
+  const normalized = normalizeStatus(status);
+  if (normalized === "수행완료") return 4;
+  if (normalized === "연동완료") return 3;
+  if (normalized === "검토완료") return 2;
+  if (normalized === "검토대기") return 1;
+  return 0;
+}
+
+function getIntegrationKind(item) {
+  const links = item?.integrationLinks && typeof item.integrationLinks === "object" ? item.integrationLinks : {};
+  const provider = String(item?.integrationProvider || item?.integrationTool || "").toLowerCase();
+  const link = String(item?.externalLink || item?.jiraLink || "").toLowerCase();
+  const status = normalizeStatus(item?.status);
+  const syncProviders = Array.isArray(item?.external_syncs)
+    ? item.external_syncs.map((sync) => String(sync?.provider || "").toLowerCase())
+    : [];
+  const jiraLink = String(links.jira || "").toLowerCase();
+  const notionLink = String(links.notion || "").toLowerCase();
+  if (notionLink || jiraLink.includes("notion") || provider.includes("notion") || link.includes("notion") || syncProviders.includes("notion")) return "notion";
+  if ((jiraLink && !jiraLink.includes("notion")) || provider.includes("jira") || link.includes("jira") || syncProviders.includes("jira")) return "jira";
+  if (status === "연동완료") return "jira";
+  return "";
+}
+
+function getIntegrationKinds(item) {
+  const links = item?.integrationLinks && typeof item.integrationLinks === "object" ? item.integrationLinks : {};
+  const kinds = new Set();
+  const jiraLink = String(links.jira || "").toLowerCase();
+  const notionLink = String(links.notion || "").toLowerCase();
+  if (jiraLink && !jiraLink.includes("notion")) kinds.add("jira");
+  if (notionLink || jiraLink.includes("notion")) kinds.add("notion");
+  const singleKind = getIntegrationKind(item);
+  if (singleKind) kinds.add(singleKind);
+  return Array.from(kinds);
+}
+
+function mergeActionItem(prev, next) {
+  const prevRank = getActionStatusRank(prev?.status);
+  const nextRank = getActionStatusRank(next?.status);
+  const preferred = nextRank >= prevRank ? { ...prev, ...next } : { ...next, ...prev };
+  const prevIntegration = getIntegrationKind(prev);
+  const nextIntegration = getIntegrationKind(next);
+  const integrationSource = nextIntegration ? next : prevIntegration ? prev : preferred;
+  return {
+    ...preferred,
+    status: nextRank >= prevRank ? normalizeStatus(next?.status) : normalizeStatus(prev?.status),
+    integrationTool: integrationSource?.integrationTool || integrationSource?.integrationProvider || preferred.integrationTool || preferred.integrationProvider || null,
+    integrationProvider: integrationSource?.integrationProvider || preferred.integrationProvider || null,
+    integrationLinks: {
+      ...(prev?.integrationLinks && typeof prev.integrationLinks === "object" ? prev.integrationLinks : {}),
+      ...(next?.integrationLinks && typeof next.integrationLinks === "object" ? next.integrationLinks : {}),
+      ...(integrationSource?.integrationTool === "Jira" || integrationSource?.integrationProvider === "jira" ? { jira: integrationSource?.externalLink || integrationSource?.jiraLink || "" } : {}),
+      ...(integrationSource?.integrationTool === "Notion" || integrationSource?.integrationProvider === "notion" ? { notion: integrationSource?.externalLink || integrationSource?.jiraLink || "" } : {}),
+    },
+    externalLink: integrationSource?.externalLink || integrationSource?.jiraLink || preferred.externalLink || preferred.jiraLink || "",
+    jiraLink: integrationSource?.jiraLink || integrationSource?.externalLink || preferred.jiraLink || preferred.externalLink || "",
+    external_syncs: Array.isArray(integrationSource?.external_syncs) && integrationSource.external_syncs.length > 0
+      ? integrationSource.external_syncs
+      : Array.isArray(preferred.external_syncs) ? preferred.external_syncs : [],
+    checked: Boolean(prev?.checked || next?.checked || preferred.checked),
+  };
+}
+
+function formatDueLabel(value) {
+  const date = parseFlexibleDate(value);
+  if (!date) return "마감일 없음";
+  return `${date.getMonth() + 1}월 ${date.getDate()}일`;
+}
+
+function isAssignedToCurrentUser(item, aliases = []) {
+  const normalizedAliases = aliases.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (normalizedAliases.length === 0) return false;
+  const assignees = [
+    item?.assignee,
+    item?.assigneeEmail,
+    ...(Array.isArray(item?.assignees) ? item.assignees : []),
+  ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  return assignees.some((value) => normalizedAliases.includes(value));
+}
+
+function isMeetingForCurrentUser(meeting, relatedActions = [], aliases = []) {
+  const normalizedAliases = aliases.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (normalizedAliases.length === 0) return true;
+  const participants = [
+    ...(Array.isArray(meeting?.participants) ? meeting.participants : []),
+    ...(Array.isArray(meeting?.attendees) ? meeting.attendees : []),
+    meeting?.owner,
+    meeting?.createdBy,
+    meeting?.created_by,
+  ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (participants.some((value) => normalizedAliases.includes(value))) return true;
+  return relatedActions.some((item) => isAssignedToCurrentUser(item, aliases));
+}
+
+function dedupeByKey(items, makeKey) {
+  const map = new Map();
+  items.forEach((item, index) => {
+    const key = makeKey(item, index);
+    if (!map.has(key)) {
+      map.set(key, item);
+      return;
     }
+    map.set(key, mergeActionItem(map.get(key), item));
   });
-  const [currentBilling, setCurrentBilling] = useState(() => {
-    try {
-      const raw = localStorage.getItem("tiki_user");
-      return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
-    } catch {
-      return "monthly";
-    }
+  return Array.from(map.values());
+}
+
+function HomeSection({ goTo, name, email, department, aliases = [] }) {
+  const navigate = useNavigate();
+  const aliasKey = aliases.join("|");
+  const [homeLoading, setHomeLoading] = useState(true);
+  const [homeStats, setHomeStats] = useState({
+    meetingsThisMonth: 0,
+    doneActionItems: 0,
+    totalActionItems: 0,
+    // Counts of *projects* connected to each provider — not a tally of individual
+    // task links, which could keep counting a task's leftover link after the
+    // project itself was disconnected.
+    integrationCounts: { jira: 0, notion: 0 },
+    integratedProjectCount: 0,
+    totalProjectCount: 0,
+    recentMeetings: [],
+    pendingActions: [],
   });
-  const [nextBillingDate, setNextBillingDate] = useState(null);
 
   useEffect(() => {
-    if (!localStorage.getItem("tiki_access_token")) return;
-
     let cancelled = false;
-    setPlanLoading(true);
-    getSubscription()
-      .then((sub) => {
-        if (cancelled) return;
-        setCurrentPlanId(sub.plan_id || "free");
-        setCurrentBilling(sub.billing || "monthly");
-        setNextBillingDate(sub.next_billing_date || null);
-      })
-      .catch(() => {
-        // Keep locally cached plan info when API lookup fails.
-      })
-      .finally(() => {
-        if (!cancelled) setPlanLoading(false);
-      });
+    const userAliases = [...new Set([name, email, ...aliases].map((value) => String(value || "").trim()).filter(Boolean))];
 
+    const mapMeetingActionItem = (item, project, meeting, index) => ({
+      id: item?.id || `${meeting?.id || meeting?.title || "meeting"}-action-${index + 1}`,
+      title: getActionTitle(item) || "해야 할 일",
+      text: getActionTitle(item) || "해야 할 일",
+      assignee: item?.assignee || "",
+      assignees: Array.isArray(item?.assignees) && item.assignees.length > 0
+        ? item.assignees
+        : item?.assignee ? [item.assignee] : [],
+      assigneeEmail: item?.assigneeEmail || item?.assignee_email || "",
+      status: normalizeStatus(item?.status || (item?.checked ? "수행완료" : "검토대기")),
+      checked: Boolean(item?.checked),
+      projectId: String(project?.id || item?.projectId || item?.project_id || ""),
+      projectName: project?.name || item?.projectName || item?.project_name || "",
+      meetingId: String(meeting?.id || item?.meetingId || item?.meeting_id || ""),
+      source: item?.source || meeting?.title || "",
+      dueDate: item?.dueDate || item?.due || item?.due_at || "",
+      jiraLink: item?.jiraLink || item?.externalLink || "",
+      externalLink: item?.externalLink || item?.jiraLink || "",
+      integrationTool: item?.integrationTool || item?.integration_tool || null,
+      integrationProvider: item?.integrationProvider || item?.integration_provider || null,
+      integrationLinks: item?.integrationLinks || item?.integration_links || {},
+      external_syncs: item?.external_syncs || [],
+      updatedAt: item?.updatedAt || item?.updated_at || meeting?.updated_at || meeting?.created_at || "",
+    });
+
+    const mapTicketItem = (ticket, project) => {
+      const sync = Array.isArray(ticket?.external_syncs)
+        ? ticket.external_syncs.find((item) => item?.provider === "jira" || item?.provider === "notion")
+        : null;
+      return {
+        id: ticket?.id,
+        title: ticket?.title || ticket?.text || "해야 할 일",
+        text: ticket?.text || ticket?.title || "해야 할 일",
+        assignee: ticket?.assignee || "",
+        assignees: ticket?.assignee ? [ticket.assignee] : [],
+        assigneeEmail: ticket?.assignee_email || ticket?.assigneeEmail || "",
+        status: normalizeStatus(ticket?.status),
+        projectId: String(project?.id || ticket?.project_id || ""),
+        projectName: project?.name || "",
+        source: ticket?.source || "",
+        dueDate: ticket?.due_at || ticket?.dueDate || ticket?.due || "",
+        jiraLink: sync?.provider === "jira" ? sync.external_url : "",
+        externalLink: sync?.external_url || ticket?.externalLink || ticket?.jiraLink || "",
+        integrationProvider: sync?.provider || ticket?.integrationProvider || null,
+        integrationTool: sync?.provider === "jira" ? "Jira" : sync?.provider === "notion" ? "Notion" : ticket?.integrationTool || null,
+        integrationLinks: ticket?.integrationLinks || ticket?.integration_links || {},
+        external_syncs: ticket?.external_syncs || [],
+        updatedAt: ticket?.updated_at || ticket?.created_at || "",
+      };
+    };
+
+    const loadHomeStats = async () => {
+      setHomeLoading(true);
+      try {
+        const apiProjects = localStorage.getItem("tiki_access_token")
+          ? await listProjects().catch(() => [])
+          : [];
+        const apiProjectList = Array.isArray(apiProjects) ? apiProjects : [];
+        const localProjects = apiProjectList.length > 0 ? [] : readJsonArray(PROJECT_CATALOG_STORAGE_KEY);
+        const projectMap = new Map();
+        [...localProjects, ...apiProjectList]
+          .filter((project) => project?.id && !isTemporaryProject(project))
+          .forEach((project) => projectMap.set(String(project.id), project));
+        const projects = Array.from(projectMap.values());
+
+        const hasSession = Boolean(localStorage.getItem("tiki_access_token"));
+        const results = await Promise.all(
+          projects.map((project) =>
+            Promise.all([
+              hasSession ? getProject(project.id).catch(() => null) : null,
+              hasSession ? listProjectTickets(project.id).catch(() => []) : [],
+              hasSession ? listProjectMeetings(project.id).catch(() => []) : [],
+              hasSession ? getProjectIntegrations(project.id).catch(() => null) : null,
+            ]).then(([projectDetail, tickets, meetings, integrations]) => ({
+              project: projectDetail || project,
+              tickets: Array.isArray(tickets) ? tickets : [],
+              meetings: Array.isArray(meetings) ? meetings : [],
+              jiraConnected: Boolean(integrations?.jira?.connected),
+              notionConnected: Boolean(integrations?.notion?.connected),
+            }))
+          )
+        );
+
+        const overrides = readJsonObject(PROJECT_OVERRIDE_STORAGE_KEY);
+        const manualRecords = readJsonObject(MANUAL_MEETING_RECORDS_KEY);
+        const currentMonth = new Date();
+
+        const meetings = [];
+        const actionItems = [];
+
+        results.forEach(({ project, tickets, meetings: apiMeetings }) => {
+          const projectId = String(project.id);
+          const override = overrides[projectId] && typeof overrides[projectId] === "object" ? overrides[projectId] : {};
+          const detailMeetings = Array.isArray(project.meetings) ? project.meetings : [];
+          const overrideMeetings = Array.isArray(override.meetings) ? override.meetings : [];
+          const overrideActions = Array.isArray(override.myActionItems) ? override.myActionItems : [];
+          const projectMeetings = [...detailMeetings, ...apiMeetings, ...overrideMeetings]
+            .filter(Boolean)
+            .map((meeting, index) => ({
+              ...meeting,
+              id: String(meeting?.id || `${projectId}-meeting-${index + 1}`),
+              title: meeting?.title || "회의 제목 없음",
+              projectId,
+              projectName: project.name || meeting?.projectName || "",
+            }));
+
+          projectMeetings.forEach((meeting) => {
+            meetings.push(meeting);
+            (Array.isArray(meeting.action_items) ? meeting.action_items : []).forEach((item, index) => {
+              actionItems.push(mapMeetingActionItem(item, project, meeting, index));
+            });
+          });
+
+          overrideActions.forEach((item, index) => {
+            actionItems.push(mapMeetingActionItem(item, project, { id: item?.meetingId || item?.source, title: item?.source || "직접 작성 회의록" }, index));
+          });
+
+          tickets.forEach((ticket) => {
+            actionItems.push(mapTicketItem(ticket, project));
+          });
+        });
+
+        Object.values(manualRecords).forEach((record) => {
+          const project = projectMap.get(String(record?.projectId || ""));
+          if (!project || !Array.isArray(record?.actions)) return;
+          const meeting = {
+            id: String(record?.id || ""),
+            title: record?.title || "직접 작성 회의록",
+            date: record?.date || record?.rawDate || record?.createdAt || "",
+            createdAt: record?.createdAt || "",
+            projectId: String(record?.projectId || ""),
+            projectName: record?.projectName || project.name || "",
+            action_items: record.actions,
+            detailType: "manual",
+            detailRecordId: String(record?.id || ""),
+          };
+          meetings.push(meeting);
+          record.actions.forEach((item, index) => {
+            actionItems.push(mapMeetingActionItem(item, project, meeting, index));
+          });
+        });
+
+        const meetingMap = new Map();
+        meetings.forEach((meeting) => {
+          const key = getMeetingDedupeKey(meeting);
+          if (!key.replace(/:/g, "")) return;
+          if (!meetingMap.has(key)) {
+            meetingMap.set(key, meeting);
+            return;
+          }
+          meetingMap.set(key, mergePreferRicher(meetingMap.get(key), meeting));
+        });
+        const uniqueMeetings = Array.from(meetingMap.values());
+        const uniqueActions = dedupeByKey(
+          actionItems.filter((item) => getActionTitle(item)),
+          (item) => getActionDedupeKey(item)
+        );
+        const assignedActions = uniqueActions.filter((item) => isAssignedToCurrentUser(item, userAliases));
+        const scopedActions = userAliases.length > 0 ? assignedActions : uniqueActions;
+        const pendingActions = scopedActions
+          .filter((item) => !isActionDone(item))
+          .sort((left, right) => {
+            const leftDate = parseFlexibleDate(left?.dueDate);
+            const rightDate = parseFlexibleDate(right?.dueDate);
+            if (!leftDate && !rightDate) return 0;
+            if (!leftDate) return 1;
+            if (!rightDate) return -1;
+            return leftDate - rightDate;
+          })
+          .slice(0, 3)
+          .map((item) => ({
+            id: item.id || getActionDedupeKey(item),
+            title: getActionTitle(item) || "해야 할 일",
+            projectName: item.projectName || "프로젝트",
+            dueLabel: formatDueLabel(item.dueDate),
+            status: normalizeStatus(item.status),
+          }));
+        // Count *projects* connected to each provider (real, current status from
+        // getProjectIntegrations) rather than individual task links — a task can
+        // keep a leftover link after its project disconnects, which would make a
+        // per-task tally wrong/stale.
+        const integrationCounts = results.reduce(
+          (counts, { jiraConnected, notionConnected }) => {
+            if (jiraConnected) counts.jira += 1;
+            if (notionConnected) counts.notion += 1;
+            return counts;
+          },
+          { jira: 0, notion: 0 }
+        );
+        const integratedProjectCount = results.filter(
+          ({ jiraConnected, notionConnected }) => jiraConnected || notionConnected
+        ).length;
+
+        const enrichedMeetings = uniqueMeetings.map((meeting) => {
+          const meetingTitle = String(meeting?.title || "").trim();
+          const meetingId = String(meeting?.id || "").trim();
+          const relatedActions = uniqueActions.filter((item) => {
+            const sameMeetingId = meetingId && String(item?.meetingId || "") === meetingId;
+            const sameSource = meetingTitle && String(item?.source || "").trim() === meetingTitle;
+            const sameProject = String(item?.projectId || "") === String(meeting?.projectId || "");
+            return sameProject && (sameMeetingId || sameSource);
+          });
+          return { meeting, meetingTitle, meetingId, relatedActions };
+        });
+        const userMeetings = enrichedMeetings.filter(({ meeting, relatedActions }) =>
+          isMeetingForCurrentUser(meeting, relatedActions, userAliases)
+        );
+
+        const recentMeetings = userMeetings
+          .map((meeting) => {
+            const inlineActions = Array.isArray(meeting.meeting?.action_items) ? meeting.meeting.action_items : [];
+            const relatedActions = meeting.relatedActions;
+            const displayActions = relatedActions.length > 0 ? relatedActions : inlineActions;
+            const meetingDate = getMeetingDate(meeting.meeting);
+            return {
+              id: meeting.meetingId || `${meeting.meeting?.projectId || ""}-${meeting.meetingTitle}`,
+              title: meeting.meetingTitle || "회의 제목 없음",
+              date: formatMeetingDateLabel(meeting.meeting),
+              dateValue: meetingDate ? meetingDate.getTime() : 0,
+              actionItems: displayActions.length,
+              done: displayActions.filter((item) => isActionDone(item)).length,
+              projectId: String(meeting.meeting?.projectId || ""),
+              projectName: meeting.meeting?.projectName || "",
+              meetingId: meeting.meetingId,
+              detailType: meeting.meeting?.detailType === "manual" ? "manual" : "uploaded",
+              detailRecordId: meeting.meeting?.detailRecordId || "",
+              rawMeeting: meeting.meeting,
+            };
+          })
+          .sort((a, b) => b.dateValue - a.dateValue)
+          .slice(0, 3);
+
+        if (!cancelled) {
+          setHomeStats({
+            meetingsThisMonth: userMeetings.filter(({ meeting }) => isSameMonth(getMeetingDate(meeting), currentMonth)).length,
+            doneActionItems: scopedActions.filter((item) => isActionDone(item)).length,
+            totalActionItems: scopedActions.length,
+            integrationCounts,
+            integratedProjectCount,
+            totalProjectCount: projects.length,
+            recentMeetings,
+            pendingActions,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setHomeStats({
+            meetingsThisMonth: 0,
+            doneActionItems: 0,
+            totalActionItems: 0,
+            integrationCounts: { jira: 0, notion: 0 },
+            integratedProjectCount: 0,
+            totalProjectCount: 0,
+            recentMeetings: [],
+            pendingActions: [],
+          });
+        }
+      } finally {
+        if (!cancelled) setHomeLoading(false);
+      }
+    };
+
+    loadHomeStats();
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
-  const currentPrice = currentPlan.price[currentBilling] || 0;
-  const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
-  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
-  const topFeatures = currentPlan.features.filter((f) => f.included).slice(0, 3);
+  }, [name, email, aliasKey]);
 
   return (
     <div className="space-y-7">
@@ -468,60 +1046,132 @@ function HomeSection({ goTo, name, email, department }) {
       <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-[linear-gradient(135deg,rgba(0,153,204,.06),rgba(124,58,237,.05))] p-5 sm:p-6">
         <p className="mb-4 text-[12px] font-bold text-[#5A6F8A]">이번 달 활동</p>
         <div className="grid grid-cols-3 gap-4">
-          <StatBlock value="47건" label="총 회의" />
-          <StatBlock value={`${doneActionItems}/${totalActionItems}`} label="처리현황" accent />
-          <StatBlock value="132개" label="Jira 티켓 생성" />
+          <StatBlock value={homeLoading ? "..." : `${homeStats.meetingsThisMonth}건`} label="이번 달 회의" />
+          <StatBlock value={homeLoading ? "..." : `${homeStats.doneActionItems}/${homeStats.totalActionItems}`} label="내 업무 처리" accent />
+          <StatBlock
+            value={homeLoading ? "..." : `${homeStats.integratedProjectCount}/${homeStats.totalProjectCount}`}
+            label="연동 완료 프로젝트"
+          />
         </div>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
-        {/* 좌측: 프로필(계정) + 구독권 */}
-        <div className="space-y-5">
-          <div
-            onClick={() => goTo("subscription")}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                goTo("subscription");
-              }
-            }}
-            className="cursor-pointer rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 transition-colors hover:border-[rgba(0,153,204,.35)]"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <p className="text-[14px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
-                <Badge label="이용중" variant="cyan" />
-                {planLoading && <span className="text-[11px] text-[#9BAABE]">동기화 중...</span>}
-              </div>
-              <Icon name="chevronRight" size={14} color="#9BAABE" />
+      <div className="space-y-5">
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-[14px] font-bold text-[#0D1B2A]">최근 회의</h3>
+              <span className="text-[12px] text-[#9BAABE]">최근 3건</span>
             </div>
-            <p className="text-[12px] text-[#5A6F8A]">
-              {billingLabel} 결제 · {priceLabel}
-              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
-            </p>
-            <PlanFeatureList features={topFeatures} />
+            <div className="space-y-1">
+              {homeLoading && (
+                <div className="rounded-xl bg-[rgba(0,100,180,.04)] px-4 py-5 text-center text-[12px] font-semibold text-[#9BAABE]">
+                  실제 회의 데이터를 불러오는 중입니다.
+                </div>
+              )}
+              {!homeLoading && homeStats.recentMeetings.length === 0 && (
+                <div className="rounded-xl bg-[rgba(0,100,180,.04)] px-4 py-5 text-center text-[12px] font-semibold text-[#9BAABE]">
+                  최근 회의가 없습니다.
+                </div>
+              )}
+              {!homeLoading && homeStats.recentMeetings.map((m, i) => (
+                <button
+                  key={m.id || i}
+                  type="button"
+                  onClick={() => {
+                    if (!m.projectId) return;
+                    const isManual = m.detailType === "manual";
+                    navigate(isManual ? "/meeting-manual-detail" : "/meeting-detail", {
+                      state: isManual
+                        ? {
+                            recordId: m.detailRecordId || m.meetingId,
+                            meetingId: m.meetingId,
+                            meeting: m.rawMeeting,
+                            projectId: m.projectId,
+                            projectName: m.projectName,
+                          }
+                        : {
+                            meetingId: m.meetingId,
+                            meeting: m.rawMeeting,
+                            projectId: m.projectId,
+                            projectName: m.projectName,
+                          },
+                    });
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-3 py-3 text-left transition-colors hover:bg-[rgba(0,100,180,.03)]",
+                    i !== homeStats.recentMeetings.length - 1 && "border-b border-[rgba(0,100,180,.07)]"
+                  )}
+                >
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,153,204,.08)]">
+                    <Icon name="checkCircle" size={15} color={m.actionItems > 0 && m.done === m.actionItems ? "#10B981" : "#0099CC"} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{m.title}</p>
+                    <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 해야 할일 {m.done}/{m.actionItems} 완료</p>
+                  </div>
+                  <Icon name="chevronRight" size={14} color="#9BAABE" />
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* 계정 카드: 아바타·이름을 한 줄에, 이메일·부서를 보조 메타로 한 줄에 정리 */}
           <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0099CC,#7C3AED)] text-[16px] font-black text-white select-none">
-                {(name || "사")[0]}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[14px] font-bold text-[#0D1B2A]">{name}</p>
-                <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#9BAABE]">
-                  <Icon name="mail" size={11} color="#9BAABE" />
-                  <span className="truncate">{email}</span>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-[14px] font-bold text-[#0D1B2A]">내가 해야 할 일</h3>
+              <Link to="/dashboard" className="text-[11px] font-bold text-[#0099CC]">
+                전체 보기
+              </Link>
+            </div>
+            <div className="space-y-1">
+              {homeLoading && (
+                <div className="rounded-xl bg-[rgba(0,100,180,.04)] px-4 py-5 text-center text-[12px] font-semibold text-[#9BAABE]">
+                  내 업무 데이터를 불러오는 중입니다.
+                </div>
+              )}
+              {!homeLoading && homeStats.pendingActions.length === 0 && (
+                <div className="rounded-xl bg-[rgba(0,100,180,.04)] px-4 py-5 text-center text-[12px] font-semibold text-[#9BAABE]">
+                  지금 남은 내 업무가 없습니다.
+                </div>
+              )}
+              {!homeLoading && homeStats.pendingActions.map((item, index) => (
+                <div
+                  key={item.id || index}
+                  className={cn(
+                    "flex items-center gap-3 py-3",
+                    index !== homeStats.pendingActions.length - 1 && "border-b border-[rgba(0,100,180,.07)]"
+                  )}
+                >
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(245,158,11,.1)]">
+                    <Icon name="alertTriangle" size={15} color="#F59E0B" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{item.title}</p>
+                    <p className="mt-0.5 truncate text-[11px] text-[#9BAABE]">
+                      {item.projectName} · {item.status} · {item.dueLabel}
+                    </p>
+                  </div>
+                  <Icon name="chevronRight" size={14} color="#9BAABE" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-5 md:grid-cols-2">
+            <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0099CC,#7C3AED)] text-[16px] font-black text-white select-none">
+                  {(name || "사")[0]}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-bold text-[#0D1B2A]">{name}</p>
+                  <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#9BAABE]">
+                    <Icon name="mail" size={11} color="#9BAABE" />
+                    <span className="truncate">{email}</span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="my-3.5 h-px bg-[rgba(0,100,180,.07)]" />
+              <div className="my-3.5 h-px bg-[rgba(0,100,180,.07)]" />
 
-            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
                 <Icon name="briefcase" size={12} color="#5A6F8A" />
                 <span className="truncate text-[14px] font-semibold text-[#5A6F8A]">
@@ -529,33 +1179,42 @@ function HomeSection({ goTo, name, email, department }) {
                 </span>
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* 우측: 최근 회의 */}
-        <div className="space-y-5">
-          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-[14px] font-bold text-[#0D1B2A]">최근 회의</h3>
-              <span className="text-[12px] text-[#9BAABE]">최근 3건</span>
-            </div>
-            <div className="space-y-1">
-              {RECENT_MEETINGS.map((m, i) => (
-                <div key={m.id}
-                  className={cn(
-                    "flex items-center gap-3 py-3",
-                    i !== RECENT_MEETINGS.length - 1 && "border-b border-[rgba(0,100,180,.07)]"
-                  )}>
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,153,204,.08)]">
-                    <Icon name="checkCircle" size={15} color={m.done === m.actionItems ? "#10B981" : "#0099CC"} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] font-semibold text-[#0D1B2A]">{m.title}</p>
-                    <p className="mt-0.5 text-[11px] text-[#9BAABE]">{m.date} · 해야 할일 {m.done}/{m.actionItems} 완료</p>
-                  </div>
-                  <Icon name="chevronRight" size={14} color="#9BAABE" />
-                </div>
-              ))}
+            <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-[14px] font-bold text-[#0D1B2A]">연동 현황</h3>
+                <button
+                  type="button"
+                  onClick={() => goTo("integrations")}
+                  className="text-[11px] font-bold text-[#0099CC]"
+                >
+                  관리
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {[
+                  { id: "jira", label: "Jira", count: homeStats.integrationCounts.jira, color: "#0052CC" },
+                  { id: "notion", label: "Notion", count: homeStats.integrationCounts.notion, color: "#111827" },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => goTo("integrations")}
+                    className="rounded-xl border border-[rgba(0,100,180,.1)] bg-[#FAFCFF] p-3 text-left transition hover:border-[rgba(0,153,204,.35)]"
+                  >
+                    <span
+                      className="mb-2 inline-flex h-7 w-7 items-center justify-center rounded-lg text-[12px] font-black text-white"
+                      style={{ backgroundColor: item.color }}
+                    >
+                      {item.label[0]}
+                    </span>
+                    <p className="text-[12px] font-bold text-[#0D1B2A]">{item.label}</p>
+                    <p className="mt-0.5 text-[13px] font-black text-[#0099CC]">
+                      {homeLoading ? "..." : `${item.count}개 프로젝트`}
+                    </p>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -578,51 +1237,44 @@ function HomeSection({ goTo, name, email, department }) {
               </div>
             </div>
           </div>
-        </div>
       </div>
     </div>
   );
 }
 
-function ProfileSection({ showToast, initialName, initialEmail, initialDepartment }) {
+function ProfileSection({ showToast, initialName, initialEmail, initialDepartment, initialPosition }) {
   const fileRef = useRef(null);
   const [name, setName] = useState(initialName);
-  const [bio, setBio] = useState("AI 기반 회의 자동화를 연구합니다.");
+  const [email, setEmail] = useState(initialEmail);
   const [avatar, setAvatar] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState({});
 
-  // 부서: 가입 시 선택한 값을 그대로 표시. "변경" 버튼을 눌러야 수정 모드로 전환됨.
   const initialIsCustom = !!initialDepartment && !DEPARTMENTS.includes(initialDepartment);
-  const [department, setDepartment] = useState(initialDepartment || "");
-  const [isEditingDept, setIsEditingDept] = useState(false);
   const [deptSelect, setDeptSelect] = useState(initialIsCustom ? "직접 입력" : (initialDepartment || ""));
   const [deptCustom, setDeptCustom] = useState(initialIsCustom ? initialDepartment : "");
-  const [deptError, setDeptError] = useState("");
+
+  const initialPositionIsCustom = !!initialPosition && !POSITIONS.includes(initialPosition);
+  const [positionSelect, setPositionSelect] = useState(initialPositionIsCustom ? "직접 입력" : (initialPosition || ""));
+  const [positionCustom, setPositionCustom] = useState(initialPositionIsCustom ? initialPosition : "");
 
   const isCustomDept = deptSelect === "직접 입력";
+  const resolvedDepartment = isCustomDept ? deptCustom.trim() : deptSelect;
 
-  const startEditDept = () => {
-    // 수정 모드 진입 시, 현재 확정된 부서값으로 select를 다시 맞춰줌
-    const curIsCustom = !!department && !DEPARTMENTS.includes(department);
-    setDeptSelect(curIsCustom ? "직접 입력" : department);
-    setDeptCustom(curIsCustom ? department : "");
-    setDeptError("");
-    setIsEditingDept(true);
-  };
+  const isCustomPosition = positionSelect === "직접 입력";
+  const resolvedPosition = isCustomPosition ? positionCustom.trim() : positionSelect;
 
-  const cancelEditDept = () => {
-    setDeptError("");
-    setIsEditingDept(false);
-  };
-
-  const confirmDept = () => {
-    if (!deptSelect) { setDeptError("부서를 선택해 주세요."); return; }
-    if (isCustomDept && !deptCustom.trim()) { setDeptError("부서명을 입력해 주세요."); return; }
-    setDepartment(isCustomDept ? deptCustom.trim() : deptSelect);
-    setDeptError("");
-    setIsEditingDept(false);
-    showToast("부서가 변경됐습니다.");
-  };
+  useEffect(() => {
+    setName(initialName);
+    setEmail(initialEmail);
+    const nextIsCustom = !!initialDepartment && !DEPARTMENTS.includes(initialDepartment);
+    setDeptSelect(nextIsCustom ? "직접 입력" : (initialDepartment || ""));
+    setDeptCustom(nextIsCustom ? initialDepartment : "");
+    const nextPositionIsCustom = !!initialPosition && !POSITIONS.includes(initialPosition);
+    setPositionSelect(nextPositionIsCustom ? "직접 입력" : (initialPosition || ""));
+    setPositionCustom(nextPositionIsCustom ? initialPosition : "");
+    setErrors({});
+  }, [initialName, initialEmail, initialDepartment, initialPosition]);
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
@@ -632,10 +1284,71 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
     setAvatar(URL.createObjectURL(f));
   };
 
-  const save = () => {
-    if (!name.trim()) { showToast("이름을 입력해 주세요.", "error"); return; }
+  const save = async () => {
+    const nextErrors = {};
+    const nextName = name.trim();
+    const nextEmail = email.trim().toLowerCase();
+    const nextDepartment = resolvedDepartment.trim();
+    const nextPosition = resolvedPosition.trim();
+
+    if (!nextName) nextErrors.name = "이름을 입력해 주세요.";
+    if (!nextEmail) nextErrors.email = "이메일을 입력해 주세요.";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) nextErrors.email = "올바른 이메일 형식이 아닙니다.";
+    if (!deptSelect) nextErrors.department = "부서를 선택해 주세요.";
+    if (isCustomDept && !nextDepartment) nextErrors.department = "부서명을 입력해 주세요.";
+
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      showToast("프로필 정보를 확인해 주세요.", "error");
+      return;
+    }
+
     setSaving(true);
-    setTimeout(() => { setSaving(false); showToast("프로필이 저장됐습니다."); }, 900);
+    try {
+      let serverUser = null;
+      if (localStorage.getItem("tiki_access_token")) {
+        serverUser = await updateCurrentUser({
+          name: nextName,
+          email: nextEmail,
+          role: nextDepartment,
+          position: nextPosition,
+        });
+      }
+
+      const prevUser = JSON.parse(localStorage.getItem("tiki_user") || "{}");
+      const aliases = [
+        ...readJsonArray(PROFILE_ALIAS_STORAGE_KEY),
+        ...(Array.isArray(prevUser.aliases) ? prevUser.aliases : []),
+        prevUser.name,
+        prevUser.email,
+        nextName,
+        nextEmail,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      const uniqueAliases = [...new Set(aliases)];
+      migrateLocalProfileReferences(uniqueAliases, serverUser?.name || nextName, serverUser?.email || nextEmail);
+      const nextUser = {
+        ...prevUser,
+        ...(serverUser || {}),
+        id: prevUser.id || serverUser?.id,
+        accountId: prevUser.accountId || prevUser.id || serverUser?.id || prevUser.email,
+        name: serverUser?.name || nextName,
+        email: serverUser?.email || nextEmail,
+        role: serverUser?.role ?? nextDepartment,
+        department: nextDepartment,
+        position: serverUser?.position ?? nextPosition,
+        aliases: uniqueAliases,
+      };
+      localStorage.setItem("tiki_user", JSON.stringify(nextUser));
+      localStorage.setItem(PROFILE_ALIAS_STORAGE_KEY, JSON.stringify(uniqueAliases));
+      window.dispatchEvent(new Event("tiki-auth-changed"));
+      showToast("프로필이 저장됐습니다.");
+    } catch (error) {
+      showToast(error?.status === 409 ? "이미 사용 중인 이메일입니다." : (error?.message || "프로필 저장에 실패했습니다."), "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -645,13 +1358,12 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
         <p className="mt-1 text-[13px] text-[#5A6F8A]">서비스에서 표시될 내 정보를 관리합니다.</p>
       </div>
 
-      {/* Avatar block */}
       <div className="flex items-center gap-5">
         <div className="relative">
           <div className="h-[80px] w-[80px] overflow-hidden rounded-2xl border-2 border-[rgba(0,153,204,.2)] bg-[linear-gradient(135deg,rgba(0,153,204,.15),rgba(124,58,237,.15))] shadow-[0_4px_16px_rgba(0,0,0,.08)]">
             {avatar
               ? <img src={avatar} className="h-full w-full object-cover" alt="avatar" />
-              : <div className="flex h-full w-full items-center justify-center text-[32px] font-black text-[#0099CC] select-none">{name[0]}</div>
+              : <div className="flex h-full w-full items-center justify-center text-[32px] font-black text-[#0099CC] select-none">{(name || "사")[0]}</div>
             }
           </div>
           <button onClick={() => fileRef.current?.click()}
@@ -662,7 +1374,7 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
         </div>
         <div className="space-y-1.5">
           <p className="text-[14px] font-bold text-[#0D1B2A]">{name || "이름 없음"}</p>
-          <p className="text-[12px] text-[#5A6F8A]">{initialEmail}</p>
+          <p className="text-[12px] text-[#5A6F8A]">{email}</p>
           <div className="flex gap-2 pt-0.5">
             <button onClick={() => fileRef.current?.click()}
               className="rounded-lg border border-[rgba(0,100,180,.15)] bg-white px-3 py-1.5 text-[12px] font-semibold text-[#5A6F8A] transition-colors hover:border-[rgba(0,153,204,.4)] hover:text-[#0099CC]">
@@ -681,64 +1393,61 @@ function ProfileSection({ showToast, initialName, initialEmail, initialDepartmen
 
       <Divider />
 
-      {/* Fields */}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="이름 (닉네임)">
-          <Input value={name} onChange={e => setName(e.target.value)} placeholder="이름 입력" />
+        <Field label="이름 (닉네임)" error={errors.name}>
+          <Input
+            value={name}
+            onChange={e => { setName(e.target.value); setErrors((prev) => ({ ...prev, name: "" })); }}
+            placeholder="이름 입력"
+            error={!!errors.name}
+          />
         </Field>
-        <Field label="이메일" hint="이메일은 로그인 ID로, 변경할 수 없습니다.">
-          <Input value={initialEmail} disabled />
+        <Field label="이메일" hint="이메일을 변경해도 기존 프로젝트와 회의록은 계정 ID 기준으로 유지됩니다." error={errors.email}>
+          <Input
+            type="email"
+            value={email}
+            onChange={e => { setEmail(e.target.value); setErrors((prev) => ({ ...prev, email: "" })); }}
+            placeholder="이메일 입력"
+            error={!!errors.email}
+          />
         </Field>
 
-        <Field label="부서">
-          {!isEditingDept ? (
-            <div className="flex items-center justify-between rounded-xl border border-[rgba(0,100,180,.15)] bg-[#F8FAFF] px-3.5 py-2.5">
-              <div className="flex items-center gap-2">
-                <Icon name="briefcase" size={14} color="#5A6F8A" />
-                <span className="text-[13px] font-semibold text-[#0D1B2A]">
-                  {department || "부서 미설정"}
-                </span>
-              </div>
-              <button onClick={startEditDept}
-                className="shrink-0 rounded-lg border border-[rgba(0,100,180,.15)] bg-white px-2.5 py-1 text-[12px] font-semibold text-[#5A6F8A] transition-colors hover:border-[rgba(0,153,204,.4)] hover:text-[#0099CC]">
-                변경
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Select
-                value={deptSelect}
-                onChange={e => { setDeptSelect(e.target.value); setDeptError(""); }}
-                options={DEPARTMENTS}
-                placeholder="부서 선택"
-                error={deptError}
-                autoOpen={isEditingDept}
+        <Field label="부서" error={errors.department}>
+          <div className="space-y-2">
+            <Select
+              value={deptSelect}
+              onChange={e => { setDeptSelect(e.target.value); setErrors((prev) => ({ ...prev, department: "" })); }}
+              options={DEPARTMENTS}
+              placeholder="부서 선택"
+              error={errors.department}
+            />
+            {isCustomDept && (
+              <Input
+                value={deptCustom}
+                onChange={e => { setDeptCustom(e.target.value); setErrors((prev) => ({ ...prev, department: "" })); }}
+                placeholder="부서명을 입력하세요"
+                error={!!errors.department}
               />
-              {isCustomDept && (
-                <Input
-                  value={deptCustom}
-                  onChange={e => { setDeptCustom(e.target.value); setDeptError(""); }}
-                  placeholder="부서명을 입력하세요"
-                  error={!!deptError}
-                />
-              )}
-              {deptError && <p className="text-[12px] text-[#EF4444]">{deptError}</p>}
-              <div className="flex gap-2">
-                <button onClick={confirmDept}
-                  className="rounded-lg bg-[linear-gradient(135deg,#0099CC,#0077AA)] px-3 py-1.5 text-[12px] font-bold text-white">
-                  확인
-                </button>
-                <button onClick={cancelEditDept}
-                  className="rounded-lg border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] px-3 py-1.5 text-[12px] font-semibold text-[#5A6F8A]">
-                  취소
-                </button>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </Field>
 
-        <Field label="한 줄 소개" className="sm:col-span-2">
-          <Input value={bio} onChange={e => setBio(e.target.value)} placeholder="간단한 소개를 입력하세요" />
+        <Field label="포지션">
+          <div className="space-y-2">
+            <Select
+              value={positionSelect}
+              onChange={e => setPositionSelect(e.target.value)}
+              options={POSITIONS}
+              placeholder="포지션 선택"
+            />
+            {isCustomPosition && (
+              <Input
+                value={positionCustom}
+                onChange={e => setPositionCustom(e.target.value)}
+                placeholder="포지션을 입력하세요"
+              />
+            )}
+          </div>
         </Field>
       </div>
 
@@ -766,26 +1475,44 @@ function SecuritySection({ showToast, setModal }) {
     </button>
   );
 
-  const save = () => {
+  const save = async () => {
     const e = {};
     if (!cur) e.cur = "현재 비밀번호를 입력해 주세요.";
     if (!/^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/.test(nw))
       e.nw = "8자 이상, 영문·숫자·특수문자(@$!%*?&)를 모두 포함해야 합니다.";
+    if (cur && nw && cur === nw) e.nw = "새 비밀번호는 현재 비밀번호와 달라야 합니다.";
     if (nw !== cf) e.cf = "새 비밀번호가 일치하지 않습니다.";
     setErrs(e);
     if (Object.keys(e).length) return;
     setSaving(true);
-    setTimeout(() => {
-      setSaving(false); setCur(""); setNw(""); setCf("");
+    try {
+      await changeCurrentUserPassword({ currentPassword: cur, newPassword: nw });
+      setCur("");
+      setNw("");
+      setCf("");
+      setErrs({});
       showToast("비밀번호가 변경됐습니다.");
-    }, 1000);
+    } catch (error) {
+      const message =
+        error?.detail === "Current password is incorrect" ||
+        error?.message === "Current password is incorrect"
+          ? "현재 비밀번호가 올바르지 않습니다."
+          : error?.detail === "New password must be different from current password" ||
+            error?.message === "New password must be different from current password"
+          ? "새 비밀번호는 현재 비밀번호와 달라야 합니다."
+          : error?.message || "비밀번호 변경에 실패했습니다.";
+      setErrs((prev) => ({ ...prev, form: message }));
+      showToast(message, "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">보안</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">계정 보호를 위해 주기적으로 비밀번호를 변경하세요.</p>
+        <p className="mt-1 text-[13px] text-[#5A6F8A]">계정 보호를 위해 현재 비밀번호 확인 후 새 비밀번호로 변경할 수 있습니다.</p>
       </div>
 
       {/* PW change */}
@@ -804,6 +1531,7 @@ function SecuritySection({ showToast, setModal }) {
           <Input type={show.cf ? "text" : "password"} value={cf}
             onChange={e => setCf(e.target.value)} placeholder="새 비밀번호 재입력" error={errs.cf} rightEl={eyeBtn("cf")} />
         </Field>
+        {errs.form && <p className="text-[12px] font-semibold text-[#EF4444]">{errs.form}</p>}
         <div className="pt-1">
           <SaveButton onClick={save} loading={saving} label="비밀번호 변경" />
         </div>
@@ -817,8 +1545,8 @@ function SecuritySection({ showToast, setModal }) {
           <div>
             <p className="text-[13px] font-bold text-[#0D1B2A]">계정 탈퇴</p>
             <p className="mt-1 text-[12px] leading-[1.6] text-[#5A6F8A]">
-              탈퇴 시 모든 프로젝트, 회의록, 연동 데이터가<br />
-              영구 삭제되며 복구할 수 없습니다.
+              탈퇴하면 이 계정으로 다시 로그인할 수 없습니다.<br />
+              프로젝트 기록에는 탈퇴한 사용자로 표시됩니다.
             </p>
           </div>
           <button onClick={() => setModal("delete")}
@@ -831,117 +1559,338 @@ function SecuritySection({ showToast, setModal }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-function IntegrationsSection({ showToast }) {
-  const [items, setItems] = useState(INTEGRATIONS);
+function AccountDeleteModal({ onCancel, onDeleted, showToast }) {
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const toggle = (id) => {
-    setItems(p => p.map(i => i.id === id ? { ...i, connected: !i.connected } : i));
-    const item = items.find(i => i.id === id);
-    showToast(item.connected ? `${item.name} 연동이 해제됐습니다.` : `${item.name}과 연동됐습니다.`);
+  const confirmDelete = async () => {
+    if (!password) {
+      setError("비밀번호를 입력해 주세요.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      await deleteCurrentUser({ password });
+      onDeleted();
+    } catch (err) {
+      const message =
+        err?.detail === "Password is incorrect" || err?.message === "Password is incorrect"
+          ? "비밀번호가 올바르지 않습니다."
+          : err?.message || "계정 탈퇴에 실패했습니다.";
+      setError(message);
+      showToast(message, "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">외부 툴 연동</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">TIKI와 연동된 외부 서비스를 한눈에 확인하고 관리하세요.</p>
-      </div>
-
-      <div className="space-y-3">
-        {items.map(item => (
-          <div key={item.id}
-            className="flex items-center gap-4 rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4 transition-shadow hover:shadow-[0_4px_16px_rgba(0,60,150,.07)]">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[14px] font-black text-white"
-              style={{ background: item.color }}>
-              {item.initial}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[14px] font-bold text-[#0D1B2A]">{item.name}</span>
-                <Badge label={item.connected ? "연동됨" : "미연동"} variant={item.connected ? "success" : "default"} />
-              </div>
-              <p className="mt-0.5 truncate text-[12px] text-[#5A6F8A]">{item.desc}</p>
-            </div>
-            <button
-              onClick={() => toggle(item.id)}
-              className={cn(
-                "shrink-0 rounded-xl px-4 py-2 text-[12px] font-bold transition-all",
-                item.connected
-                  ? "border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] text-[#5A6F8A] hover:border-[rgba(239,68,68,.3)] hover:bg-[rgba(239,68,68,.06)] hover:text-[#EF4444]"
-                  : "bg-[linear-gradient(135deg,#0099CC,#0077AA)] text-white shadow-[0_2px_8px_rgba(0,153,204,.25)] hover:shadow-[0_4px_14px_rgba(0,153,204,.35)]"
-              )}>
-              {item.connected ? "연동 해제" : "연동하기"}
-            </button>
-          </div>
-        ))}
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[2px]">
+      <div className="w-full max-w-[420px] rounded-2xl border border-[rgba(239,68,68,.16)] bg-white p-6 shadow-[0_32px_80px_rgba(0,0,0,.2)]">
+        <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-[rgba(239,68,68,.1)]">
+          <Icon name="alertTriangle" size={20} color="#EF4444" />
+        </div>
+        <h3 className="mb-1.5 text-center text-[16px] font-bold text-[#0D1B2A]">정말 탈퇴하시겠습니까?</h3>
+        <p className="mb-5 text-center text-[13px] leading-[1.65] text-[#5A6F8A]">
+          비밀번호 확인 후 계정이 비활성화됩니다. 이후 이 이메일로 다시 로그인할 수 없습니다.
+        </p>
+        <Field label="현재 비밀번호" error={error}>
+          <Input
+            type={showPassword ? "text" : "password"}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="현재 비밀번호"
+            error={error}
+            rightEl={
+              <button
+                onClick={() => setShowPassword((value) => !value)}
+                className="text-[#9BAABE] transition-colors hover:text-[#0099CC]"
+              >
+                <Icon name={showPassword ? "eyeOff" : "eye"} size={15} color="currentColor" />
+              </button>
+            }
+          />
+        </Field>
+        <div className="mt-6 flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="flex-1 rounded-xl border border-[rgba(0,0,0,.1)] bg-[rgba(0,0,0,.04)] py-2.5 text-[13px] font-semibold text-[#5A6F8A] disabled:opacity-60"
+          >
+            취소
+          </button>
+          <button
+            onClick={confirmDelete}
+            disabled={loading}
+            className="flex-1 rounded-xl bg-[#EF4444] py-2.5 text-[13px] font-bold text-white disabled:opacity-60"
+          >
+            {loading ? "처리 중..." : "탈퇴하기"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-function SessionsSection({ showToast, setModal }) {
-  const [devices, setDevices] = useState(DEVICES);
+function IntegrationsSection({ showToast }) {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const logoutDevice = (id) => {
-    setDevices(p => p.filter(d => d.id !== id));
-    showToast("해당 기기에서 로그아웃됐습니다.");
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        if (!localStorage.getItem("tiki_access_token")) {
+          if (!cancelled) setRows([]);
+          return;
+        }
+        const apiProjects = await listProjects().catch(() => []);
+        const projects = (Array.isArray(apiProjects) ? apiProjects : []).filter(
+          (project) => project?.id && !isTemporaryProject(project)
+        );
+        const results = await Promise.all(
+          projects.map((project) =>
+            getProjectIntegrations(project.id)
+              .then((integrations) => ({
+                id: project.id,
+                name: project.name || "이름 없는 프로젝트",
+                createdAt: project.created_at || "",
+                jiraConnected: Boolean(integrations?.jira?.connected),
+                notionConnected: Boolean(integrations?.notion?.connected),
+              }))
+              .catch(() => ({
+                id: project.id,
+                name: project.name || "이름 없는 프로젝트",
+                createdAt: project.created_at || "",
+                jiraConnected: false,
+                notionConnected: false,
+              }))
+          )
+        );
+        results.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+        if (!cancelled) setRows(results);
+      } catch (error) {
+        if (!cancelled) {
+          setRows([]);
+          showToast(error?.message || "연동 현황을 불러오지 못했습니다.", "error");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast]);
+
+  const goToProjectIntegration = (projectId) => {
+    navigate(`/configuration?projectId=${projectId}&tab=integration`);
   };
 
-  const ICON_MAP = { monitor: "monitor", smartphone: "smartphone", globe: "globe" };
+  const visibleRows = rows.filter((row) =>
+    row.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
+  );
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">외부 툴 연동</h2>
+        <p className="mt-1 text-[13px] text-[#5A6F8A]">
+          Jira/Notion 연동은 프로젝트 단위로 이루어집니다. 아래에서 프로젝트별 연동 상태를 확인하고, 프로젝트를 선택하면 실제 연동/해제가 가능한 설정 화면으로 이동합니다.
+        </p>
+      </div>
+
+      {!loading && rows.length > 0 && (
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="프로젝트 이름으로 검색"
+          className="w-full max-w-sm rounded-xl border border-[rgba(0,100,180,.15)] bg-white px-4 py-2.5 text-[13px] text-[#0D1B2A] placeholder:text-[#9BAABE] focus:outline-none focus:ring-2 focus:ring-[rgba(0,100,180,.2)]"
+        />
+      )}
+
+      {loading ? (
+        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-8 text-center text-[13px] text-[#9BAABE]">
+          연동 현황을 불러오는 중입니다.
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-8 text-center text-[13px] text-[#9BAABE]">
+          참여 중인 프로젝트가 없습니다.
+        </div>
+      ) : visibleRows.length === 0 ? (
+        <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-8 text-center text-[13px] text-[#9BAABE]">
+          검색 결과가 없습니다.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {visibleRows.map((row) => (
+            <button
+              key={row.id}
+              type="button"
+              onClick={() => goToProjectIntegration(row.id)}
+              className="flex w-full items-center gap-4 rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4 text-left transition-shadow hover:shadow-[0_4px_16px_rgba(0,60,150,.07)]"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[14px] font-bold text-[#0D1B2A]">{row.name}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Badge
+                  label={`Jira ${row.jiraConnected ? "연동됨" : "미연동"}`}
+                  variant={row.jiraConnected ? "success" : "default"}
+                />
+                <Badge
+                  label={`Notion ${row.notionConnected ? "연동됨" : "미연동"}`}
+                  variant={row.notionConnected ? "success" : "default"}
+                />
+              </div>
+              <Icon name="chevronRight" size={14} color="#9BAABE" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+function SessionsSection({ showToast }) {
+  const [devices, setDevices] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [actionId, setActionId] = useState(null);
+
+  const loadSessions = useCallback(() => {
+    if (!localStorage.getItem("tiki_access_token")) {
+      setDevices([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    listAuthSessions()
+      .then((sessions) => setDevices(Array.isArray(sessions) ? sessions : []))
+      .catch((error) => {
+        setDevices([]);
+        showToast(error?.message || "세션 목록을 불러오지 못했습니다.", "error");
+      })
+      .finally(() => setLoading(false));
+  }, [showToast]);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  const logoutDevice = async (id) => {
+    setActionId(id);
+    try {
+      await revokeAuthSession(id);
+      setDevices((prev) => prev.filter((session) => session.id !== id));
+      showToast("해당 기기에서 로그아웃됐습니다.");
+    } catch (error) {
+      showToast(error?.message || "해당 기기 로그아웃에 실패했습니다.", "error");
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const logoutOthers = async () => {
+    setActionId("all");
+    try {
+      await logoutOtherAuthSessions();
+      setDevices((prev) => prev.filter((session) => session.is_current));
+      showToast("다른 모든 기기에서 로그아웃됐습니다.");
+    } catch (error) {
+      showToast(error?.message || "다른 기기 로그아웃에 실패했습니다.", "error");
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const ICON_MAP = { Windows: "monitor", macOS: "monitor", Linux: "monitor", iOS: "smartphone", Android: "smartphone" };
+  const formatSessionDate = (value) => {
+    if (!value) return "접속 기록 없음";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "접속 기록 없음";
+    return date.toLocaleString("ko-KR", {
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+  const otherSessionsCount = devices.filter((session) => !session.is_current).length;
 
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">세션 관리</h2>
-        <p className="mt-1 text-[13px] text-[#5A6F8A]">현재 로그인된 기기를 확인하고 관리하세요.</p>
+        <p className="mt-1 text-[13px] text-[#5A6F8A]">실제로 로그인된 기기를 확인하고, 사용하지 않는 기기를 로그아웃할 수 있습니다.</p>
       </div>
 
       <div className="space-y-2.5">
-        {devices.map(d => (
+        {loading && (
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-[#FAFCFF] p-5 text-center text-[13px] font-semibold text-[#5A6F8A]">
+            세션을 불러오는 중입니다...
+          </div>
+        )}
+        {!loading && devices.length === 0 && (
+          <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-[#FAFCFF] p-5 text-center text-[13px] font-semibold text-[#5A6F8A]">
+            활성화된 로그인 세션이 없습니다. 다시 로그인해 주세요.
+          </div>
+        )}
+        {!loading && devices.map(d => (
           <div key={d.id}
             className={cn(
               "flex items-center gap-4 rounded-2xl border p-4 transition-all",
-              d.current
+              d.is_current
                 ? "border-[rgba(0,153,204,.25)] bg-[rgba(0,153,204,.04)]"
                 : "border-[rgba(0,100,180,.1)] bg-white hover:shadow-[0_2px_12px_rgba(0,60,150,.06)]"
             )}>
             <div className={cn(
               "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border",
-              d.current ? "border-[rgba(0,153,204,.2)] bg-[rgba(0,153,204,.08)]" : "border-[rgba(0,100,180,.1)] bg-[#F8FAFF]"
+              d.is_current ? "border-[rgba(0,153,204,.2)] bg-[rgba(0,153,204,.08)]" : "border-[rgba(0,100,180,.1)] bg-[#F8FAFF]"
             )}>
-              <Icon name={ICON_MAP[d.icon]} size={17} color={d.current ? "#0099CC" : "#5A6F8A"} />
+              <Icon name={ICON_MAP[d.os] || "globe"} size={17} color={d.is_current ? "#0099CC" : "#5A6F8A"} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px] font-bold text-[#0D1B2A]">{d.name}</span>
-                {d.current && (
+                <span className="text-[13px] font-bold text-[#0D1B2A]">{d.device_name}</span>
+                {d.is_current && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-[rgba(16,185,129,.1)] px-2 py-0.5 text-[10px] font-bold text-[#10B981]">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#10B981]" />
                     현재 기기
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 text-[12px] text-[#5A6F8A]">{d.location} · {d.lastActive}</p>
+              <p className="mt-0.5 text-[12px] text-[#5A6F8A]">
+                {d.ip_address || "IP 확인 중"} · 마지막 활동 {formatSessionDate(d.last_seen_at || d.created_at)}
+              </p>
             </div>
-            {!d.current && (
-              <button onClick={() => logoutDevice(d.id)}
+            {!d.is_current && (
+              <button onClick={() => logoutDevice(d.id)} disabled={actionId === d.id}
                 className="shrink-0 flex items-center gap-1.5 rounded-xl border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.05)] px-3.5 py-2 text-[12px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.1)]">
                 <Icon name="logOut" size={13} color="#EF4444" />
-                로그아웃
+                {actionId === d.id ? "처리 중" : "로그아웃"}
               </button>
             )}
           </div>
         ))}
       </div>
 
-      {devices.filter(d => !d.current).length > 0 && (
+      {otherSessionsCount > 0 && (
         <div className="pt-2">
-          <button onClick={() => setModal("logout-all")}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.04)] py-3 text-[13px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.08)]">
+          <button onClick={logoutOthers} disabled={actionId === "all"}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-[rgba(239,68,68,.2)] bg-[rgba(239,68,68,.04)] py-3 text-[13px] font-bold text-[#EF4444] transition-all hover:bg-[rgba(239,68,68,.08)] disabled:opacity-60">
             <Icon name="logOut" size={14} color="#EF4444" />
-            다른 모든 기기에서 로그아웃
+            {actionId === "all" ? "처리 중..." : "다른 모든 기기에서 로그아웃"}
           </button>
         </div>
       )}
@@ -1014,23 +1963,42 @@ function DataSection({ showToast }) {
 function SubscriptionSection({ showToast, isMobile }) {
   const navigate = useNavigate();
   const [planLoading, setPlanLoading] = useState(false);
-  const [currentPlanId, setCurrentPlanId] = useState(() => {
+  const [subscription, setSubscription] = useState(null);
+  const cachedPlanId = (() => {
     try {
       const raw = localStorage.getItem("tiki_user");
       return raw ? (JSON.parse(raw).planId ?? "free") : "free";
     } catch {
       return "free";
     }
-  });
-  const [currentBilling, setCurrentBilling] = useState(() => {
+  })();
+  const cachedBilling = (() => {
     try {
       const raw = localStorage.getItem("tiki_user");
       return raw ? (JSON.parse(raw).billing ?? "monthly") : "monthly";
     } catch {
       return "monthly";
     }
-  });
-  const [nextBillingDate, setNextBillingDate] = useState(null);
+  })();
+
+  const syncLocalSubscription = (sub) => {
+    try {
+      const raw = localStorage.getItem("tiki_user");
+      const user = raw ? JSON.parse(raw) : {};
+      localStorage.setItem("tiki_user", JSON.stringify({
+        ...user,
+        isSubscribed: sub.plan_id !== "free",
+        planId: sub.plan_id || "free",
+        billing: sub.billing || "monthly",
+        nextBillingAt: sub.next_billing_at || null,
+        currentPeriodStartedAt: sub.current_period_started_at || sub.updated_at || null,
+        currentPeriodEndsAt: sub.current_period_ends_at || sub.next_billing_at || null,
+      }));
+      window.dispatchEvent(new Event("tiki-auth-changed"));
+    } catch {
+      // 서버 구독 정보가 원본이므로 로컬 캐시 저장 실패는 무시한다.
+    }
+  };
 
   useEffect(() => {
     if (!localStorage.getItem("tiki_access_token")) return;
@@ -1040,9 +2008,8 @@ function SubscriptionSection({ showToast, isMobile }) {
     getSubscription()
       .then((sub) => {
         if (cancelled) return;
-        setCurrentPlanId(sub.plan_id || "free");
-        setCurrentBilling(sub.billing || "monthly");
-        setNextBillingDate(sub.next_billing_date || null);
+        setSubscription(sub);
+        syncLocalSubscription(sub);
       })
       .catch(() => {
         // Keep locally cached plan info when API lookup fails.
@@ -1056,10 +2023,25 @@ function SubscriptionSection({ showToast, isMobile }) {
     };
   }, []);
 
+  const currentPlanId = subscription?.plan_id || cachedPlanId;
+  const currentBilling = subscription?.billing || cachedBilling;
   const currentPlan = PLANS.find((p) => p.id === currentPlanId) || PLANS[0];
   const currentPrice = currentPlan.price[currentBilling] || 0;
   const billingLabel = currentBilling === "yearly" ? "연간" : "월간";
-  const priceLabel = currentPrice === 0 ? "무료" : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+  const priceLabel =
+    currentPrice === 0
+      ? "무료"
+      : currentBilling === "yearly"
+      ? `${currentPrice.toLocaleString("ko-KR")}원/월 · 연간 결제`
+      : `${currentPrice.toLocaleString("ko-KR")}원/월`;
+  const startedAt = subscription?.current_period_started_at || subscription?.updated_at;
+  const endsAt = subscription?.current_period_ends_at || subscription?.next_billing_at;
+  const formatSubDate = (value) => {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" });
+  };
 
   const topFeatures = [
     currentPlan.features.find((f) => f.label.includes("회의 분석")),
@@ -1067,30 +2049,85 @@ function SubscriptionSection({ showToast, isMobile }) {
     currentPlan.features.find((f) => f.label.includes("팀원 초대")),
     currentPlan.features.find((f) => f.label.includes("해야 할 일")),
   ].filter(Boolean);
+  const includedFeatures = currentPlan.features.filter((feature) => feature.included);
+  const goSubscription = () => navigate("/subscription", { state: { mobileTab: "mypage" } });
+
+  const [changingPlanId, setChangingPlanId] = useState(null);
+
+  // Upgrades need a real charge, so send those through the actual Toss
+  // checkout flow. A downgrade (including cancelling back to Free) removes
+  // access rather than adding it, so it doesn't need payment — apply it here
+  // directly instead of bouncing to /subscription, which itself used to just
+  // refuse downgrades and point back to this page (a dead end for the user).
+  const handleChangePlan = async (plan) => {
+    if (plan.id === currentPlanId) return;
+    const isUpgrade = (PLAN_TIER[plan.id] ?? 0) > (PLAN_TIER[currentPlanId] ?? 0);
+    if (isUpgrade) {
+      navigate("/subscription/checkout", { state: { plan, billing: currentBilling } });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      plan.id === "free"
+        ? `구독을 해지하고 무료 플랜으로 전환할까요? 유료 기능(${currentPlan.name} 플랜 전용 기능 포함)을 더 이상 사용할 수 없습니다.`
+        : `${currentPlan.name}에서 ${plan.name} 플랜으로 변경할까요? 다운그레이드는 즉시 적용되며, 상위 플랜 전용 기능을 더 이상 사용할 수 없습니다.`
+    );
+    if (!confirmed) return;
+
+    setChangingPlanId(plan.id);
+    try {
+      const sub = await subscribePlan({ planId: plan.id, billing: currentBilling });
+      setSubscription(sub);
+      syncLocalSubscription(sub);
+      showToast(plan.id === "free" ? "구독이 해지되었습니다." : "플랜이 변경되었습니다.");
+    } catch (error) {
+      showToast(error?.message || "플랜 변경에 실패했습니다.", "error");
+    } finally {
+      setChangingPlanId(null);
+    }
+  };
+
+  const handleCancelSubscription = () => handleChangePlan(PLANS.find((p) => p.id === "free"));
 
   return (
     <div className="space-y-8">
-      <div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-[18px] font-bold tracking-[-0.3px] text-[#0D1B2A]">구독권 관리</h2>
+        <button
+          onClick={goSubscription}
+          className="inline-flex items-center justify-center rounded-xl bg-[linear-gradient(135deg,#0099CC,#7C3AED)] px-4 py-2 text-[12px] font-bold text-white shadow-[0_8px_18px_rgba(0,153,204,.18)]"
+        >
+          플랜 업그레이드
+        </button>
       </div>
 
       <div className="rounded-2xl border border-[rgba(0,100,180,.12)] bg-[linear-gradient(135deg,rgba(0,153,204,.08),rgba(124,58,237,.07))] p-5">
-        <div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="mb-2 flex items-center gap-2">
-              <Badge label="현재 플랜" variant="cyan" />
-              <p className="text-[16px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge label="이용 중" variant="cyan" />
+              <p className="text-[18px] font-black text-[#0D1B2A]">TIKI {currentPlan.name}</p>
               {planLoading && <span className="text-[11px] text-[#5A6F8A]">동기화 중...</span>}
             </div>
-            <p className="text-[13px] text-[#4A5D78]">
-              {billingLabel} 결제 · {priceLabel}
-              {nextBillingDate ? ` · 다음 결제일 ${nextBillingDate}` : ""}
-            </p>
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              {topFeatures.slice(0, 3).map((feature) => (
+            <p className="text-[13px] text-[#4A5D78]">{billingLabel} 플랜 · {priceLabel}</p>
+            <div className="mt-3 grid gap-2 text-[12px] text-[#4A5D78] sm:grid-cols-2">
+              <div className="rounded-xl bg-white/70 px-3 py-2">
+                <span className="block text-[11px] font-semibold text-[#8A9AB0]">사용 시작일</span>
+                <strong className="text-[#0D1B2A]">{formatSubDate(startedAt) || "가입일 기준 이용 중"}</strong>
+              </div>
+              <div className="rounded-xl bg-white/70 px-3 py-2">
+                <span className="block text-[11px] font-semibold text-[#8A9AB0]">{currentPlanId === "free" ? "사용 기간" : "다음 결제일"}</span>
+                <strong className="text-[#0D1B2A]">{currentPlanId === "free" ? "제한 없이 이용 가능" : formatSubDate(endsAt) || "결제일 확인 중"}</strong>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-white/70 bg-white/70 p-3 sm:w-[240px]">
+            <p className="text-[12px] font-bold text-[#0D1B2A]">현재 플랜 핵심 제공 항목</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {topFeatures.slice(0, 4).map((feature) => (
                 <span
                   key={feature.label}
-                  className="inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#0D1B2A]"
+                  className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
                 >
                   {formatPlanFeatureLabel(feature.label)}
                 </span>
@@ -1105,23 +2142,13 @@ function SubscriptionSection({ showToast, isMobile }) {
           const selected = plan.id === currentPlanId;
           const planPrice = plan.price[currentBilling] || 0;
           const discount = yearlyDiscount(plan);
-          const canNavigateToSubscription = isMobile && !selected;
+          const isUpgrade = (PLAN_TIER[plan.id] ?? 0) > (PLAN_TIER[currentPlanId] ?? 0);
 
           return (
             <div
               key={plan.id}
-              onClick={canNavigateToSubscription ? () => navigate("/subscription", { state: { mobileTab: "mypage" } }) : undefined}
-              role={canNavigateToSubscription ? "button" : undefined}
-              tabIndex={canNavigateToSubscription ? 0 : undefined}
-              onKeyDown={canNavigateToSubscription ? (e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  navigate("/subscription", { state: { mobileTab: "mypage" } });
-                }
-              } : undefined}
               className={cn(
                 "rounded-2xl border p-4 transition-colors",
-                canNavigateToSubscription && "cursor-pointer active:scale-[0.99]",
                 selected
                   ? "border-[rgba(0,153,204,.35)] bg-[rgba(0,153,204,.06)]"
                   : "border-[rgba(0,100,180,.1)] bg-white"
@@ -1138,24 +2165,60 @@ function SubscriptionSection({ showToast, isMobile }) {
                 <p className="mt-0.5 text-[11px] font-semibold text-[#0099CC]">연간 결제 {discount}% 할인</p>
               )}
               <p className="mt-2 text-[11px] text-[#5A6F8A]">{plan.tagline}</p>
-              {canNavigateToSubscription && (
-                <p className="mt-2 text-[11px] font-semibold text-[#0099CC]">탭하여 구독 페이지로 이동</p>
-              )}
+              <button
+                type="button"
+                onClick={() => handleChangePlan(plan)}
+                disabled={selected || changingPlanId !== null}
+                className={cn(
+                  "mt-3 w-full rounded-xl px-3 py-2 text-[12px] font-bold transition-colors disabled:opacity-60",
+                  selected
+                    ? "cursor-default bg-[rgba(0,153,204,.08)] text-[#0099CC]"
+                    : isUpgrade
+                    ? "bg-[#0099CC] text-white hover:bg-[#0088BB]"
+                    : "border border-[rgba(0,100,180,.12)] bg-white text-[#5A6F8A] hover:bg-[rgba(0,60,150,.04)]"
+                )}
+              >
+                {selected
+                  ? "현재 이용 중"
+                  : changingPlanId === plan.id
+                    ? "변경 중..."
+                    : isUpgrade
+                      ? "업그레이드"
+                      : "플랜 변경"}
+              </button>
             </div>
           );
         })}
       </div>
 
+      {currentPlanId !== "free" && (
+        <div className="rounded-2xl border border-[rgba(239,68,68,.15)] bg-[rgba(239,68,68,.03)] p-4 sm:flex sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[13px] font-bold text-[#0D1B2A]">구독 해지</p>
+            <p className="mt-0.5 text-[12px] text-[#5A6F8A]">해지하면 즉시 무료 플랜으로 전환되고, 유료 기능 이용이 중단됩니다.</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelSubscription}
+            disabled={changingPlanId !== null}
+            className="mt-3 w-full rounded-xl border border-[rgba(239,68,68,.3)] px-4 py-2 text-[12px] font-bold text-[#EF4444] transition-colors hover:bg-[rgba(239,68,68,.06)] disabled:opacity-60 sm:mt-0 sm:w-auto"
+          >
+            {changingPlanId === "free" ? "해지 중..." : "구독 해지하기"}
+          </button>
+        </div>
+      )}
+
       <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-4">
-        <p className="text-[12px] font-semibold text-[#5A6F8A]">현재 플랜 핵심 제공 항목</p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {topFeatures.map((feature) => (
-            <span
+        <p className="text-[12px] font-semibold text-[#5A6F8A]">현재 플랜 전체 제공 항목</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {includedFeatures.map((feature) => (
+            <div
               key={`current-feature-${feature.label}`}
-              className="inline-flex items-center rounded-full bg-[rgba(0,153,204,.08)] px-2.5 py-1 text-[11px] font-semibold text-[#0099CC]"
+              className="flex items-center gap-2 rounded-xl border border-[rgba(0,153,204,.12)] bg-[rgba(0,153,204,.04)] px-3 py-2 text-[12px] font-semibold text-[#0D1B2A]"
             >
+              <Icon name="checkCircle" size={14} color="#0099CC" />
               {formatPlanFeatureLabel(feature.label)}
-            </span>
+            </div>
           ))}
         </div>
       </div>
@@ -1242,21 +2305,22 @@ export default function MyPage() {
     navigate("/onboarding", { replace: true });
   }, [navigate]);
 
+  const handleAccountDeleted = useCallback(() => {
+    localStorage.removeItem(PROFILE_ALIAS_STORAGE_KEY);
+    sessionStorage.setItem("tiki_flash_toast", "계정 탈퇴가 완료되었습니다.");
+    clearAuthSession();
+    navigate("/onboarding", { replace: true });
+  }, [navigate]);
+
   const handleModal = (type) => setModal(type);
   const closeModal = () => setModal(null);
 
   const confirmModal = () => {
-    if (modal === "delete") showToast("계정이 삭제됐습니다.", "error");
     if (modal === "logout-all") showToast("다른 기기에서 모두 로그아웃됐습니다.");
     closeModal();
   };
 
   const modalConfig = {
-    "delete": {
-      title: "정말 탈퇴하시겠습니까?",
-      body: "탈퇴 시 보유 중인 모든 프로젝트, 회의록, Jira 연동 데이터가 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-      confirmLabel: "탈퇴하기", danger: true,
-    },
     "logout-all": {
       title: "다른 기기에서 로그아웃",
       body: "현재 기기를 제외한 모든 기기에서 로그아웃됩니다. 계속하시겠습니까?",
@@ -1267,6 +2331,10 @@ export default function MyPage() {
   const activeNav = NAV_ITEMS.find(n => n.id === activeTab);
   const profileName = sessionUser?.name || "사용자";
   const profileEmail = sessionUser?.email || "";
+  const profileAliases = [
+    ...(Array.isArray(sessionUser?.aliases) ? sessionUser.aliases : []),
+    ...readJsonArray(PROFILE_ALIAS_STORAGE_KEY),
+  ];
   const profileDepartment =
     sessionUser?.department ||
     sessionUser?.dept ||
@@ -1274,6 +2342,7 @@ export default function MyPage() {
     ROLE_LABELS[sessionUser?.role] ||
     sessionUser?.role ||
     "";
+  const profilePosition = sessionUser?.position || "";
 
   return (
     <div className="relative min-h-screen bg-white text-[#0D1B2A] [font-family:'Pretendard']">
@@ -1360,8 +2429,8 @@ export default function MyPage() {
             </div>
 
             <div className="rounded-2xl border border-[rgba(0,100,180,.1)] bg-white p-5 shadow-[0_2px_16px_rgba(0,60,150,.05)] sm:p-7">
-              {activeTab === "home"          && <HomeSection goTo={setActiveTab} name={profileName} email={profileEmail} department={profileDepartment} />}
-              {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} />}
+              {activeTab === "home"          && <HomeSection goTo={setActiveTab} name={profileName} email={profileEmail} department={profileDepartment} aliases={profileAliases} />}
+              {activeTab === "profile"      && <ProfileSection showToast={showToast} initialName={profileName} initialEmail={profileEmail} initialDepartment={profileDepartment} initialPosition={profilePosition} />}
               {activeTab === "security"     && <SecuritySection showToast={showToast} setModal={handleModal} />}
               {activeTab === "integrations" && <IntegrationsSection showToast={showToast} />}
               {activeTab === "subscription" && <SubscriptionSection showToast={showToast} isMobile={isMobile} />}
@@ -1373,6 +2442,13 @@ export default function MyPage() {
       </div>
 
       {/* Modal */}
+      {modal === "delete" && (
+        <AccountDeleteModal
+          onCancel={closeModal}
+          onDeleted={handleAccountDeleted}
+          showToast={showToast}
+        />
+      )}
       {modal && modalConfig[modal] && (
         <Modal {...modalConfig[modal]} onConfirm={confirmModal} onCancel={closeModal} />
       )}

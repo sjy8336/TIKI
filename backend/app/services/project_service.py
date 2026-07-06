@@ -1,5 +1,7 @@
+import logging
+import threading
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -14,9 +16,12 @@ from app.schemas.project import (
     MeetingCreate,
     MeetingUpdate,
     MemberInvite,
+    MemberRoleUpdate,
     ProjectCreate,
     ProjectUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
@@ -166,6 +171,32 @@ def _get_meeting_or_404(db: Session, project_id: UUID, meeting_id: UUID) -> Meet
     return meeting
 
 
+def _normalize_action_items(action_items: list[dict] | None) -> list[dict]:
+    normalized: list[dict] = []
+    for item in action_items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("__tiki_meta") or item.get("type") == "__tiki_meeting_meta":
+            normalized.append({**item, "id": str(item.get("id") or "__tiki_meeting_meta")})
+            continue
+        item_id = str(item.get("id") or item.get("task_id") or "")
+        status = str(item.get("status") or "").strip()
+        if item.get("snapshotOf") or item.get("historySavedAt") or "-history-" in item_id or status == "완료히스토리":
+            continue
+        normalized.append({**item, "id": str(item_id or uuid4())})
+    return normalized
+
+
+def _visible_action_items(action_items: list[dict] | None) -> list[dict]:
+    return [
+        item
+        for item in action_items or []
+        if isinstance(item, dict)
+        and not item.get("__tiki_meta")
+        and item.get("type") != "__tiki_meeting_meta"
+    ]
+
+
 def list_meetings(db: Session, project_id: UUID, user_id: UUID) -> list[Meeting]:
     project = _get_project_or_404(db, project_id)
     _assert_member(project, user_id)
@@ -174,10 +205,44 @@ def list_meetings(db: Session, project_id: UUID, user_id: UUID) -> list[Meeting]
     )
 
 
+def _run_meeting_integration_sync_in_background(
+    meeting_id: UUID, project_id: UUID, task_status_changes: list[tuple[str, str]], *, force: bool
+) -> None:
+    """Sync a meeting (and any task status transitions) to Jira/Notion on its own
+    thread with its own DB session.
+
+    Jira/Notion sync makes several real, sequential external API calls per task —
+    running it inline on the request that saves a meeting/task edit made even a
+    trivial save (e.g. editing one task's description) take tens of seconds, since
+    every task in the meeting gets re-synced. Running it here lets the save return
+    immediately; the confirm links just take a few extra seconds to show up.
+    """
+    from app.db.database import SessionLocal
+    from app.services import external_integration_service
+
+    db = SessionLocal()
+    try:
+        meeting = db.get(Meeting, meeting_id)
+        if meeting is None:
+            return
+        try:
+            external_integration_service.sync_connected_meeting_resources(db, meeting, force=force)
+        except Exception:
+            logger.exception("Background sync failed for meeting %s", meeting_id)
+        for task_id, category_key in task_status_changes:
+            try:
+                external_integration_service.sync_task_status_to_jira(db, project_id, task_id, category_key)
+            except Exception:
+                logger.exception("Background task-status sync failed for task %s", task_id)
+    finally:
+        db.close()
+
+
 def create_meeting(db: Session, project_id: UUID, payload: MeetingCreate, user_id: UUID) -> Meeting:
     project = _get_project_or_404(db, project_id)
     _assert_member(project, user_id)
 
+    action_items = _normalize_action_items(payload.action_items)
     meeting = Meeting(
         project_id=project_id,
         title=payload.title,
@@ -188,14 +253,20 @@ def create_meeting(db: Session, project_id: UUID, payload: MeetingCreate, user_i
         tags=payload.tags,
         participants=payload.participants,
         summary=payload.summary,
-        action_items=payload.action_items,
+        action_items=action_items,
         action_items_count=payload.action_items_count
         if payload.action_items_count is not None
-        else len(payload.action_items),
+        else len(_visible_action_items(action_items)),
     )
     db.add(meeting)
     db.commit()
     db.refresh(meeting)
+    threading.Thread(
+        target=_run_meeting_integration_sync_in_background,
+        args=(meeting.id, project_id, []),
+        kwargs={"force": False},
+        daemon=True,
+    ).start()
     return meeting
 
 
@@ -212,11 +283,39 @@ def update_meeting(
     _assert_member(project, user_id)
     meeting = _get_meeting_or_404(db, project_id, meeting_id)
 
+    previous_status_by_id = {
+        str(item.get("id")): str(item.get("status") or "")
+        for item in (meeting.action_items or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "action_items" and isinstance(value, list):
+            value = _normalize_action_items(value)
+            meeting.action_items_count = len(_visible_action_items(value))
         setattr(meeting, field, value)
 
     db.commit()
     db.refresh(meeting)
+
+    from app.services import external_integration_service
+
+    task_status_changes = [
+        (str(item.get("id")), external_integration_service.TASK_STATUS_TO_JIRA_CATEGORY[str(item.get("status"))])
+        for item in (meeting.action_items or [])
+        if isinstance(item, dict)
+        and item.get("id")
+        and str(item.get("status")) in external_integration_service.TASK_STATUS_TO_JIRA_CATEGORY
+        and previous_status_by_id.get(str(item.get("id"))) != str(item.get("status"))
+    ]
+
+    threading.Thread(
+        target=_run_meeting_integration_sync_in_background,
+        args=(meeting.id, project_id, task_status_changes),
+        kwargs={"force": True},
+        daemon=True,
+    ).start()
+
     return meeting
 
 
@@ -224,6 +323,27 @@ def delete_meeting(db: Session, project_id: UUID, meeting_id: UUID, user_id: UUI
     project = _get_project_or_404(db, project_id)
     _assert_member(project, user_id)
     meeting = _get_meeting_or_404(db, project_id, meeting_id)
+    action_titles = {
+        str(item.get("title") or item.get("text") or "").strip()
+        for item in (meeting.action_items or [])
+        if isinstance(item, dict) and str(item.get("title") or item.get("text") or "").strip()
+    }
+    if action_titles:
+        related_tickets = db.scalars(
+            select(Ticket)
+            .join(AnalysisResult, AnalysisResult.id == Ticket.analysis_result_id)
+            .join(ExtractedContent, ExtractedContent.id == AnalysisResult.extracted_content_id)
+            .join(UploadedFile, UploadedFile.id == ExtractedContent.uploaded_file_id)
+            .where(UploadedFile.project_id == project_id, Ticket.title.in_(action_titles))
+        ).all()
+        for ticket in related_tickets:
+            db.delete(ticket)
+    try:
+        from app.services import external_integration_service
+
+        external_integration_service.archive_meeting_external_resources(db, meeting)
+    except Exception:
+        logger.exception("Failed to archive external resources for meeting %s", meeting.id)
     db.delete(meeting)
     db.commit()
 
@@ -336,6 +456,27 @@ def remove_member(
 
     db.delete(member)
     db.commit()
+
+
+def update_member_role(
+    db: Session, project_id: UUID, member_id: UUID, payload: MemberRoleUpdate, user_id: UUID
+) -> ProjectMember:
+    project = _get_project_or_404(db, project_id)
+    _assert_owner(project, user_id)
+
+    member = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.id == member_id,
+            ProjectMember.project_id == project_id,
+        )
+    )
+    if member is None:
+        raise AppException(detail="멤버를 찾을 수 없습니다", status_code=404, code="not_found")
+
+    member.role = payload.role
+    db.commit()
+    db.refresh(member)
+    return member
 
 
 # ── 프로젝트 전체 티켓 조회 ────────────────────────────────────────────────────

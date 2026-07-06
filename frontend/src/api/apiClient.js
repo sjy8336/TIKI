@@ -1,4 +1,15 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8013/api/v1';
+const LOCAL_API_FALLBACKS = [
+  'http://127.0.0.1:8013/api/v1',
+  'http://localhost:8013/api/v1',
+  'http://127.0.0.1:8000/api/v1',
+  'http://localhost:8000/api/v1',
+];
+
+const API_BASE_CANDIDATES = [
+  API_BASE_URL,
+  ...LOCAL_API_FALLBACKS,
+].filter((value, index, array) => value && array.indexOf(value) === index);
 
 class ApiError extends Error {
   constructor(message, { status, detail } = {}) {
@@ -17,10 +28,33 @@ async function request(path, options = {}) {
     ...options.headers,
   };
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  let response;
+  let networkError;
+  for (const baseUrl of API_BASE_CANDIDATES) {
+    try {
+      response = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers,
+      });
+      const contentType = response.headers.get('content-type') || '';
+      const isLikelyFrontendFallback =
+        String(baseUrl).startsWith('/') &&
+        (response.status === 404 || contentType.includes('text/html'));
+      if (isLikelyFrontendFallback) {
+        continue;
+      }
+      break;
+    } catch (error) {
+      networkError = error;
+    }
+  }
+
+  if (!response) {
+    throw new ApiError(
+      '백엔드 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+      { status: 0, detail: networkError?.message ?? null }
+    );
+  }
 
   const data = await response.json().catch(() => null);
 
@@ -55,6 +89,46 @@ export async function signupUser({ name, email, password, role }) {
 
 export async function getCurrentUser() {
   return request('/auth/me');
+}
+
+export async function updateCurrentUser(payload) {
+  return request('/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function changeCurrentUserPassword({ currentPassword, newPassword }) {
+  return request('/auth/me/password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  });
+}
+
+export async function deleteCurrentUser({ password }) {
+  return request('/auth/me', {
+    method: 'DELETE',
+    body: JSON.stringify({ password }),
+  });
+}
+
+export async function listAuthSessions() {
+  return request('/auth/sessions');
+}
+
+export async function revokeAuthSession(sessionId) {
+  return request(`/auth/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function logoutOtherAuthSessions() {
+  return request('/auth/sessions/logout-others', {
+    method: 'POST',
+  });
 }
 
 export async function lookupUserByEmail(email) {
@@ -136,6 +210,13 @@ export async function removeProjectMember(projectId, memberId) {
   });
 }
 
+export async function updateProjectMember(projectId, memberId, payload) {
+  return request(`/projects/${projectId}/members/${memberId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function listProjectInvitations() {
   return request('/projects/invitations');
 }
@@ -182,6 +263,45 @@ export async function updateProjectMeeting(projectId, meetingId, payload) {
 export async function deleteProjectMeeting(projectId, meetingId) {
   return request(`/projects/${projectId}/meetings/${meetingId}`, {
     method: 'DELETE',
+  });
+}
+
+export async function getProjectIntegrations(projectId) {
+  return request(`/projects/${projectId}/integrations`);
+}
+
+export async function connectProjectIntegration(projectId, provider) {
+  const search = new URLSearchParams({ projectId });
+  return request(`/integrations/${provider}/connect?${search.toString()}`);
+}
+
+export async function disconnectProjectIntegration(projectId, provider) {
+  return request(`/projects/${projectId}/integrations/${provider}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function syncProjectIntegrationMeetings(projectId, provider) {
+  return request(`/projects/${projectId}/integrations/${provider}/sync-meetings`, {
+    method: 'POST',
+  });
+}
+
+export async function listJiraProjects(projectId) {
+  return request(`/projects/${projectId}/integrations/jira/projects`);
+}
+
+export async function setJiraProject(projectId, payload) {
+  return request(`/projects/${projectId}/integrations/jira/project`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function sendMeetingTasks(meetingId, { provider, taskIds }) {
+  return request(`/meetings/${meetingId}/tasks/send`, {
+    method: 'POST',
+    body: JSON.stringify({ provider, taskIds }),
   });
 }
 
@@ -237,5 +357,22 @@ export async function subscribePlan({ planId, billing }) {
   return request('/subscription/subscribe', {
     method: 'POST',
     body: JSON.stringify({ plan_id: planId, billing }),
+  });
+}
+
+export async function getTossCheckoutConfig() {
+  return request('/subscription/checkout/config');
+}
+
+export async function confirmTossPayment({ paymentKey, orderId, amount, planId, billing }) {
+  return request('/subscription/checkout/confirm', {
+    method: 'POST',
+    body: JSON.stringify({
+      payment_key: paymentKey,
+      order_id: orderId,
+      amount,
+      plan_id: planId,
+      billing,
+    }),
   });
 }

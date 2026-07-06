@@ -1,10 +1,10 @@
 ﻿import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
 import ToastPopup from "../components/toastpopup";
-import { clearAuthSession } from "../api/apiClient";
+import { clearAuthSession, getProjectIntegrations, getUploadAnalysis, listProjectMeetings, listUploads } from "../api/apiClient";
 
 /* ─── 데이터 ─────────────────────────────────────────── */
 const TX = [
@@ -285,22 +285,29 @@ function buildStoredIntegrationLogs({ projectId = "", sourceTitle = "" } = {}) {
   return projects.flatMap(([currentProjectId, projectOverride]) => {
     const items = Array.isArray(projectOverride?.myActionItems) ? projectOverride.myActionItems : [];
     return items
-      .filter((item) => item?.integrationTool || item?.externalLink || item?.jiraLink)
+      .filter((item) => item?.integrationTool || item?.externalLink || item?.jiraLink || item?.integrationLinks)
       .filter((item) => {
         const projectMatches = !normalizedProjectId || String(item?.projectId || currentProjectId) === normalizedProjectId;
         const sourceMatches = !normalizedSource || String(item?.source || "").trim() === normalizedSource;
         return projectMatches && sourceMatches;
       })
-      .map((item, index) => {
-        const rawTool = String(item?.integrationTool || item?.integrationProvider || item?.externalLink || item?.jiraLink || "").toLowerCase();
-        const svcId = rawTool.includes("notion") ? "notion" : "jira";
-        return {
+      .flatMap((item, index) => {
+        const links = item?.integrationLinks && typeof item.integrationLinks === "object" ? item.integrationLinks : {};
+        const linkedSvcs = Object.entries(links)
+          .filter(([, url]) => Boolean(url))
+          .map(([svcId]) => String(svcId).toLowerCase())
+          .filter((svcId) => svcId === "jira" || svcId === "notion");
+        if (linkedSvcs.length === 0) {
+          const rawTool = String(item?.integrationTool || item?.integrationProvider || item?.externalLink || item?.jiraLink || "").toLowerCase();
+          linkedSvcs.push(rawTool.includes("notion") ? "notion" : "jira");
+        }
+        return linkedSvcs.map((svcId) => ({
           svcId,
           label: item?.title || item?.text || `대시보드 연동 업무 ${index + 1}`,
           time: toAuditTimestamp(item?.updatedAt || item?.updated_at),
           user: item?.assignee || "담당자",
           source: "dashboard",
-        };
+        }));
       });
   });
 }
@@ -1200,6 +1207,7 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
   }, []);
   const issuedIssueKeySet = useMemo(() => {
     if (!selectedSvc) return new Set();
+    if (selectedSvc === "both") return new Set();
     const svc = services.find((item) => item.id === selectedSvc);
     return new Set(
       (svc?.tickets || [])
@@ -1332,25 +1340,47 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
       return;
     }
 
-    const svcName = services.find(s => s.id === selectedSvc)?.name || "";
-    if (issueMode === "merged") {
-      onIssued(svcName, [{ label: title, user: assignee || "미지정", due: mergedDue }]);
-    } else {
-      onIssued(
-        svcName,
-        selectedItemsList.map((item) => ({
+    const targetSvcIds = selectedSvc === "both"
+      ? ["jira", "notion"]
+      : [selectedSvc === "notion" ? "notion" : "jira"];
+    const svcNames = targetSvcIds.map((svcId) => services.find((s) => s.id === svcId)?.name || svcId);
+    const buildIssuedItems = (svcId) => {
+      const baseItems = issueMode === "merged"
+        ? [{ label: title, user: assignee || "미지정", due: mergedDue }]
+        : selectedItemsList.map((item) => ({
           label: item.text,
           user: item.assignee || "미지정",
           due: item.due || "미정",
-        }))
-      );
+        }));
+      return baseItems.map((item) => ({ ...item, svcId }));
+    };
+    const issuedPayload = targetSvcIds.flatMap((svcId) => buildIssuedItems(svcId));
+    if (issueMode === "merged") {
+      onIssued(svcNames, issuedPayload);
+    } else {
+      onIssued(svcNames, issuedPayload);
     }
     setIssuing(false);
     handleClose();
   };
 
   const canNext = selectedSvc && checkedItems.size > 0;
-  const selectedSvcObj = services.find(s => s.id === selectedSvc);
+  const selectedSvcObj = selectedSvc === "both"
+    ? { id: "both", name: "Jira + Notion", iconBg: "#7C3AED", iconLabel: "J+N" }
+    : services.find(s => s.id === selectedSvc);
+  const selectedSvcIds = selectedSvc === "both"
+    ? ["jira", "notion"]
+    : selectedSvc ? [selectedSvc] : [];
+  const toggleSvc = (svcId) => {
+    setSelectedSvc((prev) => {
+      const current = prev === "both" ? ["jira", "notion"] : prev ? [prev] : [];
+      const next = current.includes(svcId)
+        ? current.filter((id) => id !== svcId)
+        : [...current, svcId];
+      if (next.length === 2) return "both";
+      return next[0] || null;
+    });
+  };
   const selectedItemsList = [...checkedItems].map((i) => ({
     ...ACTION_ITEMS_FOR_ISSUE[i],
     due: getDueLabel(i),
@@ -1395,7 +1425,7 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
               onClick={handleIssue}
               disabled={issuing || !canIssue}
               className="text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5 disabled:opacity-70 disabled:cursor-not-allowed disabled:translate-y-0 flex items-center justify-center gap-2 cursor-pointer"
-              style={{ background: selectedSvc ? SVC_ISSUE_BTN[selectedSvc] : "#10B981", minWidth: 130 }}
+              style={{ background: selectedSvc === "both" ? "linear-gradient(135deg,#0099CC,#7C3AED)" : selectedSvc ? SVC_ISSUE_BTN[selectedSvc] : "#10B981", minWidth: 130 }}
             >
               {issuing ? (
                 <>
@@ -1427,14 +1457,16 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2.5">어디에 등록할까요?</p>
             <div
               className="grid gap-2"
-              style={{ gridTemplateColumns: `repeat(${Math.max(1, Math.min(services.length, 2))}, minmax(0, 1fr))` }}
+              style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
             >
-              {services.map(svc => {
-                const isSelected = selectedSvc === svc.id;
+              {[
+                ...services,
+              ].map(svc => {
+                const isSelected = selectedSvcIds.includes(svc.id);
                 return (
                   <button
                     key={svc.id}
-                    onClick={() => setSelectedSvc(svc.id)}
+                    onClick={() => toggleSvc(svc.id)}
                     className="flex flex-col items-center gap-2 py-3 px-2 rounded-xl border transition-all hover:-translate-y-0.5 cursor-pointer"
                     style={{
                       borderColor: isSelected ? "#0099CC" : "rgba(0,100,180,0.12)",
@@ -2948,6 +2980,51 @@ function AudioPlayer({ curTime, playing, spdIdx, onSeek, onTogglePlay, onCycleSp
 }
 
 /* ─── 연동 컨트롤 타워 ───────────────────────────────── */
+// Replaces the old IntegrationControlTower's fake "업무 보내기"/simulated issue
+// count with the same real, project-level connection status already shown on
+// Dashboard.jsx/ProjectMeetings.jsx — sync itself is automatic (see
+// external_integration_service.sync_connected_meeting_resources), so there is
+// nothing to manually "send" here anymore.
+function RealIntegrationStatus({ connectedProviders, onManage }) {
+  const jiraConnected = Boolean(connectedProviders?.jira);
+  const notionConnected = Boolean(connectedProviders?.notion);
+  return (
+    <div
+      className="lg:w-auto flex-shrink-0 rounded-2xl px-4 py-4 flex flex-wrap items-center gap-3"
+      style={{ border: "1px solid rgba(0,100,180,0.12)", background: "rgba(0,153,204,0.03)" }}
+    >
+      <p className="text-xs font-semibold text-slate-400">연동 현황</p>
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full"
+        style={{
+          background: jiraConnected ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
+          color: jiraConnected ? "#10B981" : "#5A6F8A",
+        }}
+      >
+        Jira {jiraConnected ? "연동됨" : "미연동"}
+      </span>
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full"
+        style={{
+          background: notionConnected ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
+          color: notionConnected ? "#10B981" : "#5A6F8A",
+        }}
+      >
+        Notion {notionConnected ? "연동됨" : "미연동"}
+      </span>
+      {!(jiraConnected && notionConnected) && (
+        <button
+          type="button"
+          onClick={onManage}
+          className="text-xs font-bold text-[#0099CC] hover:underline cursor-pointer"
+        >
+          프로젝트 설정에서 연동하기
+        </button>
+      )}
+    </div>
+  );
+}
+
 function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen, isMobile }) {
   const generatedLogs = auditLog.filter(isGeneratedAuditLog);
   const generatedCountByService = generatedLogs.reduce((acc, log) => {
@@ -3047,6 +3124,8 @@ function IssueButton({ onClick, issuingGlobal = false }) {
 /* ─── Main App ───────────────────────────────────────── */
 export default function TikiSprint12() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [curTime, setCurTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [spdIdx, setSpdIdx] = useState(0);
@@ -3060,6 +3139,18 @@ export default function TikiSprint12() {
 
   const [services, setServices] = useState(INITIAL_INTEGRATION_SERVICES);
   const [auditLog, setAuditLog] = useState([]);
+
+  const [connectedProviders, setConnectedProviders] = useState({ jira: false, notion: false });
+  useEffect(() => {
+    const projectId = location?.state?.projectId || searchParams.get("projectId");
+    if (!projectId) return;
+    getProjectIntegrations(projectId)
+      .then((result) => setConnectedProviders({
+        jira: Boolean(result?.jira?.connected),
+        notion: Boolean(result?.notion?.connected),
+      }))
+      .catch(() => setConnectedProviders({ jira: false, notion: false }));
+  }, [location?.state, searchParams]);
   const mergedAuditLog = useMemo(() => {
     const state = location?.state || {};
     const storedLogs = buildStoredIntegrationLogs({
@@ -3085,6 +3176,165 @@ export default function TikiSprint12() {
     issues: SUMMARY_DATA.issues.map((i) => ({ ...i })),
     next_agenda: [...SUMMARY_DATA.next_agenda],
   }));
+
+  // Real per-meeting data. Falls back to the placeholder TX/SUMMARY_DATA above
+  // (used previously for every meeting regardless of what was actually uploaded)
+  // until the matching upload's AI analysis loads.
+  const [txSource, setTxSource] = useState(TX);
+  const [meetingHeader, setMeetingHeader] = useState(null);
+  const [realDataStatus, setRealDataStatus] = useState("idle"); // idle | loading | loaded | missing
+  // Set when both Groq and OpenAI failed and the backend fell back to a
+  // rule-based heuristic summary (see LangChainAnalysisService.summarize_and_extract_tickets) —
+  // the content is a best-effort stand-in, not a real AI analysis, so it needs review.
+  const [analysisDegraded, setAnalysisDegraded] = useState(false);
+  // Whether the underlying source actually had audio (real speaker/timestamp
+  // dialogue) vs. a document/direct-write meeting with no such thing. Defaults
+  // to true only until the real fetch below resolves and overrides it — see
+  // `transcriptEnabled` further down, which used to guess this from
+  // navigation-state hints that are never actually populated on a normal
+  // click-through, silently defaulting to "audio" for every meeting.
+  const [sourceIsAudio, setSourceIsAudio] = useState(true);
+
+  useEffect(() => {
+    const state = location?.state || {};
+    // location.state only survives an in-app navigation (clicking through from
+    // the meeting list) — a refresh, direct URL visit, or reopened bookmark
+    // loses it entirely, which used to fall back straight to the placeholder
+    // content with no way to recover. Fall back to the URL's query params
+    // instead, and mirror state into the URL below so a refresh keeps working.
+    const meetingId = state.meetingId || searchParams.get("meetingId");
+    const projectId = state.projectId || searchParams.get("projectId");
+    if (!meetingId || !projectId) {
+      setRealDataStatus("missing");
+      return undefined;
+    }
+    if (state.meetingId && state.projectId && (searchParams.get("meetingId") !== state.meetingId || searchParams.get("projectId") !== state.projectId)) {
+      const next = new URLSearchParams(searchParams);
+      next.set("meetingId", state.meetingId);
+      next.set("projectId", state.projectId);
+      setSearchParams(next, { replace: true });
+    }
+
+    let cancelled = false;
+    setRealDataStatus("loading");
+
+    const normalizeAction = (item) => ({
+      text: String(item?.text || item?.title || item?.description || "").trim(),
+      assignee: item?.assignee || "미정",
+      due: item?.due || item?.due_at || "",
+      status: item?.status === "완료" || item?.status === "done" ? "done" : "todo",
+    });
+
+    (async () => {
+      try {
+        const uploads = await listUploads({ project_id: projectId });
+        const match = (Array.isArray(uploads) ? uploads : []).find(
+          (file) => String(file?.meeting_id || "") === String(meetingId)
+        );
+
+        if (!match) {
+          // Not every meeting comes from a file upload — one created via
+          // "회의록 직접 작성" has real summary/action_items straight on the
+          // Meeting record but no uploaded_file/analysis_result to look up here.
+          // Fall back to the meeting itself instead of declaring it "missing".
+          const meetings = await listProjectMeetings(projectId).catch(() => []);
+          const meeting = (Array.isArray(meetings) ? meetings : []).find(
+            (m) => String(m?.id || "") === String(meetingId)
+          );
+          if (!meeting) {
+            if (!cancelled) setRealDataStatus("missing");
+            return;
+          }
+          if (cancelled) return;
+          // No file was ever uploaded/transcribed for this meeting, so there is
+          // no real transcript — clear the placeholder script rather than show
+          // fake dialogue alongside the real summary/action items above.
+          setTxSource([]);
+          setSourceIsAudio(false);
+
+          const rawItems = Array.isArray(meeting.action_items) ? meeting.action_items : [];
+          // "회의록 직접 작성" stores the structured summary (keywords/decisions/
+          // issues/next agenda) in a hidden __tiki_meeting_meta marker item
+          // inside action_items, not as separate Meeting columns — pull it out
+          // here rather than showing it as a blank to-do row.
+          const metaItem = rawItems.find((item) => item?.__tiki_meta || item?.type === "__tiki_meeting_meta");
+          const visibleItems = rawItems.filter((item) => !(item?.__tiki_meta || item?.type === "__tiki_meeting_meta"));
+          const metaData = metaItem?.data || {};
+          const priorityToLevel = { 높음: "high", 보통: "medium", 낮음: "low" };
+
+          setSummaryData((prev) => ({
+            ...prev,
+            summary: metaData.summary || meeting.summary || prev.summary,
+            keywords: Array.isArray(metaData.keywords) && metaData.keywords.length
+              ? metaData.keywords.map((kw) => ({ text: kw, type: "cyan" }))
+              // Older manually-written meetings (before the meta marker existed)
+              // never got a keywords list, but the meeting's own tags are
+              // effectively the same thing — use those instead of showing blank.
+              : Array.isArray(meeting.tags) && meeting.tags.length
+                ? meeting.tags.map((tag) => ({ text: String(tag || "").replace(/^#/, ""), type: "cyan" })).filter((k) => k.text)
+                : [],
+            decisions: Array.isArray(metaData.decisions) && metaData.decisions.length
+              ? metaData.decisions.map((d) => (typeof d === "string" ? d : d?.text || "")).filter(Boolean)
+              : [],
+            issues: Array.isArray(metaData.issues) && metaData.issues.length
+              ? metaData.issues.map((i) => ({ level: priorityToLevel[i?.priority] || "medium", text: i?.text || "" })).filter((i) => i.text)
+              : [],
+            next_agenda: typeof metaData.nextAgenda === "string" && metaData.nextAgenda.trim()
+              ? metaData.nextAgenda.split("\n").map((line) => line.replace(/^-\s*/, "").trim()).filter(Boolean)
+              : [],
+          }));
+          if (visibleItems.length > 0) {
+            setSummaryActions(visibleItems.map(normalizeAction));
+          }
+          setMeetingHeader({ title: meeting.title || "", date: meeting.date || "" });
+          setAnalysisDegraded(false);
+          setRealDataStatus("loaded");
+          return;
+        }
+
+        const analysis = await getUploadAnalysis(match.id);
+        if (cancelled || !analysis) return;
+
+        // Document uploads (docx/hwp/txt/pdf) go through the same pipeline as
+        // audio and get synthetic "script" rows built by splitting sentences —
+        // fabricated speaker labels and timestamps with no real dialogue behind
+        // them. Only actually-transcribed audio (extraction_method "whisper")
+        // should render as a speaker/timestamp script.
+        const isAudio = analysis.extraction_method === "whisper";
+        setSourceIsAudio(isAudio);
+        if (isAudio && Array.isArray(analysis.tx) && analysis.tx.length > 0) {
+          setTxSource(analysis.tx);
+        } else {
+          setTxSource([]);
+        }
+        setSummaryData((prev) => ({
+          ...prev,
+          summary: analysis.summary || prev.summary,
+          keywords: Array.isArray(analysis.keywords) && analysis.keywords.length ? analysis.keywords : prev.keywords,
+          decisions: Array.isArray(analysis.decisions) && analysis.decisions.length ? analysis.decisions : prev.decisions,
+          issues: Array.isArray(analysis.issues) && analysis.issues.length ? analysis.issues : prev.issues,
+          next_agenda: Array.isArray(analysis.next_agenda) && analysis.next_agenda.length ? analysis.next_agenda : prev.next_agenda,
+        }));
+        if (Array.isArray(analysis.action_items) && analysis.action_items.length > 0) {
+          setSummaryActions(analysis.action_items.map(normalizeAction));
+        }
+        setMeetingHeader({
+          title: analysis.meeting_title || state.meeting?.title || "",
+          date: state.meeting?.date || "",
+        });
+        if (!cancelled) setAnalysisDegraded(analysis?.extra_data?.analysis_provider === "heuristic");
+        if (!cancelled) setRealDataStatus("loaded");
+      } catch {
+        if (!cancelled) setRealDataStatus("missing");
+      } finally {
+        if (!cancelled) setTranscriptLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [location?.state]);
   const issueAssigneeOptions = useMemo(() => {
     const state = location?.state || {};
     return buildProjectAssigneeOptions({
@@ -3194,7 +3444,7 @@ export default function TikiSprint12() {
     return "audio";
   }, [location?.search, location?.state]);
 
-  const transcriptEnabled = uploadKind === "audio";
+  const transcriptEnabled = sourceIsAudio;
   const transcriptVisibleResolved = transcriptEnabled && transcriptVisible;
 
   const stateLabels = {
@@ -3296,15 +3546,18 @@ export default function TikiSprint12() {
       setCollapsedSet(new Set());
       setAllCollapsed(false);
     } else {
-      setCollapsedSet(new Set(TX.map((_, i) => i)));
+      setCollapsedSet(new Set(txSource.map((_, i) => i)));
       setAllCollapsed(true);
     }
-  }, [allCollapsed]);
+  }, [allCollapsed, txSource]);
 
   const handleIssued = useCallback((svcName, issuedItems = []) => {
-    const svcId = INITIAL_INTEGRATION_SERVICES.find(s => s.name === svcName)?.id || "jira";
+    const svcIds = Array.isArray(svcName)
+      ? svcName.map((name) => INITIAL_INTEGRATION_SERVICES.find(s => s.name === name)?.id || String(name).toLowerCase()).filter((id) => id === "jira" || id === "notion")
+      : [INITIAL_INTEGRATION_SERVICES.find(s => s.name === svcName)?.id || "jira"];
     const logs = (Array.isArray(issuedItems) ? issuedItems : [{ label: issuedItems }])
       .map((item) => ({
+        svcId: String(item?.svcId || svcIds[0] || "jira").toLowerCase(),
         label: String(item?.label || item || "연동 업무").trim(),
         user: String(item?.user || "담당자").trim() || "담당자",
         due: String(item?.due || "").trim(),
@@ -3313,11 +3566,11 @@ export default function TikiSprint12() {
 
     setServices(prev =>
       prev.map(svc => {
-        if (svc.id !== svcId) return svc;
-        let updated = false;
+        if (!svcIds.includes(svc.id)) return svc;
+        let updatedCount = logs.filter((item) => item.svcId === svc.id).length;
         const tickets = svc.tickets.map(t => {
-          if (!updated && t.status === "todo") {
-            updated = true;
+          if (updatedCount > 0 && t.status === "todo") {
+            updatedCount -= 1;
             return { ...t, status: "done" };
           }
           return t;
@@ -3328,7 +3581,7 @@ export default function TikiSprint12() {
 
     const now = new Date();
     const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-    setAuditLog(prev => [...prev, ...logs.map((item) => ({ svcId, label: item.label, time: timeStr, user: item.user }))]);
+    setAuditLog(prev => [...prev, ...logs.map((item) => ({ svcId: item.svcId, label: item.label, time: timeStr, user: item.user }))]);
 
     const state = location?.state || {};
     const projectId = String(state.projectId || "").trim();
@@ -3339,8 +3592,14 @@ export default function TikiSprint12() {
       const prevItems = Array.isArray(prevProject.myActionItems) ? prevProject.myActionItems : [];
       const nextItems = [...prevItems];
       logs.forEach((item, index) => {
-        const id = `${sourceTitle}-${svcId}-${item.label}-${index}`;
+        const svcId = item.svcId === "notion" ? "notion" : "jira";
+        const id = `${sourceTitle}-action-${item.label}-${index}`;
+        const existingIndex = nextItems.findIndex((existing) => String(existing?.id || "") === id);
+        const existing = existingIndex >= 0 ? nextItems[existingIndex] : {};
+        const existingLinks = existing?.integrationLinks && typeof existing.integrationLinks === "object" ? existing.integrationLinks : {};
+        const externalLink = buildExternalLink(svcId, item.label);
         const persisted = {
+          ...existing,
           id,
           text: item.label,
           title: item.label,
@@ -3354,10 +3613,13 @@ export default function TikiSprint12() {
           projectId,
           projectName: state.projectName || state.project?.name || "",
           integrationTool: svcId === "notion" ? "Notion" : "Jira",
-          externalLink: buildExternalLink(svcId, item.label),
+          integrationLinks: {
+            ...existingLinks,
+            [svcId]: externalLink,
+          },
+          externalLink,
           updatedAt: new Date().toISOString(),
         };
-        const existingIndex = nextItems.findIndex((existing) => String(existing?.id || "") === id);
         if (existingIndex >= 0) nextItems[existingIndex] = { ...nextItems[existingIndex], ...persisted };
         else nextItems.unshift(persisted);
       });
@@ -3365,21 +3627,21 @@ export default function TikiSprint12() {
       writeProjectOverrides(overrides);
     }
 
-    showToast(svcName === "Jira" ? "Jira에 연동되었습니다." : "Notion에 연동되었습니다.");
+    showToast(svcIds.length > 1 ? "Jira와 Notion에 연동되었습니다." : svcIds[0] === "jira" ? "Jira에 연동되었습니다." : "Notion에 연동되었습니다.");
   }, [location?.state, showToast, summaryData.summary]);
 
-  const txData = TX
+  const txData = txSource
     .map((d, i) => ({ ...d, idx: i }))
     .filter(d =>
       (!bmFilter || bookmarks.has(d.idx)) &&
-      (!searchQ || d.txt.includes(searchQ) || d.spk.includes(searchQ))
+      (!searchQ || String(d.txt || "").includes(searchQ) || String(d.spk || "").includes(searchQ))
     );
   const visibleTx = txData;
   const visible = visibleTx.slice(0, shownCount);
   const remaining = visibleTx.length - shownCount;
 
-  const activeIdx = TX.reduce((acc, item, i) => {
-    const nxt = i + 1 < TX.length ? TX[i + 1].ts : 99999;
+  const activeIdx = txSource.reduce((acc, item, i) => {
+    const nxt = i + 1 < txSource.length ? txSource[i + 1].ts : 99999;
     if (curTime >= item.ts && curTime < nxt) return i;
     return acc;
   }, -1);
@@ -3444,15 +3706,21 @@ export default function TikiSprint12() {
         <div className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
             <div className="flex-1 min-w-0">
+              {realDataStatus === "missing" && (
+                <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700">
+                  이 회의의 분석 데이터를 찾을 수 없어 예시 데이터를 표시하고 있습니다.
+                </div>
+              )}
+              {realDataStatus === "loaded" && analysisDegraded && (
+                <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700">
+                  AI 분석이 일시적으로 실패해 간이 자동 요약으로 대체되었습니다. 내용을 꼭 검토해 주세요.
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-slate-400">2026.06.14</span>
-                <span className="text-slate-300">·</span>
-                <span className="text-xs font-semibold text-slate-400">오후 2:00 – 3:15</span>
-                <span className="text-slate-300">·</span>
-                <span className="text-xs font-semibold text-cyan-500">75분</span>
+                <span className="text-xs font-semibold text-slate-400">{meetingHeader?.date || "2026.06.14"}</span>
               </div>
               <h1 className="text-lg md:text-xl font-bold text-slate-900 leading-snug mb-4">
-                Sprint 12 킥오프 — AI 회의록 시스템 개발 현황 공유
+                {meetingHeader?.title || "Sprint 12 킥오프 — AI 회의록 시스템 개발 현황 공유"}
               </h1>
               <div className="flex items-center gap-2.5">
                 <div className="flex -space-x-2">
@@ -3479,12 +3747,12 @@ export default function TikiSprint12() {
               </div>
             </div>
 
-            <IntegrationControlTower
-              services={services}
-              auditLog={mergedAuditLog}
-              onBadgeClick={handleBadgeClick}
-              onIssueOpen={() => setIssueOpen(true)}
-              isMobile={isMobile}
+            <RealIntegrationStatus
+              connectedProviders={connectedProviders}
+              onManage={() => {
+                const projectId = location?.state?.projectId || searchParams.get("projectId");
+                navigate(`/configuration?projectId=${projectId}&tab=integration`);
+              }}
             />
           </div>
         </div>
@@ -3609,15 +3877,17 @@ export default function TikiSprint12() {
         </div>
       </div>
 
-      <AudioPlayer
-        curTime={curTime}
-        playing={playing}
-        spdIdx={spdIdx}
-        onSeek={v => setCurTime(v)}
-        onTogglePlay={() => setPlaying(p => !p)}
-        onCycleSpeed={() => setSpdIdx(i => (i + 1) % SPEEDS.length)}
-        bottomOffset={isMobile ? "calc(74px + env(safe-area-inset-bottom, 0px))" : 0}
-      />
+      {txSource.length > 0 && (
+        <AudioPlayer
+          curTime={curTime}
+          playing={playing}
+          spdIdx={spdIdx}
+          onSeek={v => setCurTime(v)}
+          onTogglePlay={() => setPlaying(p => !p)}
+          onCycleSpeed={() => setSpdIdx(i => (i + 1) % SPEEDS.length)}
+          bottomOffset={isMobile ? "calc(74px + env(safe-area-inset-bottom, 0px))" : 0}
+        />
+      )}
 
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
 
