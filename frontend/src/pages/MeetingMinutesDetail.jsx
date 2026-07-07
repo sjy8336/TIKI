@@ -1,17 +1,10 @@
-﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import Header from '../components/Header';
-import Footer from '../components/Footer';
-import MobileTab from '../components/MobileTab';
-import ToastPopup from '../components/toastpopup';
-import {
-    clearAuthSession,
-    getProject,
-    getProjectIntegrations,
-    getUploadAnalysis,
-    listProjectMeetings,
-    listUploads,
-} from '../api/apiClient';
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
+import MobileTab from "../components/MobileTab";
+import ToastPopup from "../components/toastpopup";
+import { clearAuthSession, getProject, getProjectIntegrations, getUploadAnalysis, listProjectMeetings, listUploads } from "../api/apiClient";
 
 /* ─── 데이터 ─────────────────────────────────────────── */
 const TX = [
@@ -4067,6 +4060,49 @@ export default function TikiSprint12() {
             state,
             participants: state.meeting?.participants,
             actions: Array.isArray(state.actions) ? state.actions : [],
+        const analysis = await getUploadAnalysis(match.id);
+        if (cancelled || !analysis) return;
+
+        // Document uploads (docx/hwp/txt/pdf) go through the same pipeline as
+        // audio and get synthetic "script" rows built by splitting sentences —
+        // fabricated speaker labels and timestamps with no real dialogue behind
+        // them. Only actually-transcribed audio (extraction_method "whisper")
+        // should render as a speaker/timestamp script.
+        const isAudio = analysis.extraction_method === "whisper";
+        setSourceIsAudio(isAudio);
+        if (isAudio && Array.isArray(analysis.tx) && analysis.tx.length > 0) {
+          setTxSource(analysis.tx);
+        } else {
+          setTxSource([]);
+        }
+        setSummaryData((prev) => ({
+          ...prev,
+          summary: analysis.summary || prev.summary,
+          keywords: Array.isArray(analysis.keywords) && analysis.keywords.length ? analysis.keywords : prev.keywords,
+          decisions: Array.isArray(analysis.decisions) && analysis.decisions.length ? analysis.decisions : prev.decisions,
+          issues: Array.isArray(analysis.issues) && analysis.issues.length ? analysis.issues : prev.issues,
+          next_agenda: Array.isArray(analysis.next_agenda) && analysis.next_agenda.length ? analysis.next_agenda : prev.next_agenda,
+        }));
+        // analysis.action_items is a frozen snapshot taken at analysis time
+        // (AnalysisResult.action_items on the backend) — it never reflects a
+        // task being checked off later via Dashboard/ProjectMeetings.jsx, which
+        // only update the live Meeting record. Prefer the live meeting's
+        // action_items for status/checked state when available, so a task
+        // marked 수행완료 elsewhere actually shows as done here too.
+        const liveMeetings = await listProjectMeetings(projectId).catch(() => []);
+        const liveMeeting = (Array.isArray(liveMeetings) ? liveMeetings : []).find(
+          (m) => String(m?.id || "") === String(meetingId)
+        );
+        const liveActionItems = Array.isArray(liveMeeting?.action_items)
+          ? liveMeeting.action_items.filter((item) => !(item?.__tiki_meta || item?.type === "__tiki_meeting_meta"))
+          : [];
+        const actionItemsToShow = liveActionItems.length > 0 ? liveActionItems : analysis.action_items;
+        if (Array.isArray(actionItemsToShow) && actionItemsToShow.length > 0) {
+          setSummaryActions(actionItemsToShow.map(normalizeAction));
+        }
+        setMeetingHeader({
+          title: analysis.meeting_title || state.meeting?.title || "",
+          date: state.meeting?.date || "",
         });
     }, [location?.state]);
 
@@ -4251,6 +4287,76 @@ export default function TikiSprint12() {
 
         return () => {
             document.body.style.overflow = previousOverflow;
+  const txData = txSource
+    .map((d, i) => ({ ...d, idx: i }))
+    .filter(d =>
+      (!bmFilter || bookmarks.has(d.idx)) &&
+      (!searchQ || String(d.txt || "").includes(searchQ) || String(d.spk || "").includes(searchQ))
+    );
+  const visibleTx = txData;
+  const visible = visibleTx.slice(0, shownCount);
+  const remaining = visibleTx.length - shownCount;
+
+  const activeIdx = txSource.reduce((acc, item, i) => {
+    const nxt = i + 1 < txSource.length ? txSource[i + 1].ts : 99999;
+    if (curTime >= item.ts && curTime < nxt) return i;
+    return acc;
+  }, -1);
+
+  const cachedParticipants = useMemo(() => {
+    const state = location?.state || {};
+    return buildAcceptedProjectParticipants({ projectId: state.projectId, state });
+  }, [location?.state]);
+
+  // The cached version above reads from a localStorage project catalog that
+  // multiple pages write to — if this page loads before the fuller project
+  // list page ever re-populates that cache, it stays stuck showing just the
+  // owner's name. Fetch the real project directly instead so this doesn't
+  // depend on which page happened to load first.
+  const [liveParticipants, setLiveParticipants] = useState(null);
+  useEffect(() => {
+    const projectId = location?.state?.projectId || searchParams.get("projectId");
+    if (!projectId) return;
+    let cancelled = false;
+    getProject(projectId)
+      .then((project) => {
+        if (cancelled || !project) return;
+        const names = new Set();
+        const add = (value) => {
+          const normalized = String(value || "").trim();
+          if (normalized) names.add(normalized);
+        };
+        add(project.team_lead);
+        (Array.isArray(project.members) ? project.members : []).forEach((member) => {
+          if (member?.invite_status && member.invite_status !== "accepted") return;
+          add(member?.name || member?.email);
+        });
+        setLiveParticipants([...names]);
+      })
+      .catch(() => {
+        // Keep whatever the cached fallback resolved to.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location?.state, searchParams]);
+
+  const acceptedParticipants = liveParticipants && liveParticipants.length > 0 ? liveParticipants : cachedParticipants;
+  const visibleParticipants = acceptedParticipants.slice(0, 4);
+  const hiddenCount = Math.max(acceptedParticipants.length - visibleParticipants.length, 0);
+
+  const handleBadgeClick = useCallback((svc) => {
+    const latest = services.find(s => s.id === svc.id) || svc;
+    setDetailSvc(latest);
+  }, [services]);
+
+  const handleToggleAction = useCallback((index) => {
+    setSummaryActions((prev) =>
+      prev.map((action, i) => {
+        if (i !== index) return action;
+        return {
+          ...action,
+          status: action.status === "done" ? "todo" : "done",
         };
     }, [isAnyModalOpen]);
 
@@ -4463,73 +4569,95 @@ export default function TikiSprint12() {
         return () => {
             cancelled = true;
         };
-    }, [location?.state, searchParams]);
+      }),
+    }));
+  }, []);
 
-    const acceptedParticipants =
-        liveParticipants && liveParticipants.length > 0 ? liveParticipants : cachedParticipants;
-    const visibleParticipants = acceptedParticipants.slice(0, 4);
-    const hiddenCount = Math.max(acceptedParticipants.length - visibleParticipants.length, 0);
-
-    const handleBadgeClick = useCallback(
-        (svc) => {
-            const latest = services.find((s) => s.id === svc.id) || svc;
-            setDetailSvc(latest);
-        },
-        [services]
-    );
-
-    const handleToggleAction = useCallback((index) => {
-        setSummaryActions((prev) =>
-            prev.map((action, i) => {
-                if (i !== index) return action;
-                return {
-                    ...action,
-                    status: action.status === 'done' ? 'todo' : 'done',
-                };
-            })
-        );
-
-        setSummaryData((prev) => ({
-            ...prev,
-            actions: prev.actions.map((action, i) => {
-                if (i !== index) return action;
-                return {
-                    ...action,
-                    status: action.status === 'done' ? 'todo' : 'done',
-                };
-            }),
-        }));
-    }, []);
-
-    if (realDataStatus === 'idle' || realDataStatus === 'loading') {
-        return (
+  if (realDataStatus === "idle" || realDataStatus === "loading") {
+    return (
+      <div
+        className="min-h-screen flex flex-col"
+        style={{
+          background: "#F8FAFF",
+          fontFamily: '"Pretendard Variable","Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+          color: "#0D1B2A",
+        }}
+      >
+        <Header
+          isMobile={isMobile}
+          isLoggedIn={isAuthenticated}
+          phase="IDLE"
+          stateLabels={stateLabels}
+          user={sessionUser}
+          onLogout={() => {
+            clearAuthSession();
+            showToast("로그아웃 되었습니다.");
+          }}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 text-slate-400">
             <div
-                className="min-h-screen flex flex-col"
-                style={{
-                    background: '#F8FAFF',
-                    fontFamily:
-                        '"Pretendard Variable","Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-                    color: '#0D1B2A',
-                }}
-            >
-                <Header
-                    isMobile={isMobile}
-                    isLoggedIn={isAuthenticated}
-                    phase="IDLE"
-                    stateLabels={stateLabels}
-                    user={sessionUser}
-                    onLogout={() => {
-                        clearAuthSession();
-                        showToast('로그아웃 되었습니다.');
-                    }}
-                />
-                <div className="flex-1 flex items-center justify-center">
-                    <div className="flex flex-col items-center gap-3 text-slate-400">
-                        <div
-                            className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200"
-                            style={{ borderTopColor: '#0099CC' }}
-                        />
-                        <p className="text-sm font-semibold">회의록을 불러오는 중입니다...</p>
+              className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200"
+              style={{ borderTopColor: "#0099CC" }}
+            />
+            <p className="text-sm font-semibold">회의록을 불러오는 중입니다...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="min-h-screen"
+      style={{
+        background: "#F8FAFF",
+        fontFamily: '"Pretendard Variable","Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        color: "#0D1B2A",
+      }}
+    >
+      <Header
+        isMobile={isMobile}
+        isLoggedIn={isAuthenticated}
+        phase="IDLE"
+        stateLabels={stateLabels}
+        user={sessionUser}
+        onLogout={() => {
+          clearAuthSession();
+          showToast("로그아웃 되었습니다.");
+        }}
+      />
+
+      <div className="px-4 md:px-8 lg:px-12 pt-24 pb-0 max-w-screen-xl mx-auto">
+        <div className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div className="flex-1 min-w-0">
+              {realDataStatus === "missing" && (
+                <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700">
+                  이 회의의 분석 데이터를 찾을 수 없어 예시 데이터를 표시하고 있습니다.
+                </div>
+              )}
+              {realDataStatus === "loaded" && analysisDegraded && (
+                <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700">
+                  AI 분석이 일시적으로 실패해 간이 자동 요약으로 대체되었습니다. 내용을 꼭 검토해 주세요.
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <span className="text-xs font-semibold text-slate-400">{meetingHeader?.date || "2026.06.14"}</span>
+              </div>
+              <h1 className="text-lg md:text-xl font-bold text-slate-900 leading-snug mb-4">
+                {meetingHeader?.title || "Sprint 12 킥오프 — AI 회의록 시스템 개발 현황 공유"}
+              </h1>
+              <div className="flex items-center gap-2.5">
+                <div className="flex -space-x-2">
+                  {visibleParticipants.map((name, idx) => (
+                    <div
+                      key={`${name}-${idx}`}
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white border-2 border-white"
+                      style={{ background: PARTICIPANTS[idx % PARTICIPANTS.length]?.color || "#0099CC" }}
+                      title={name}
+                    >
+                      {name[0] || "?"}
                     </div>
                 </div>
             </div>
