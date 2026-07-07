@@ -1,6 +1,7 @@
 """Background task entry points for uploaded meeting files."""
 
 import logging
+from time import perf_counter
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -106,6 +107,7 @@ def _run_pipeline(db, file_id: UUID) -> None:
         raise ValueError(f"UploadedFile {file_id} not found")
 
     project_context = _project_context_for_upload(db, uploaded_file)
+    pipeline_started_at = perf_counter()
 
     uploaded_file.status = ProcessingStatus.PROCESSING
     uploaded_file.started_at = datetime.now(UTC)
@@ -115,18 +117,28 @@ def _run_pipeline(db, file_id: UUID) -> None:
     engine = get_default_ai_engine()
     if uploaded_file.file_kind == FileKind.AUDIO:
         _log_progress(file_id, 25, "오디오 전사와 화자 분리 파이프라인을 시작합니다.")
+        audio_started_at = perf_counter()
         result = engine.process_audio_parallel(
             uploaded_file.storage_path,
             n_workers=settings.whisper_parallel_workers,
             rag_context=project_context,
-            include_diarization=False,
+            include_diarization=True,
         )
-        _log_progress(file_id, 75, "전사 결과를 분석하고 있습니다.")
+        _log_progress(
+            file_id,
+            70,
+            f"오디오 분석이 완료되었습니다. ({perf_counter() - audio_started_at:.1f}s)",
+        )
         extraction_method = "whisper"
     elif uploaded_file.file_kind in {FileKind.DOCUMENT, FileKind.TEXT}:
         _log_progress(file_id, 25, "문서 추출 파이프라인을 시작합니다.")
+        document_started_at = perf_counter()
         result = engine.process_document(uploaded_file.storage_path, rag_context=project_context)
-        _log_progress(file_id, 75, "문서 요약과 해야 할 일을 정리하고 있습니다.")
+        _log_progress(
+            file_id,
+            70,
+            f"문서 분석이 완료되었습니다. ({perf_counter() - document_started_at:.1f}s)",
+        )
         extraction_meta = result.analysis.extra_data.get("document_extraction", {})
         extraction_method = extraction_meta.get("extraction_method", "document")
         uploaded_file.page_count = extraction_meta.get("page_count")
@@ -231,7 +243,8 @@ def _run_pipeline(db, file_id: UUID) -> None:
         except Exception:
             logger.exception("Failed to sync meeting %s to external providers", meeting.id)
 
-    _log_progress(file_id, 100, "파일 분석 파이프라인이 완료되었습니다.")
+    total_elapsed = perf_counter() - pipeline_started_at
+    _log_progress(file_id, 100, f"파일 분석 파이프라인이 완료되었습니다. ({total_elapsed:.1f}s)")
 
 
 def _mark_failed(db, file_id: UUID, error_message: str) -> None:
