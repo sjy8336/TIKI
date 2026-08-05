@@ -3,8 +3,24 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import MobileTab from '../components/MobileTab';
-import { deleteProjectMeeting, getProject, listProjects, updateProjectMeeting } from '../api/apiClient';
+import { deleteProjectMeeting, getProject, getProjectIntegrations, listProjectMeetings, listProjects, sendMeetingTasks, updateProjectMeeting } from '../api/apiClient';
 
+const isTikiMeetingMetaItem = (item) =>
+    Boolean(item && typeof item === 'object' && (item.__tiki_meta || item.type === '__tiki_meeting_meta'));
+
+// Older "회의록 직접 작성" records (before the __tiki_meeting_meta marker existed)
+// have no meta item, but their action items carry a distinctive synthetic
+// description ("업무: .../담당자: .../마감일: .../회의 내용 기반: ...") that
+// nothing else produces — same signature Dashboard.jsx's
+// normalizeEditableDescription already uses to detect and strip it.
+const MANUAL_DESCRIPTION_SIGNATURE = /^(업무|담당자|마감일|회의 내용 기반):\s*/m;
+
+const isManualMeetingRecord = (rawItems) => {
+    const items = Array.isArray(rawItems) ? rawItems : [];
+    return items.some(
+        (item) => isTikiMeetingMetaItem(item) || MANUAL_DESCRIPTION_SIGNATURE.test(String(item?.description || ''))
+    );
+};
 
 function statusBadgeClass(status) {
     if (status === '완료') return 'bg-[#E6F4EA] text-[#10B981]';
@@ -90,8 +106,39 @@ function compactLegacyActionHistoryItems(items) {
     return Array.from(byId.values());
 }
 
-function hasActionIntegration(item) {
-    return Boolean(item?.externalLink || item?.integrationTool);
+function getActionIntegrationLinks(item) {
+    const links = item?.integrationLinks && typeof item.integrationLinks === 'object' ? item.integrationLinks : {};
+    const legacyTool = String(item?.integrationTool || '').toLowerCase();
+    const legacyLink = item?.externalLink || '';
+    const isNotionUrl = (value) => String(value || '').toLowerCase().includes('notion');
+    const isJiraUrl = (value) => String(value || '').toLowerCase().includes('jira');
+    const structuredJira = links.jira && !isNotionUrl(links.jira) ? links.jira : '';
+    const structuredNotion = links.notion || (links.jira && isNotionUrl(links.jira) ? links.jira : '');
+    return {
+        jira: structuredJira || (legacyTool === 'jira' && isJiraUrl(legacyLink) ? legacyLink : ''),
+        notion: structuredNotion || (legacyTool === 'notion' ? legacyLink : ''),
+    };
+}
+
+// connectedProviders reflects the project's *current* integration status. A task can
+// carry a leftover link from before someone disconnected Jira/Notion — without this
+// filter it would still show as linked to a provider the project isn't connected to
+// anymore.
+function getActionIntegrationEntries(item, connectedProviders) {
+    const links = getActionIntegrationLinks(item);
+    return [
+        links.jira && (!connectedProviders || connectedProviders.jira) ? { id: 'jira', label: 'Jira', link: links.jira } : null,
+        links.notion && (!connectedProviders || connectedProviders.notion) ? { id: 'notion', label: 'Notion', link: links.notion } : null,
+    ].filter(Boolean);
+}
+
+function hasActionIntegration(item, connectedProviders) {
+    return getActionIntegrationEntries(item, connectedProviders).length > 0;
+}
+
+function hasActionIntegrationTool(item, tool) {
+    const links = getActionIntegrationLinks(item);
+    return Boolean(links[String(tool || '').toLowerCase()]);
 }
 
 function getMeetingDisplayStatus(meeting, actionItems) {
@@ -198,28 +245,20 @@ function buildExternalLink(tool, title = '') {
     return '';
 }
 
-const ROLE_MAP = {
-    정아름: 'PM',
-    김민수: 'Backend',
-    송지영: 'PM',
-    김소현: 'ML Engineer',
-    채하율: 'Frontend',
-    박디자이너: 'Designer',
-    외부리서처A: 'QA',
-};
+const PARTICIPANT_COLOR_PALETTE = ['#0099CC', '#10B981', '#7C3AED', '#F59E0B', '#0EA5E9', '#EF4444', '#5A6F8A'];
 
-const PARTICIPANT_COLOR_MAP = {
-    정아름: '#0099CC',
-    김민수: '#10B981',
-    송지영: '#7C3AED',
-    김소현: '#F59E0B',
-    채하율: '#0EA5E9',
-    박디자이너: '#EF4444',
-    외부리서처A: '#5A6F8A',
-};
+function colorForParticipant(name) {
+    const key = String(name || '');
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) {
+        hash = (hash * 31 + key.charCodeAt(i)) | 0;
+    }
+    return PARTICIPANT_COLOR_PALETTE[Math.abs(hash) % PARTICIPANT_COLOR_PALETTE.length];
+}
 
 const PROJECT_OVERRIDE_STORAGE_KEY = 'tiki_project_overrides';
 const PROJECT_CATALOG_STORAGE_KEY = 'tiki_project_catalog';
+const DELETED_PROJECT_IDS_KEY = 'tiki_deleted_project_ids';
 const MANUAL_MEETING_RECORDS_KEY = 'tiki_manual_minutes_records';
 const isTemporaryCodexProject = (project) => String(project?.name || '').toLowerCase().includes('codex invitation check');
 
@@ -327,6 +366,39 @@ const writeProjectCatalog = (next) => {
     }
 };
 
+function parseCurrentUser() {
+    if (typeof window === 'undefined') return null;
+    const candidateKeys = ['tiki_user', 'currentUser', 'user', 'authUser', 'sessionUser'];
+    for (const key of candidateKeys) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) continue;
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') return parsed;
+            if (typeof parsed === 'string' && parsed.trim()) return { name: parsed.trim() };
+        } catch {
+            const raw = localStorage.getItem(key);
+            if (raw && raw.trim()) return { name: raw.trim() };
+        }
+    }
+    return null;
+}
+
+function getDeletedProjectStorageKey(user) {
+    const identity = user?.email || user?.name || 'anonymous';
+    return `${DELETED_PROJECT_IDS_KEY}_${identity}`;
+}
+
+function loadDeletedProjectIds(user) {
+    try {
+        const raw = localStorage.getItem(getDeletedProjectStorageKey(user));
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.map((id) => String(id)).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
 function normalizeProject(project) {
     if (!project) return null;
     const createdAt =
@@ -371,6 +443,17 @@ function normalizeProject(project) {
         const fallbackAdmin = teamLead && participants.includes(teamLead) ? teamLead : participants[0];
         admins.push(fallbackAdmin);
     }
+    const positionByName = {
+        ...(project.positionByName && typeof project.positionByName === 'object' ? project.positionByName : {}),
+    };
+    if (teamLead && project.teamLeadPosition) positionByName[teamLead] = project.teamLeadPosition;
+    if (Array.isArray(project.members)) {
+        project.members.forEach((member) => {
+            if (typeof member === 'string') return;
+            const key = member?.name || member?.email;
+            if (key && member?.position) positionByName[key] = member.position;
+        });
+    }
     const meetings = Array.isArray(project.meetings)
         ? project.meetings.map((meeting, idx) => ({
               id: meeting.id || `m-${project.id}-${idx + 1}`,
@@ -378,12 +461,25 @@ function normalizeProject(project) {
               title: meeting.title || '회의 제목 없음',
               status: meeting.status || '진행 중',
               type: meeting.type || '정기',
-              detailType: meeting.detailType || 'uploaded',
+              // "회의록 직접 작성" tags itself via a __tiki_meeting_meta marker
+              // baked into action_items, persisted on the real backend Meeting —
+              // trust that over meeting.detailType, which only ever lived in a
+              // client-side override and reverts to the 'uploaded' default the
+              // moment a fresh getProject() fetch supersedes that override.
+              detailType: isManualMeetingRecord(meeting.action_items || meeting.actionItemsList)
+                ? 'manual'
+                : meeting.detailType || 'uploaded',
               detailRecordId: meeting.detailRecordId || '',
               tags: Array.isArray(meeting.tags) && meeting.tags.length > 0 ? meeting.tags : ['#회의'],
               participants: Array.isArray(meeting.participants) ? meeting.participants.filter(Boolean) : [],
               summary: meeting.summary || '회의 요약이 아직 등록되지 않았습니다.',
               actionItems: typeof meeting.actionItems === 'number' ? meeting.actionItems : 0,
+              action_items: (Array.isArray(meeting.action_items) ? meeting.action_items : Array.isArray(meeting.actionItemsList) ? meeting.actionItemsList : []).filter((item) => !isTikiMeetingMetaItem(item)),
+              actionItemsList: (Array.isArray(meeting.actionItemsList) ? meeting.actionItemsList : Array.isArray(meeting.action_items) ? meeting.action_items : []).filter((item) => !isTikiMeetingMetaItem(item)),
+              // Unfiltered copy (meta marker included) for MeetingManualDetail.jsx,
+              // which needs the hidden __tiki_meeting_meta item to reconstruct the
+              // structured summary/decisions/issues/next agenda.
+              rawActionItems: Array.isArray(meeting.action_items) ? meeting.action_items : Array.isArray(meeting.actionItemsList) ? meeting.actionItemsList : [],
               jiraLinked: typeof meeting.jiraLinked === 'number' ? meeting.jiraLinked : 0,
           }))
         : [];
@@ -397,6 +493,7 @@ function normalizeProject(project) {
         teamLead: teamLead || participants[0] || '담당자',
         participants,
         admins,
+        positionByName,
         myActionItems: Array.isArray(project.myActionItems) ? project.myActionItems : [],
         meetings,
     };
@@ -851,6 +948,7 @@ export default function ProjectMeetings() {
     const [isParticipantsModalOpen, setIsParticipantsModalOpen] = useState(false);
     const [participantsModalMembers, setParticipantsModalMembers] = useState([]);
     const [participantsModalTitle, setParticipantsModalTitle] = useState('회의 참여자');
+    const [participantsModalPositions, setParticipantsModalPositions] = useState({});
     const [deletedMeetingIds, setDeletedMeetingIds] = useState([]);
     const [meetings, setMeetings] = useState([]);
     const [pendingEditMeetingId, setPendingEditMeetingId] = useState(null);
@@ -877,8 +975,15 @@ export default function ProjectMeetings() {
     const [activeActionItemId, setActiveActionItemId] = useState(null);
     const [actionDraft, setActionDraft] = useState(null);
     const [isActionEditMode, setIsActionEditMode] = useState(false);
+    const currentUser = useMemo(() => parseCurrentUser(), [location.key]);
+    const deletedProjectIds = useMemo(() => loadDeletedProjectIds(currentUser), [currentUser, location.key]);
+    const isDeletedProject = useMemo(
+        () => (id) => deletedProjectIds.includes(String(id || '').trim()),
+        [deletedProjectIds]
+    );
     const [projectCatalog, setProjectCatalog] = useState(() => readProjectCatalog());
     const [pendingIntegrationTarget, setPendingIntegrationTarget] = useState('');
+    const [selectedIntegrationTools, setSelectedIntegrationTools] = useState([]);
     const [isDueDateOpen, setIsDueDateOpen] = useState(false);
     const [isDrawerAssigneeOpen, setIsDrawerAssigneeOpen] = useState(false);
     const [openMoreMenuId, setOpenMoreMenuId] = useState(null);
@@ -940,24 +1045,61 @@ export default function ProjectMeetings() {
     useEffect(() => {
         listProjects()
             .then((data) => {
-                const mapped = (Array.isArray(data) ? data : []).map((p) =>
+                const mapped = (Array.isArray(data) ? data : [])
+                    .filter((p) => !isDeletedProject(p?.id))
+                    .map((p) =>
                     normalizeProject({
                         id: p.id,
                         name: p.name,
                         description: p.description,
                         createdAt: p.created_at ? String(p.created_at) : '',
                         teamLead: p.team_lead || (p.owner?.name),
+                        teamLeadPosition: p.team_lead_position,
                         members: Array.isArray(p.members) ? p.members : [],
                     })
                 );
 
-                // Replace catalog with API data, discarding any old mock entries (integer IDs)
+                // Replace catalog with API data, discarding any old mock entries (integer IDs).
+                // Real (UUID) entries are fully trusted from the fresh API response — an entry
+                // that no longer comes back from listProjects() no longer exists, so it must not
+                // be retained here even if it was cached from an earlier visit.
                 const isUUID = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id));
                 setProjectCatalog((prev) => {
                     const base = Array.isArray(prev) ? prev : [];
-                    // Keep only real-API (UUID) entries that aren't in the new list, then merge
-                    const retained = base.filter((p) => isUUID(p?.id) && !mapped.some((m) => isSameProjectId(m.id, p?.id)));
-                    const next = [...retained, ...mapped];
+                    // listProjects() returns a lighter-weight ProjectListItem with no members,
+                    // no meetings, and no per-member position data at all — structurally poorer
+                    // than what getProject() already resolved for this same project. If that
+                    // richer fetch landed first, carry its participants/admins/teamLead/meetings/
+                    // positionByName forward instead of letting this shallower list response
+                    // reset them (this previously showed a project's real accepted members as
+                    // "외 0명 참여" and let a random member get picked as admin once the owner's
+                    // name vanished from the reset participants list).
+                    const priorEnriched = {};
+                    base.forEach((p) => {
+                        if (!p?.id) return;
+                        priorEnriched[String(p.id)] = {
+                            participants: p.participants,
+                            admins: p.admins,
+                            teamLead: p.teamLead,
+                            positionByName: p.positionByName,
+                            meetings: p.meetings,
+                        };
+                    });
+                    const mappedWithPosition = mapped.map((m) => {
+                        const prior = priorEnriched[String(m.id)];
+                        if (!prior) return m;
+                        return {
+                            ...m,
+                            participants: Array.isArray(prior.participants) && prior.participants.length > (m.participants?.length || 0)
+                                ? prior.participants
+                                : m.participants,
+                            admins: Array.isArray(prior.admins) && prior.admins.length > 0 ? prior.admins : m.admins,
+                            teamLead: m.teamLead || prior.teamLead,
+                            positionByName: { ...(prior.positionByName || {}), ...(m.positionByName || {}) },
+                            meetings: Array.isArray(m.meetings) && m.meetings.length > 0 ? m.meetings : prior.meetings,
+                        };
+                    });
+                    const next = [...base.filter((p) => !isUUID(p?.id)), ...mappedWithPosition];
                     writeProjectCatalog(next);
                     return next;
                 });
@@ -965,7 +1107,7 @@ export default function ProjectMeetings() {
             .catch(() => {
                 // API failures leave the current local navigation state intact.
             });
-    }, []);
+    }, [isDeletedProject]);
 
     useEffect(() => {
         const id = normalizeProjectId(projectId);
@@ -976,12 +1118,13 @@ export default function ProjectMeetings() {
                     ...data,
                     createdAt: data?.created_at ? String(data.created_at) : data?.createdAt,
                     teamLead: data?.team_lead,
+                    teamLeadPosition: data?.team_lead_position,
                     members: Array.isArray(data?.members) ? data.members : [],
                     meetings: Array.isArray(data?.meetings) ? data.meetings : [],
                 });
-                if (!normalized?.id) return;
+                if (!normalized?.id || isDeletedProject(normalized.id)) return;
                 setProjectCatalog((prev) => {
-                    const base = Array.isArray(prev) ? prev : [];
+                    const base = (Array.isArray(prev) ? prev : []).filter((item) => !isDeletedProject(item?.id));
                     const idx = base.findIndex((item) => isSameProjectId(item?.id, normalized.id));
                     const next = idx >= 0 ? [...base] : [...base, normalized];
                     if (idx >= 0) next[idx] = { ...base[idx], ...normalized };
@@ -992,11 +1135,25 @@ export default function ProjectMeetings() {
             .catch(() => {
                 // Keep route state/local records if the project cannot be fetched.
             });
+    }, [projectId, isDeletedProject]);
+
+    const [connectedProviders, setConnectedProviders] = useState({ jira: false, notion: false });
+    const isIntegrationConnected = Boolean(connectedProviders.jira || connectedProviders.notion);
+    useEffect(() => {
+        const id = normalizeProjectId(projectId);
+        if (!id) return;
+        getProjectIntegrations(id)
+            .then((result) => setConnectedProviders({
+                jira: Boolean(result?.jira?.connected),
+                notion: Boolean(result?.notion?.connected),
+            }))
+            .catch(() => setConnectedProviders({ jira: false, notion: false }));
     }, [projectId]);
 
     const project = useMemo(() => {
         const id = normalizeProjectId(projectId);
         if (!id) return null;
+        if (isDeletedProject(id)) return null;
         const override = projectOverrides[id] || null;
         const mergeWithOverride = (baseProject) => {
             const safeOverride = { ...(override || {}) };
@@ -1011,6 +1168,18 @@ export default function ProjectMeetings() {
                     ? override.participants
                     : baseProject?.participants,
                 admins: Array.isArray(override?.admins) ? override.admins : baseProject?.admins,
+                // A stale local override (e.g. saved before meetings/members were
+                // excluded from writeProjectOverride) can carry an old, empty
+                // "meetings" snapshot that would otherwise shadow the real,
+                // freshly-fetched meetings/action items from getProject() here —
+                // always trust the live fetch over anything cached in the override.
+                meetings: Array.isArray(baseProject?.meetings) ? baseProject.meetings : override?.meetings,
+                // Same story for teamLead — a stale override carrying an old owner
+                // name would silently replace the real owner (and, since the real
+                // owner isn't in project.members at all, would also make the real
+                // owner disappear from the participants list entirely while some
+                // other member incorrectly gets picked as admin).
+                teamLead: baseProject?.teamLead || override?.teamLead,
             });
         };
 
@@ -1025,17 +1194,25 @@ export default function ProjectMeetings() {
         }
         if (override && isSameProjectId(override.id, id)) return normalizeProject(override);
         return null;
-    }, [projectId, location.state, projectCatalog, projectOverrides]);
+    }, [projectId, location.state, projectCatalog, projectOverrides, isDeletedProject]);
+
+    useEffect(() => {
+        const id = normalizeProjectId(projectId);
+        if (id && isDeletedProject(id)) {
+            navigate('/project-list', { replace: true });
+        }
+    }, [projectId, isDeletedProject, navigate]);
 
     useEffect(() => {
         const fromState = location.state?.project;
         if (!fromState?.id) return;
+        if (isDeletedProject(fromState.id)) return;
 
         const normalized = normalizeProject(fromState);
         if (!normalized?.id) return;
 
         setProjectCatalog((prev) => {
-            const base = Array.isArray(prev) ? prev : [];
+            const base = (Array.isArray(prev) ? prev : []).filter((item) => !isDeletedProject(item?.id));
             const idx = base.findIndex((item) => isSameProjectId(item?.id, normalized.id));
 
             if (idx >= 0) {
@@ -1051,10 +1228,10 @@ export default function ProjectMeetings() {
             writeProjectCatalog(next);
             return next;
         });
-    }, [location.key]);
+    }, [location.key, location.state, isDeletedProject]);
 
     const projectCandidates = useMemo(() => {
-        const source = [...projectCatalog];
+        const source = [...projectCatalog].filter((item) => !isDeletedProject(item?.id));
         const deduped = [];
         source.forEach((item) => {
             if (!item?.id) return;
@@ -1072,10 +1249,10 @@ export default function ProjectMeetings() {
                 admins: Array.isArray(override.admins) ? override.admins : item.admins,
             });
         });
-        if (!project) return merged;
+        if (!project || isDeletedProject(project.id)) return merged;
         const exists = merged.some((p) => isSameProjectId(p.id, project.id));
         return exists ? merged : [project, ...merged];
-    }, [project, projectCatalog, projectOverrides]);
+    }, [project, projectCatalog, projectOverrides, isDeletedProject]);
 
     const filteredProjects = useMemo(() => {
         const q = projectSearch.trim().toLowerCase();
@@ -1112,8 +1289,87 @@ export default function ProjectMeetings() {
         }
 
         const manualRecords = readManualMeetingRecords();
+        // A just-deleted meeting is only optimistically hidden client-side
+        // (deletedMeetingIds) until the backend delete resolves and the next
+        // project refetch drops it for good — without filtering here too, its
+        // to-do items and "회의록 출처" source label kept showing up in the
+        // 해야 할 일 tab even though the meeting itself was gone from the list.
+        const serverMeetings = (Array.isArray(project.meetings) ? project.meetings : []).filter(
+            (meeting) => !deletedMeetingIds.includes(meeting?.id)
+        );
+        const serverMeetingIds = new Set(serverMeetings.map((meeting) => String(meeting?.id || '')).filter(Boolean));
+        const serverMeetingTitles = new Set(serverMeetings.map((meeting) => String(meeting?.title || '').trim()).filter(Boolean));
+        const serverMeetingHasActions = (record) => {
+            const linkedMeetingId = String(record?.serverMeetingId || record?.meetingId || '').trim();
+            const title = String(record?.title || '').trim();
+            const matchedMeeting = serverMeetings.find((meeting) => {
+                const meetingId = String(meeting?.id || '').trim();
+                const meetingTitle = String(meeting?.title || '').trim();
+                return (linkedMeetingId && meetingId === linkedMeetingId) || (title && meetingTitle === title);
+            });
+            if (!matchedMeeting) return false;
+            const actions = Array.isArray(matchedMeeting?.action_items)
+                ? matchedMeeting.action_items
+                : Array.isArray(matchedMeeting?.actionItemsList)
+                  ? matchedMeeting.actionItemsList
+                  : [];
+            return actions.filter((action) => !isTikiMeetingMetaItem(action)).length > 0;
+        };
+        const projectManualRecords = Object.values(manualRecords)
+            .filter((record) => String(record?.projectId || '') === String(project.id || ''));
+        const findLocalManualAction = (meeting, action, index) => {
+            const meetingId = String(meeting?.id || '').trim();
+            const meetingTitle = String(meeting?.title || '').trim();
+            const actionId = String(action?.id || '').trim();
+            const actionText = String(action?.text || action?.title || '').trim();
+            const matchedRecord = projectManualRecords.find((record) => {
+                const linkedMeetingId = String(record?.serverMeetingId || record?.meetingId || '').trim();
+                const title = String(record?.title || '').trim();
+                return (linkedMeetingId && linkedMeetingId === meetingId) || (title && title === meetingTitle);
+            });
+            if (!matchedRecord || !Array.isArray(matchedRecord.actions)) return null;
+            return matchedRecord.actions.find((localAction, localIndex) => {
+                const localId = String(localAction?.id || `${matchedRecord.id}-action-${localIndex + 1}`);
+                const localText = String(localAction?.text || localAction?.title || '').trim();
+                return (actionId && localId === actionId) || (actionText && localText === actionText) || localIndex === index;
+            }) || null;
+        };
+        const serverActionItems = serverMeetings.flatMap((meeting) => {
+            const actions = Array.isArray(meeting?.action_items) ? meeting.action_items : Array.isArray(meeting?.actionItemsList) ? meeting.actionItemsList : [];
+            return actions
+                .filter((action) => !isTikiMeetingMetaItem(action))
+                .map((action, index) => {
+                    const localAction = findLocalManualAction(meeting, action, index);
+                    const localDone = localAction?.checked || normalizeActionStatus(localAction?.status) === '수행완료';
+                    const status = localDone
+                        ? '수행완료'
+                        : action?.status ? normalizeActionStatus(action.status) : action?.checked ? '수행완료' : '검토대기';
+                    return {
+                        id: action?.id || `${meeting.id}-action-${index + 1}`,
+                        text: action?.text || action?.title || '',
+                        description: action?.description || meeting?.summary || '',
+                        due: normalizeStorageDate(action?.due || action?.dueDate || action?.due_at),
+                        assignee: action?.assignee || project.teamLead || '담당자 미지정',
+                        status,
+                        source: String(action?.source || meeting?.title || '').trim() || project.name || '회의 제목 없음',
+                        integrationTool: action?.integrationTool || action?.integrationProvider || null,
+                        integrationLinks: getActionIntegrationLinks(action),
+                        externalLink: action?.externalLink || '',
+                        snapshotOf: action?.snapshotOf || null,
+                        historySavedAt: action?.historySavedAt || null,
+                        updatedAt: action?.updatedAt || getKSTTimestampLabel(),
+                        meeting,
+                    };
+                });
+        });
         const manualActionItems = Object.values(manualRecords)
             .filter((record) => String(record?.projectId || '') === String(project.id || ''))
+            .filter((record) => {
+                const linkedMeetingId = String(record?.serverMeetingId || record?.meetingId || '').trim();
+                const title = String(record?.title || '').trim();
+                const hasServerMeeting = (linkedMeetingId && serverMeetingIds.has(linkedMeetingId)) || (title && serverMeetingTitles.has(title));
+                return !hasServerMeeting || !serverMeetingHasActions(record);
+            })
             .flatMap((record) => {
                 const actions = Array.isArray(record?.actions) ? record.actions : [];
                 return actions.map((action, index) => ({
@@ -1133,7 +1389,7 @@ export default function ProjectMeetings() {
                 }));
             });
 
-        const mergedActionItems = compactLegacyActionHistoryItems([...(project.myActionItems || []), ...manualActionItems]).filter((item) => {
+        const mergedActionItems = compactLegacyActionHistoryItems([...serverActionItems, ...manualActionItems]).filter((item) => {
             return String(item?.text || '').trim().length > 0;
         });
         const dedupedActionItems = [];
@@ -1166,6 +1422,7 @@ export default function ProjectMeetings() {
                     String(item.meeting?.title || '').trim() ||
                     fallbackMeetingTitle,
                 integrationTool: item.integrationTool || null,
+                integrationLinks: getActionIntegrationLinks(item),
                 externalLink: item.externalLink || '',
                 snapshotOf: item.snapshotOf || null,
                 historySavedAt: item.historySavedAt || null,
@@ -1173,7 +1430,7 @@ export default function ProjectMeetings() {
                 meeting: null,
             }))
         );
-    }, [project]);
+    }, [project, deletedMeetingIds]);
 
     const allActionItems = actionItems;
     const computedProjectStatus = useMemo(() => {
@@ -1229,13 +1486,14 @@ export default function ProjectMeetings() {
     }, [allActionItems]);
     const actionSourceOptions = useMemo(() => {
         const meetingTitles = (project?.meetings || [])
+            .filter((meeting) => !deletedMeetingIds.includes(meeting?.id))
             .map((meeting) => String(meeting?.title || '').trim())
             .filter(Boolean);
         const itemSources = allActionItems
             .map((item) => String(item?.source || '').trim())
             .filter(Boolean);
         return ['전체', ...new Set([...meetingTitles, ...itemSources])];
-    }, [project?.meetings, allActionItems]);
+    }, [project?.meetings, allActionItems, deletedMeetingIds]);
 
     const actionMetricItems = useMemo(() => {
         return allActionItems.filter((item) => {
@@ -1252,21 +1510,21 @@ export default function ProjectMeetings() {
             const statusOk =
                 actionStatusFilter === '전체' ||
                 (actionStatusFilter === '연동완료'
-                    ? normalizedStatus === '연동완료' || hasActionIntegration(item)
+                    ? normalizedStatus === '연동완료' || hasActionIntegration(item, connectedProviders)
                     : normalizedStatus === actionStatusFilter);
             const sourceOk = actionSourceFilter === '전체' || item.source === actionSourceFilter;
             return assigneeOk && statusOk && sourceOk;
         });
-    }, [allActionItems, actionAssigneeFilter, actionStatusFilter, actionSourceFilter]);
+    }, [allActionItems, actionAssigneeFilter, actionStatusFilter, actionSourceFilter, connectedProviders]);
 
     const actionDashboardStats = useMemo(() => {
         return {
             reviewPending: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '검토대기').length,
             reviewDone: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '검토완료').length,
             performed: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '수행완료').length,
-            linked: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '연동완료' || hasActionIntegration(item)).length,
+            linked: actionMetricItems.filter((item) => normalizeActionStatus(item.status) === '연동완료' || hasActionIntegration(item, connectedProviders)).length,
         };
-    }, [actionMetricItems]);
+    }, [actionMetricItems, connectedProviders]);
 
     const activeActionItem = useMemo(() => {
         if (!activeActionItemId) return null;
@@ -1327,10 +1585,11 @@ export default function ProjectMeetings() {
         if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
         toastTimerRef.current = setTimeout(() => setToast({ message: '', type: 'info' }), 2200);
     };
-    const openParticipantsModal = (members = [], title = '회의 참여자') => {
+    const openParticipantsModal = (members = [], title = '회의 참여자', positions = {}) => {
         const normalized = Array.isArray(members) ? members.filter(Boolean) : [];
         setParticipantsModalMembers(normalized);
         setParticipantsModalTitle(title);
+        setParticipantsModalPositions(positions && typeof positions === 'object' ? positions : {});
         setIsParticipantsModalOpen(true);
     };
     const closeParticipantsModal = () => setIsParticipantsModalOpen(false);
@@ -1424,8 +1683,10 @@ export default function ProjectMeetings() {
 
     const openActionDrawer = (item) => {
         setActiveActionItemId(item.id);
+        setSelectedIntegrationTools([]);
         setActionDraft({
             id: item.id,
+            meetingId: item.meeting?.id || null,
             text: item.text,
             description: item.description || '',
             due: item.due || '-',
@@ -1433,6 +1694,7 @@ export default function ProjectMeetings() {
             status: normalizeActionStatus(item.status),
             source: item.source || '-',
             integrationTool: item.integrationTool || null,
+            integrationLinks: getActionIntegrationLinks(item),
             externalLink: item.externalLink || '',
             updatedAt: item.updatedAt || getKSTTimestampLabel(),
         });
@@ -1445,18 +1707,27 @@ export default function ProjectMeetings() {
         setIsActionDrawerOpen(true);
     };
 
+    const openIntegrateView = () => {
+        if (isIntegrationConnected) {
+            setActionDrawerView('integrate');
+        } else {
+            navigate(`/configuration?projectId=${project?.id || projectId}&tab=integration`);
+        }
+    };
+
     const closeActionDrawer = () => {
         setIsActionDrawerOpen(false);
         setActiveActionItemId(null);
         setActionDraft(null);
         setIsActionEditMode(false);
         setPendingIntegrationTarget('');
+        setSelectedIntegrationTools([]);
         setActionDrawerView('detail');
         setIsDueDateOpen(false);
         setIsDrawerAssigneeOpen(false);
     };
 
-    const saveActionDraft = ({ nextStatus = null, integrationTool = null, closeAfterSave = false } = {}) => {
+    const saveActionDraft = ({ nextStatus = null, integrationTool = null, integrationTools = null, closeAfterSave = false } = {}) => {
         if (!actionDraft) return false;
         const nextText = String(actionDraft.text || '').trim();
         if (!nextText) {
@@ -1467,11 +1738,24 @@ export default function ProjectMeetings() {
             ? normalizeActionStatus(nextStatus)
             : normalizeActionStatus(actionDraft.status);
         const now = getKSTTimestampLabel();
-        const resolvedExternalLink = integrationTool
-            ? buildExternalLink(integrationTool, nextText)
-            : actionDraft.externalLink || '';
+        const targetTools = Array.isArray(integrationTools) && integrationTools.length > 0
+            ? integrationTools
+            : integrationTool ? [integrationTool] : [];
+        const draftLinks = getActionIntegrationLinks(actionDraft);
+        const addedLinks = targetTools.reduce((acc, tool) => {
+            const key = String(tool || '').toLowerCase();
+            if (key === 'jira' || key === 'notion') acc[key] = buildExternalLink(tool, nextText);
+            return acc;
+        }, {});
+        const nextIntegrationLinks = targetTools.length > 0 ? { ...draftLinks, ...addedLinks } : draftLinks;
+        const primaryTool = targetTools[targetTools.length - 1] || actionDraft.integrationTool || null;
+        const primaryKey = String(primaryTool || '').toLowerCase();
+        const nextPrimaryTool = primaryTool || null;
+        const nextPrimaryLink = nextIntegrationLinks[primaryKey] || actionDraft.externalLink || '';
+        let sourceMeeting = null;
         const nextItems = allActionItems.map((item) => {
             if (item.id !== actionDraft.id) return item;
+            sourceMeeting = item.meeting || null;
             return {
                 ...item,
                 text: nextText,
@@ -1480,8 +1764,9 @@ export default function ProjectMeetings() {
                 assignee: actionDraft.assignee || project.teamLead || '담당자 미지정',
                 status: normalizedStatus,
                 source: actionDraft.source || item.source || '-',
-                integrationTool: integrationTool || actionDraft.integrationTool || item.integrationTool || null,
-                externalLink: resolvedExternalLink,
+                integrationTool: nextPrimaryTool || item.integrationTool || null,
+                integrationLinks: nextIntegrationLinks,
+                externalLink: nextPrimaryLink || item.externalLink || '',
                 updatedAt: now,
             };
         });
@@ -1492,34 +1777,118 @@ export default function ProjectMeetings() {
             return {
                 ...prev,
                 status: normalizedStatus,
-                integrationTool: integrationTool || prev.integrationTool || null,
-                externalLink: resolvedExternalLink,
+                integrationTool: nextPrimaryTool || prev.integrationTool || null,
+                integrationLinks: nextIntegrationLinks,
+                externalLink: nextPrimaryLink || prev.externalLink || '',
                 updatedAt: now,
             };
         });
         if (closeAfterSave) closeActionDrawer();
+
+        // Persist the change to the backend meeting record (previously this only ever
+        // wrote to localStorage, so status like "수행완료" never actually reached the
+        // server and nothing downstream — e.g. Jira completion sync — could see it).
+        if (sourceMeeting?.id && project?.id) {
+            const rawActionItems = (Array.isArray(sourceMeeting.action_items) ? sourceMeeting.action_items : []).map(
+                (raw) =>
+                    String(raw?.id || '') === String(actionDraft.id)
+                        ? {
+                              ...raw,
+                              title: nextText,
+                              text: nextText,
+                              description: actionDraft.description || '',
+                              assignee: actionDraft.assignee || project.teamLead || '담당자 미지정',
+                              due: actionDraft.due || '-',
+                              status: normalizedStatus,
+                          }
+                        : raw
+            );
+            const savedActionDraftId = actionDraft.id;
+            updateProjectMeeting(project.id, sourceMeeting.id, { action_items: rawActionItems })
+                .then((updatedMeeting) => {
+                    // Meeting sync (Jira/Notion) runs synchronously on the backend as part of
+                    // this request, so its response already carries any freshly-created
+                    // integration links — apply them so "확인하기" shows up instead of a
+                    // stale "연동하기" once auto-sync lands.
+                    const freshRawItem = Array.isArray(updatedMeeting?.action_items)
+                        ? updatedMeeting.action_items.find((raw) => String(raw?.id || '') === String(savedActionDraftId))
+                        : null;
+                    if (!freshRawItem) return;
+                    const serverSync = {
+                        status: freshRawItem.status || normalizedStatus,
+                        integrationTool: freshRawItem.integrationTool || null,
+                        integrationLinks: getActionIntegrationLinks(freshRawItem),
+                        externalLink: freshRawItem.externalLink || '',
+                    };
+                    setActionItems((prev) =>
+                        prev.map((item) => (item.id === savedActionDraftId ? { ...item, ...serverSync } : item))
+                    );
+                    setActionDraft((prev) => (prev?.id === savedActionDraftId ? { ...prev, ...serverSync } : prev));
+                })
+                .catch((err) => {
+                    showToast(err?.message || '변경 사항을 서버에 저장하지 못했습니다.', 'error');
+                });
+        }
         return true;
     };
 
-    const startActionIntegration = (tool) => {
+    const toggleIntegrationTool = (tool) => {
+        if (!actionDraft || hasActionIntegrationTool(actionDraft, tool)) return;
+        setSelectedIntegrationTools((prev) =>
+            prev.includes(tool) ? prev.filter((item) => item !== tool) : [...prev, tool]
+        );
+    };
+
+    const startActionIntegration = async (tools) => {
         if (!actionDraft) return;
-        setPendingIntegrationTarget(tool);
-        window.setTimeout(() => {
-            const isNotion = tool === 'notion';
+        const targetTools = (Array.isArray(tools) ? tools : [tools])
+            .filter(Boolean)
+            .filter((tool) => !hasActionIntegrationTool(actionDraft, tool));
+        if (targetTools.length === 0) return;
+        setPendingIntegrationTarget(targetTools.join(','));
+        try {
+            if (!actionDraft.meetingId) {
+                throw new Error('회의록 출처가 없는 업무는 외부 서비스로 보낼 수 없습니다.');
+            }
+            const nextLinks = { ...getActionIntegrationLinks(actionDraft) };
+            for (const tool of targetTools) {
+                const response = await sendMeetingTasks(actionDraft.meetingId, {
+                    provider: tool,
+                    taskIds: [actionDraft.id],
+                });
+                const synced = (response?.results || []).find((item) => item.taskId === actionDraft.id || item.taskId === String(actionDraft.id));
+                if (!synced || synced.syncStatus === 'failed') {
+                    throw new Error(synced?.errorMessage || `${tool === 'notion' ? 'Notion' : 'Jira'} 전송에 실패했습니다.`);
+                }
+                nextLinks[tool] = synced.externalUrl || nextLinks[tool] || '';
+            }
             const ok = saveActionDraft({
                 nextStatus: normalizeActionStatus(actionDraft.status) === '수행완료' ? '수행완료' : '연동완료',
-                integrationTool: isNotion ? 'Notion' : 'Jira',
-                closeAfterSave: true,
+                closeAfterSave: false,
             });
-            setPendingIntegrationTarget('');
-            if (ok)
-                showToast(
-                    isNotion
-                        ? 'Notion 연동이 완료되어 연동 완료로 전환되었습니다.'
-                        : 'Jira 연동이 완료되어 연동 완료로 전환되었습니다.',
-                    'success'
+            if (ok) {
+                const nextItems = allActionItems.map((item) =>
+                    item.id === actionDraft.id
+                        ? {
+                              ...item,
+                              status: normalizeActionStatus(actionDraft.status) === '수행완료' ? '수행완료' : '연동완료',
+                              integrationLinks: nextLinks,
+                              externalLink: nextLinks.jira || nextLinks.notion || item.externalLink || '',
+                              integrationTool: targetTools[targetTools.length - 1] === 'notion' ? 'Notion' : 'Jira',
+                          }
+                        : item
                 );
-        }, 650);
+                setActionItems(nextItems);
+                persistProjectActionItems(nextItems);
+                showToast(`${targetTools.map((tool) => (tool === 'notion' ? 'Notion' : 'Jira')).join(', ')} 전송이 완료되었습니다.`, 'success');
+                closeActionDrawer();
+            }
+        } catch (err) {
+            showToast(err?.message || '업무 보내기에 실패했습니다.', 'error');
+        } finally {
+            setPendingIntegrationTarget('');
+            setSelectedIntegrationTools([]);
+        }
     };
 
     const removeActionItem = (itemId) => {
@@ -1724,7 +2093,7 @@ export default function ProjectMeetings() {
                                             <div
                                                 className="flex -space-x-2 cursor-pointer"
                                                 onClick={() =>
-                                                    openParticipantsModal(project.participants, '프로젝트 참여자')
+                                                    openParticipantsModal(project.participants, '프로젝트 참여자', project.positionByName)
                                                 }
                                             >
                                                 {visibleParticipants.map((name) => (
@@ -1732,7 +2101,7 @@ export default function ProjectMeetings() {
                                                         key={name}
                                                         className="w-7 h-7 rounded-full text-[11px] font-bold flex items-center justify-center border-2 border-white text-white"
                                                         style={{
-                                                            backgroundColor: PARTICIPANT_COLOR_MAP[name] || '#0099CC',
+                                                            backgroundColor: colorForParticipant(name),
                                                         }}
                                                         title={name}
                                                     >
@@ -1748,7 +2117,7 @@ export default function ProjectMeetings() {
                                             <button
                                                 type="button"
                                                 onClick={() =>
-                                                    openParticipantsModal(project.participants, '프로젝트 참여자')
+                                                    openParticipantsModal(project.participants, '프로젝트 참여자', project.positionByName)
                                                 }
                                                 className="text-xs text-slate-400 hover:text-slate-600"
                                             >
@@ -2070,11 +2439,16 @@ export default function ProjectMeetings() {
                                                                                             ? {
                                                                                                   recordId: meeting.detailRecordId || meeting.id,
                                                                                                   meetingId: meeting.id,
-                                                                                                  meeting,
+                                                                                                  meeting: { ...meeting, action_items: meeting.rawActionItems || meeting.action_items },
                                                                                                   projectId: project.id,
                                                                                                   projectName: project.name,
                                                                                               }
-                                                                                            : undefined,
+                                                                                            : {
+                                                                                                  meetingId: meeting.id,
+                                                                                                  meeting,
+                                                                                                  projectId: project.id,
+                                                                                                  projectName: project.name,
+                                                                                              },
                                                                                 }
                                                                             )
                                                                         }
@@ -2395,11 +2769,16 @@ export default function ProjectMeetings() {
                                                                                                 ? {
                                                                                                       recordId: meeting.detailRecordId || meeting.id,
                                                                                                       meetingId: meeting.id,
-                                                                                                      meeting,
+                                                                                                      meeting: { ...meeting, action_items: meeting.rawActionItems || meeting.action_items },
                                                                                                       projectId: project.id,
                                                                                                       projectName: project.name,
                                                                                                   }
-                                                                                                : undefined,
+                                                                                                : {
+                                                                                                      meetingId: meeting.id,
+                                                                                                      meeting,
+                                                                                                      projectId: project.id,
+                                                                                                      projectName: project.name,
+                                                                                                  },
                                                                                     }
                                                                                 )
                                                                             }
@@ -3067,33 +3446,36 @@ export default function ProjectMeetings() {
                                         </div>
                                     </div>
 
-                                    {normalizeActionStatus(actionDraft.status) === '연동완료' &&
-                                        actionDraft.externalLink && (
-                                            <div className="rounded-xl border border-[#10B981]/30 bg-[#E6F4EA] p-4 flex items-center justify-between gap-3">
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    <span className="shrink-0 w-7 h-7 rounded-lg bg-[#10B981]/15 text-[#10B981] flex items-center justify-center">
-                                                        <CheckCircleIcon className="text-[#10B981]" />
-                                                    </span>
-                                                    <div className="min-w-0">
-                                                        <p className="text-[12px] font-bold text-[#0E8F69]">
-                                                            연동 완료
-                                                        </p>
-                                                        <p className="text-[11px] text-[#5A6F8A] truncate">
-                                                            {actionDraft.externalLink}
-                                                        </p>
+                                    {hasActionIntegration(actionDraft, connectedProviders) && (
+                                        <div className="space-y-2">
+                                            {getActionIntegrationEntries(actionDraft, connectedProviders).map((entry) => (
+                                                <div key={entry.id} className="rounded-xl border border-[#10B981]/30 bg-[#E6F4EA] p-4 flex items-center justify-between gap-3">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <span className="shrink-0 w-7 h-7 rounded-lg bg-[#10B981]/15 text-[#10B981] flex items-center justify-center">
+                                                            <CheckCircleIcon className="text-[#10B981]" />
+                                                        </span>
+                                                        <div className="min-w-0">
+                                                            <p className="text-[12px] font-bold text-[#0E8F69]">
+                                                                {entry.label} 연동 완료
+                                                            </p>
+                                                            <p className="text-[11px] text-[#5A6F8A] truncate">
+                                                                {entry.link}
+                                                            </p>
+                                                        </div>
                                                     </div>
+                                                    <a
+                                                        href={entry.link}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="shrink-0 inline-flex items-center gap-1 text-[12px] font-semibold text-[#0099CC] hover:underline"
+                                                    >
+                                                        {entry.label} 확인
+                                                        <ArrowUpRightIcon />
+                                                    </a>
                                                 </div>
-                                                <a
-                                                    href={actionDraft.externalLink}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="shrink-0 inline-flex items-center gap-1 text-[12px] font-semibold text-[#0099CC] hover:underline"
-                                                >
-                                                    {actionDraft.integrationTool === 'Notion' ? 'Notion' : 'Jira'} 확인
-                                                    <ArrowUpRightIcon />
-                                                </a>
-                                            </div>
-                                        )}
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="view-enter-right p-5 space-y-4">
@@ -3132,8 +3514,9 @@ export default function ProjectMeetings() {
                                         <div className="flex flex-col gap-3">
                                             <button
                                                 type="button"
-                                                onClick={() => startActionIntegration('jira')}
-                                                className="group w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-[#0099CC]/30 bg-white hover:border-[#0099CC] hover:bg-[#EEF3FF] hover:shadow-md transition-all text-left"
+                                                onClick={() => toggleIntegrationTool('jira')}
+                                                disabled={hasActionIntegrationTool(actionDraft, 'jira')}
+                                                className={`group w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-white transition-all text-left ${hasActionIntegrationTool(actionDraft, 'jira') ? 'border-[#10B981]/30 bg-[#F8FFFB] opacity-70 cursor-default' : selectedIntegrationTools.includes('jira') ? 'border-[#0099CC] bg-[#EEF3FF] shadow-md' : 'border-[#0099CC]/30 hover:border-[#0099CC] hover:bg-[#EEF3FF] hover:shadow-md'}`}
                                             >
                                                 <span className="shrink-0 w-12 h-12 rounded-xl bg-[#EEF3FF] group-hover:bg-[#0099CC]/15 text-[#0099CC] flex items-center justify-center transition-colors">
                                                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -3154,7 +3537,7 @@ export default function ProjectMeetings() {
                                                     </svg>
                                                 </span>
                                                 <div className="min-w-0">
-                                                    <p className="text-sm font-bold text-[#0D1B2A]">Jira로 연동</p>
+                                                    <p className="text-sm font-bold text-[#0D1B2A]">{hasActionIntegrationTool(actionDraft, 'jira') ? 'Jira 연동완료' : 'Jira로 연동'}</p>
                                                     <p className="text-[12px] text-[#5A6F8A] mt-0.5">
                                                         Jira API를 통해 해야 할 일을 자동 생성합니다.
                                                     </p>
@@ -3176,8 +3559,9 @@ export default function ProjectMeetings() {
 
                                             <button
                                                 type="button"
-                                                onClick={() => startActionIntegration('notion')}
-                                                className="group w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-[#7C3AED]/20 bg-white hover:border-[#7C3AED] hover:bg-[#F6F0FF] hover:shadow-md transition-all text-left"
+                                                onClick={() => toggleIntegrationTool('notion')}
+                                                disabled={hasActionIntegrationTool(actionDraft, 'notion')}
+                                                className={`group w-full flex items-center gap-4 p-4 rounded-2xl border-2 bg-white transition-all text-left ${hasActionIntegrationTool(actionDraft, 'notion') ? 'border-[#10B981]/30 bg-[#F8FFFB] opacity-70 cursor-default' : selectedIntegrationTools.includes('notion') ? 'border-[#7C3AED] bg-[#F6F0FF] shadow-md' : 'border-[#7C3AED]/20 hover:border-[#7C3AED] hover:bg-[#F6F0FF] hover:shadow-md'}`}
                                             >
                                                 <span className="shrink-0 w-12 h-12 rounded-xl bg-[#7C3AED]/10 group-hover:bg-[#7C3AED]/20 text-[#7C3AED] flex items-center justify-center transition-colors">
                                                     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
@@ -3185,7 +3569,7 @@ export default function ProjectMeetings() {
                                                     </svg>
                                                 </span>
                                                 <div className="min-w-0">
-                                                    <p className="text-sm font-bold text-[#0D1B2A]">Notion으로 연동</p>
+                                                    <p className="text-sm font-bold text-[#0D1B2A]">{hasActionIntegrationTool(actionDraft, 'notion') ? 'Notion 연동완료' : 'Notion으로 연동'}</p>
                                                     <p className="text-[12px] text-[#5A6F8A] mt-0.5">
                                                         Notion 페이지에 태스크로 자동 추가합니다.
                                                     </p>
@@ -3203,6 +3587,15 @@ export default function ProjectMeetings() {
                                                 >
                                                     <polyline points="9 18 15 12 9 6" />
                                                 </svg>
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                disabled={selectedIntegrationTools.length === 0}
+                                                onClick={() => startActionIntegration(selectedIntegrationTools)}
+                                                className={`mt-1 w-full rounded-2xl px-4 py-3 text-sm font-bold text-white transition ${selectedIntegrationTools.length === 0 ? 'bg-slate-300 cursor-not-allowed' : 'bg-[linear-gradient(135deg,#0099CC,#7C3AED)] hover:-translate-y-0.5 shadow-[0_8px_20px_rgba(0,100,180,0.18)]'}`}
+                                            >
+                                                선택한 도구로 연동
                                             </button>
                                         </div>
                                     )}
@@ -3263,98 +3656,58 @@ export default function ProjectMeetings() {
                                         )}
 
                                         {normalizeActionStatus(actionDraft.status) === '검토완료' && (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const ok = saveActionDraft({
-                                                            nextStatus: '수행완료',
-                                                            closeAfterSave: true,
-                                                        });
-                                                        if (ok) showToast('수행 완료 처리되었습니다.', 'success');
-                                                    }}
-                                                    className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
-                                                >
-                                                    수행완료
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setActionDrawerView('integrate')}
-                                                    className="flex items-center gap-1.5 text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5"
-                                                    style={{
-                                                        background:
-                                                            'linear-gradient(135deg,#0099CC,#7C3AED)',
-                                                        boxShadow: '0 4px 12px rgba(0,100,180,0.18)',
-                                                    }}
-                                                >
-                                                    <ZapIcon className="text-white" />
-                                                    연동하기
-                                                </button>
-                                            </>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const ok = saveActionDraft({
+                                                        nextStatus: '수행완료',
+                                                        closeAfterSave: true,
+                                                    });
+                                                    if (ok) showToast('수행 완료 처리되었습니다.', 'success');
+                                                }}
+                                                className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
+                                            >
+                                                수행완료
+                                            </button>
                                         )}
 
-                                        {normalizeActionStatus(actionDraft.status) === '수행완료' && (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const ok = saveActionDraft({ closeAfterSave: true });
-                                                        if (ok) showToast('변경 사항이 저장되었습니다.', 'success');
-                                                    }}
-                                                    className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
-                                                >
-                                                    수정 저장
-                                                </button>
-                                                {!hasActionIntegration(actionDraft) && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setActionDrawerView('integrate')}
-                                                        className="flex items-center gap-1.5 text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5"
-                                                        style={{
-                                                            background:
-                                                                'linear-gradient(135deg,#0099CC,#7C3AED)',
-                                                            boxShadow: '0 4px 12px rgba(0,100,180,0.18)',
-                                                        }}
-                                                    >
-                                                        <ZapIcon className="text-white" />
-                                                        연동하기
-                                                    </button>
-                                                )}
-                                            </>
+                                        {(normalizeActionStatus(actionDraft.status) === '수행완료' ||
+                                            normalizeActionStatus(actionDraft.status) === '연동완료') && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const ok = saveActionDraft({ closeAfterSave: true });
+                                                    if (ok) showToast('변경 사항이 저장되었습니다.', 'success');
+                                                }}
+                                                className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
+                                            >
+                                                수정 저장
+                                            </button>
                                         )}
 
                                         {normalizeActionStatus(actionDraft.status) === '연동완료' && (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const ok = saveActionDraft({ closeAfterSave: true });
-                                                        if (ok) showToast('변경 사항이 저장되었습니다.', 'success');
-                                                    }}
-                                                    className="text-sm font-semibold px-4 py-2 rounded-xl text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
-                                                >
-                                                    수정 저장
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const ok = saveActionDraft({
-                                                            nextStatus: '수행완료',
-                                                            closeAfterSave: true,
-                                                        });
-                                                        if (ok) showToast('수행 완료 처리되었습니다.', 'success');
-                                                    }}
-                                                    className="flex items-center gap-1.5 text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5"
-                                                    style={{
-                                                        background:
-                                                            'linear-gradient(135deg,#0099CC,#7C3AED)',
-                                                        boxShadow: '0 4px 12px rgba(0,100,180,0.18)',
-                                                    }}
-                                                >
-                                                    수행완료
-                                                </button>
-                                            </>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const ok = saveActionDraft({
+                                                        nextStatus: '수행완료',
+                                                        closeAfterSave: true,
+                                                    });
+                                                    if (ok) showToast('수행 완료 처리되었습니다.', 'success');
+                                                }}
+                                                className="flex items-center gap-1.5 text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5"
+                                                style={{
+                                                    background:
+                                                        'linear-gradient(135deg,#0099CC,#7C3AED)',
+                                                    boxShadow: '0 4px 12px rgba(0,100,180,0.18)',
+                                                }}
+                                            >
+                                                수행완료
+                                            </button>
                                         )}
+                                        {/* Whether/where this is linked is shown via the link cards above and the
+                                            project-level badge in the list — no manual "연동하기" trigger needed
+                                            here since Jira/Notion sync now happens automatically. */}
                                     </div>
                                 </div>
                             </div>
@@ -3399,7 +3752,7 @@ export default function ProjectMeetings() {
                                     >
                                         <div
                                             className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
-                                            style={{ backgroundColor: PARTICIPANT_COLOR_MAP[member] || '#0099CC' }}
+                                            style={{ backgroundColor: colorForParticipant(member) }}
                                         >
                                             {member.slice(0, 1)}
                                         </div>
@@ -3428,7 +3781,7 @@ export default function ProjectMeetings() {
                                                 )}
                                             </div>
                                             <p className="text-xs text-slate-400">
-                                                {ROLE_MAP[member] || 'Team Member'}
+                                                {participantsModalPositions[member] || '포지션 미설정'}
                                             </p>
                                         </div>
                                         <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-600">

@@ -1,16 +1,18 @@
-"""Async/background task entry points."""
+"""Background task entry points for uploaded meeting files."""
 
 import logging
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.db.database import SessionLocal
 from app.models.analysis import AnalysisResult
-from app.models.enums import FileKind, ProcessingStatus
+from app.models.enums import FileKind, ProcessingStatus, TicketStatus
 from app.models.file import ExtractedContent, UploadedFile
-from app.models.project import Project, ProjectMember
+from app.models.project import Meeting, Project, ProjectMember
 from app.models.ticket import Ticket
 from app.services.ai_engine import get_default_ai_engine
 
@@ -27,9 +29,176 @@ def process_uploaded_file(file_id: UUID) -> None:
         _run_pipeline(db, file_id)
     except Exception as exc:
         logger.exception("Pipeline failed for file %s", file_id)
+        # A failed flush/commit above leaves the session's transaction aborted —
+        # writing the failure status through the same session without rolling
+        # back first raises PendingRollbackError, so _mark_failed silently fails
+        # too and the row is stuck at "processing" forever with no error ever
+        # recorded (indistinguishable from a genuinely hung analysis).
+        db.rollback()
         _mark_failed(db, file_id, str(exc))
     finally:
         db.close()
+
+
+def _project_context_for_upload(db, uploaded_file: UploadedFile) -> dict | None:
+    if uploaded_file.project_id is None:
+        return None
+
+    project = db.scalar(
+        select(Project)
+        .where(Project.id == uploaded_file.project_id)
+        .options(
+            selectinload(Project.owner),
+            selectinload(Project.members).selectinload(ProjectMember.user),
+        )
+    )
+    if project is None:
+        return None
+
+    owner_names = _dedupe_names(
+        [
+            getattr(project.owner, "name", None),
+            getattr(project.owner, "email", None),
+        ]
+    )
+    participant_names = _dedupe_names(
+        [
+            *owner_names,
+            *[
+                (getattr(member.user, "name", None) or member.name or member.email or "").strip()
+                for member in project.members
+            ],
+        ]
+    )
+    return {
+        "project_name": project.name,
+        "project_category": project.category,
+        "participants": participant_names,
+        "admins": owner_names,
+        "extra": {
+            "project_id": str(project.id),
+            "project_visibility": project.visibility,
+            "default_assignee": owner_names[0] if owner_names else None,
+        },
+    }
+
+
+def _clean_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _dedupe_names(values) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = _clean_text(value)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(text)
+    return names
+
+
+def _match_participant_name(value: str, participants: list[str]) -> str | None:
+    candidate = _clean_text(value)
+    if not candidate:
+        return None
+
+    normalized = candidate.casefold()
+    for participant in participants:
+        if participant.casefold() == normalized:
+            return participant
+    for participant in participants:
+        participant_key = participant.casefold()
+        if participant_key and (participant_key in normalized or normalized in participant_key):
+            return participant
+    return None
+
+
+def _resolve_action_assignee(item: dict, participants: list[str], fallback_assignee: str | None = None) -> str:
+    assignee = (
+        item.get("assignee")
+        or item.get("owner")
+        or item.get("responsible")
+        or item.get("담당자")
+        or item.get("담당")
+    )
+    matched = _match_participant_name(_clean_text(assignee), participants)
+    if matched:
+        return matched
+
+    searchable = " ".join(
+        _clean_text(item.get(key))
+        for key in ("title", "text", "description", "context", "note")
+    )
+    for participant in participants:
+        if participant and participant.casefold() in searchable.casefold():
+            return participant
+
+    if len(participants) == 1:
+        return participants[0]
+
+    fallback = _match_participant_name(_clean_text(fallback_assignee), participants)
+    if fallback:
+        return fallback
+
+    return _clean_text(assignee) or "미정"
+
+
+def _normalize_action_items(
+    raw_items,
+    participants: list[str] | None = None,
+    fallback_assignee: str | None = None,
+) -> list[dict]:
+    participant_names = _dedupe_names(participants or [])
+    normalized: list[dict] = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        description = _clean_text(item.get("description") or item.get("detail") or item.get("details"))
+        title = _clean_text(
+            item.get("title")
+            or item.get("text")
+            or item.get("task")
+            or item.get("todo")
+            or description
+        )
+        if not title:
+            continue
+        if title == description and len(title) > 90:
+            title = f"{title[:87].rstrip()}..."
+        normalized.append(
+            {
+                **item,
+                "id": str(item.get("id") or item.get("task_id") or uuid4()),
+                "title": title,
+                "text": _clean_text(item.get("text") or title),
+                "description": description,
+                "assignee": _resolve_action_assignee(item, participant_names, fallback_assignee),
+                # Always start a freshly analyzed task at 검토대기, regardless of
+                # any status-like word the extractor happened to pick up from the
+                # source text (e.g. a meeting note that already had its own
+                # "진행중"/"미착수" labels per line) — those aren't TIKI's own
+                # workflow states and must not be mistaken for one, especially
+                # since the frontend's legacy STATUS_LABEL alias table maps
+                # "진행중" straight to "검토완료".
+                "status": "검토대기",
+            }
+        )
+    return normalized
+
+
+def _parse_due_at(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        raw = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return raw.astimezone(UTC) if raw.tzinfo else raw.replace(tzinfo=UTC)
 
 
 def _run_pipeline(db, file_id: UUID) -> None:
@@ -37,52 +206,35 @@ def _run_pipeline(db, file_id: UUID) -> None:
     if uploaded_file is None:
         raise ValueError(f"UploadedFile {file_id} not found")
 
-    project_context = None
-    if uploaded_file.project_id is not None:
-        project = db.get(Project, uploaded_file.project_id)
-        if project is not None:
-            members = db.scalars(
-                select(ProjectMember).where(ProjectMember.project_id == project.id)
-            ).all()
-            participant_names = [
-                (member.name or member.email or "").strip()
-                for member in members
-                if (member.name or member.email or "").strip()
-            ]
-            project_context = {
-                "project_name": project.name,
-                "project_category": project.category,
-                "participants": participant_names,
-                "extra": {
-                    "project_id": str(project.id),
-                    "project_visibility": project.visibility,
-                },
-            }
+    project_context = _project_context_for_upload(db, uploaded_file)
 
     uploaded_file.status = ProcessingStatus.PROCESSING
     uploaded_file.started_at = datetime.now(UTC)
     db.commit()
-    _log_progress(file_id, 10, "파일이 분석 큐에서 처리 단계로 이동했습니다")
+    _log_progress(file_id, 10, "파일 분석을 시작했습니다.")
 
     engine = get_default_ai_engine()
     if uploaded_file.file_kind == FileKind.AUDIO:
-        _log_progress(file_id, 25, "오디오 전사와 화자분리 파이프라인을 시작합니다")
+        _log_progress(file_id, 25, "오디오 전사와 화자 분리 파이프라인을 시작합니다.")
         result = engine.process_audio_parallel(
             uploaded_file.storage_path,
-            n_workers=2,
+            n_workers=settings.whisper_parallel_workers,
             rag_context=project_context,
+            include_diarization=False,
         )
-        _log_progress(file_id, 75, "전사 결과를 분석하고 있습니다")
+        _log_progress(file_id, 75, "전사 결과를 분석하고 있습니다.")
         extraction_method = "whisper"
     elif uploaded_file.file_kind in {FileKind.DOCUMENT, FileKind.TEXT}:
-        _log_progress(file_id, 25, "문서 추출 파이프라인을 시작합니다")
-        result = engine.process_document(uploaded_file.storage_path, rag_context=project_context)
-        _log_progress(file_id, 75, "문서 요약과 액션아이템을 정리하고 있습니다")
-        extraction_method = result.analysis.extra_data.get("document_extraction", {}).get(
-            "extraction_method",
-            "document",
+        _log_progress(file_id, 25, "문서 추출 파이프라인을 시작합니다.")
+        result = engine.process_document(
+            uploaded_file.storage_path,
+            rag_context=project_context,
+            source_name=uploaded_file.original_filename,
         )
-        uploaded_file.page_count = result.analysis.extra_data.get("document_extraction", {}).get("page_count")
+        _log_progress(file_id, 75, "문서 요약과 해야 할 일을 정리하고 있습니다.")
+        extraction_meta = result.analysis.extra_data.get("document_extraction", {})
+        extraction_method = extraction_meta.get("extraction_method", "document")
+        uploaded_file.page_count = extraction_meta.get("page_count")
     else:
         raise ValueError(f"Unsupported file kind: {uploaded_file.file_kind}")
 
@@ -94,41 +246,101 @@ def _run_pipeline(db, file_id: UUID) -> None:
     )
     db.add(extracted_content)
     db.flush()
-    _log_progress(file_id, 85, "추출된 본문을 저장했습니다")
+    _log_progress(file_id, 85, "추출된 본문을 저장했습니다.")
+
+    action_items = _normalize_action_items(
+        result.analysis.action_items,
+        participants=list((project_context or {}).get("participants") or []),
+        fallback_assignee=((project_context or {}).get("extra") or {}).get("default_assignee"),
+    )
+    extra_data = dict(result.analysis.extra_data or {})
 
     analysis_result = AnalysisResult(
         extracted_content_id=extracted_content.id,
         summary=result.analysis.summary,
-        action_items=result.analysis.action_items,
+        action_items=action_items,
         model_name=result.analysis.model_name,
         prompt_version=result.analysis.prompt_version,
-        extra_data=result.analysis.extra_data,
+        extra_data=extra_data,
     )
     db.add(analysis_result)
     db.flush()
-    _log_progress(file_id, 92, "분석 결과를 저장했습니다")
+    _log_progress(file_id, 92, "분석 결과를 저장했습니다.")
 
-    for item in result.analysis.action_items:
-        due_at = None
-        if item.get("due_at"):
-            raw = datetime.fromisoformat(item["due_at"])
-            due_at = raw.astimezone(UTC) if raw.tzinfo else raw.replace(tzinfo=UTC)
+    meeting = None
+    if uploaded_file.project_id is not None:
+        title = (
+            getattr(result.analysis, "meeting_title", None)
+            or extra_data.get("meeting_title")
+            or uploaded_file.original_filename
+        )
+        raw_keywords = extra_data.get("keywords") or getattr(result.analysis, "keywords", []) or []
+        tags = []
+        for keyword in raw_keywords:
+            text = str(keyword.get("text") if isinstance(keyword, dict) else keyword).strip()
+            if text:
+                tags.append(text if text.startswith("#") else f"#{text}")
 
-        db.add(Ticket(
-            analysis_result_id=analysis_result.id,
-            title=item.get("title", "제목 없음"),
-            description=item.get("description", ""),
-            priority=item.get("priority", "medium"),
-            status=item.get("status", "draft"),
-            assignee=item.get("assignee"),
-            due_at=due_at,
-        ))
+        # Groq/OpenAI both failed and the analysis fell back to the rule-based
+        # heuristic service (see LangChainAnalysisService.summarize_and_extract_tickets) —
+        # flag it visibly wherever tags are shown, since it's a best-effort stand-in,
+        # not a real AI analysis.
+        if extra_data.get("analysis_provider") == "heuristic":
+            tags.insert(0, "#검토필요(AI분석실패)")
+
+        meeting = Meeting(
+            project_id=uploaded_file.project_id,
+            title=str(title).strip()[:255] or uploaded_file.original_filename,
+            date=uploaded_file.created_at.strftime("%Y.%m.%d"),
+            round_number=1,
+            status="검토대기",
+            meeting_type="업로드",
+            tags=tags[:12] or ["#회의록"],
+            participants=list((project_context or {}).get("participants") or []),
+            summary=result.analysis.summary,
+            action_items=action_items,
+            action_items_count=len(action_items),
+        )
+        db.add(meeting)
+        db.flush()
+
+        analysis_result.extra_data = {
+            **extra_data,
+            "created_meeting_id": str(meeting.id),
+            "created_project_id": str(uploaded_file.project_id),
+            "source_uploaded_file_id": str(uploaded_file.id),
+        }
+
+    for item in action_items:
+        db.add(
+            Ticket(
+                analysis_result_id=analysis_result.id,
+                title=item.get("title", "제목 없음"),
+                description=item.get("description", ""),
+                priority=item.get("priority", "medium"),
+                # item["status"] holds the meeting task's Korean workflow status
+                # (검토대기/진행중/완료 등), not a ticket_status enum value — a
+                # freshly created ticket always starts as "draft" (not yet synced
+                # to Jira/Notion) regardless of that workflow status.
+                status=TicketStatus.DRAFT.value,
+                assignee=item.get("assignee"),
+                due_at=_parse_due_at(item.get("due_at")),
+            )
+        )
 
     uploaded_file.status = ProcessingStatus.COMPLETED
     uploaded_file.completed_at = datetime.now(UTC)
     db.commit()
 
-    _log_progress(file_id, 100, "파이프라인이 완료되었습니다")
+    if meeting is not None:
+        try:
+            from app.services import external_integration_service
+
+            external_integration_service.sync_connected_meeting_resources(db, meeting)
+        except Exception:
+            logger.exception("Failed to sync meeting %s to external providers", meeting.id)
+
+    _log_progress(file_id, 100, "파일 분석 파이프라인이 완료되었습니다.")
 
 
 def _mark_failed(db, file_id: UUID, error_message: str) -> None:

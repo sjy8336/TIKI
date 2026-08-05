@@ -30,6 +30,7 @@ MIN_MINOR_SPEAKER_MULTI_TURN_RATIO = 0.03
 MIN_MINOR_SPEAKER_MULTI_TURN_MAX_COUNT = 2
 MIN_MINOR_SPEAKER_MERGE_GAP_SECONDS = 0.6
 LIGHT_PROFILE_MAX_DURATION_SECONDS = 90.0
+PARALLEL_WORKER_PROMOTION_SECONDS = 700.0
 TranscriptionProfile = Literal["light", "balanced", "premium", "small", "medium", "large"]
 DEFAULT_TRANSCRIPTION_PROFILE: TranscriptionProfile = "balanced"
 TRANSCRIPTION_PROFILE_SETTINGS: dict[TranscriptionProfile, dict[str, Any]] = {
@@ -254,14 +255,19 @@ class _FasterWhisperTranscriptionAdapter:
 
 class SpeechToTextService(ABC):
     @abstractmethod
-    def transcribe(self, audio_path: str) -> str:
+    def transcribe(self, audio_path: str, *, n_workers: int | None = None) -> str:
         raise NotImplementedError
+
+    def warm_up(self, *, preload_secondary_models: bool = False) -> None:
+        """Optional hook for long-lived servers to preload model weights."""
+        return None
 
     def transcribe_with_segments(
         self,
         audio_path: str,
         *,
         participant_names: list[str] | None = None,
+        include_diarization: bool = True,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Optional richer transcription output with chunk metadata."""
         return self.transcribe(audio_path), []
@@ -997,7 +1003,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
         logger.info("Using Whisper device: %s", resolved_device_name)
         return whisper.load_model(model_name, device=resolved_device_name)
 
-    def transcribe(self, audio_path: str) -> str:
+    def transcribe(self, audio_path: str, *, n_workers: int | None = None) -> str:
         path = Path(audio_path)
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -1007,7 +1013,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
         preprocessing = self.preprocessor.prepare(path)
         self._last_preprocessing = preprocessing
         model_name = self._select_model_name(preprocessing)
-        parallel_workers = self._resolve_parallel_worker_count(preprocessing)
+        parallel_workers = self._resolve_parallel_worker_count(preprocessing, n_workers=n_workers)
         logger.info("Starting STT for %s using Whisper(%s)", path, model_name)
         try:
             if self._should_use_parallel_transcription(preprocessing) and parallel_workers > 1:
@@ -1047,6 +1053,8 @@ class WhisperSpeechToTextService(SpeechToTextService):
         audio_path: str,
         *,
         participant_names: list[str] | None = None,
+        include_diarization: bool = True,
+        n_workers: int | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         path = Path(audio_path)
         if not path.exists():
@@ -1056,14 +1064,20 @@ class WhisperSpeechToTextService(SpeechToTextService):
         self._last_preprocessing = preprocessing
         self._last_stt_routing_summary = None
         model_name = self._select_model_name(preprocessing)
-        parallel_workers = self._resolve_parallel_worker_count(preprocessing)
-        logger.info("Starting STT with segments for %s using Whisper(%s)", path, model_name)
+        parallel_workers = self._resolve_parallel_worker_count(preprocessing, n_workers=n_workers)
+        logger.info(
+            "Starting STT with segments for %s using Whisper(%s) (include_diarization=%s)",
+            path,
+            model_name,
+            include_diarization,
+        )
         try:
             if self._should_use_parallel_transcription(preprocessing) and parallel_workers > 1:
                 text, segments = self.transcribe_with_segments_parallel(
                     audio_path,
-                    n_workers=parallel_workers,
                     participant_names=participant_names,
+                    include_diarization=include_diarization,
+                    n_workers=parallel_workers,
                 )
             else:
                 try:
@@ -1081,20 +1095,30 @@ class WhisperSpeechToTextService(SpeechToTextService):
                         preprocessing,
                         whisper_engine=WHISPER_ENGINE_OPENAI,
                     )
-            speaker_turns, diarization_summary = self._diarize_audio(
-                path,
-                preprocessing=preprocessing,
-                expected_speaker_count=len(participant_names) if participant_names else None,
-            )
+            if include_diarization:
+                speaker_turns, diarization_summary = self._diarize_audio(
+                    path,
+                    preprocessing=preprocessing,
+                    expected_speaker_count=len(participant_names) if participant_names else None,
+                )
+            else:
+                speaker_turns = []
+                diarization_summary = {
+                    "enabled": False,
+                    "status": "deferred",
+                    "speaker_count": 0,
+                    "turn_count": 0,
+                }
             self._last_stt_routing_summary = _summarize_stt_chunk_routing(preprocessing, segments)
             _log_stt_chunk_routing_summary(path.name, self._last_stt_routing_summary)
-            segments, attachment_summary = _attach_speaker_labels(
-                segments,
-                speaker_turns,
-                meeting_duration_seconds=preprocessing.duration_seconds,
-                participant_names=participant_names,
-            )
-            diarization_summary.update(attachment_summary)
+            if include_diarization:
+                segments, attachment_summary = _attach_speaker_labels(
+                    segments,
+                    speaker_turns,
+                    meeting_duration_seconds=preprocessing.duration_seconds,
+                    participant_names=participant_names,
+                )
+                diarization_summary.update(attachment_summary)
             self._last_diarization_summary = diarization_summary
 
             logger.info(
@@ -1200,8 +1224,9 @@ class WhisperSpeechToTextService(SpeechToTextService):
     def transcribe_with_segments_parallel(
         self,
         audio_path: str,
-        n_workers: int = 2,
+        n_workers: int | None = None,
         participant_names: list[str] | None = None,
+        include_diarization: bool = True,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Parallel variant: splits audio into chunks and transcribes them concurrently.
 
@@ -1218,15 +1243,27 @@ class WhisperSpeechToTextService(SpeechToTextService):
         self._last_preprocessing = preprocessing
         model_name = self._select_model_name(preprocessing)
         use_openai_fallback = self.whisper_engine != WHISPER_ENGINE_OPENAI
+        resolved_n_workers = self._resolve_parallel_worker_count(preprocessing, n_workers=n_workers)
 
         try:
             if not preprocessing.chunking_enabled or len(preprocessing.chunks) <= 1:
                 logger.info("Parallel STT: single chunk, using sequential path for %s", path.name)
+                if include_diarization:
+                    return self.transcribe_with_segments(
+                        audio_path,
+                        participant_names=participant_names,
+                        include_diarization=include_diarization,
+                        n_workers=resolved_n_workers,
+                    )
                 return self._transcribe_preprocessed_with_segments(preprocessing)
 
             logger.info(
-                "Parallel STT starting for %s (chunks=%d, workers=%d, model=%s)",
-                path.name, len(preprocessing.chunks), n_workers, model_name,
+                "Parallel STT starting for %s (chunks=%d, workers=%d, model=%s, include_diarization=%s)",
+                path.name,
+                len(preprocessing.chunks),
+                resolved_n_workers,
+                model_name,
+                include_diarization,
             )
 
             options = self._build_transcription_options(preprocessing)
@@ -1235,7 +1272,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 preprocessing.chunks,
                 model_name,
                 options,
-                n_workers=n_workers,
+                n_workers=resolved_n_workers,
                 device_name=self.device_name,
             )
             if use_openai_fallback and any(raw.get("error") for raw in raw_results.values()):
@@ -1360,22 +1397,29 @@ class WhisperSpeechToTextService(SpeechToTextService):
                 len(preprocessing.chunks),
                 preprocessing.strategy,
             )
-            speaker_turns, diarization_summary = self._diarize_audio(
-                path,
-                preprocessing=preprocessing,
-                expected_speaker_count=len(participant_names) if participant_names else None,
-            )
-            structured_segments, attachment_summary = _attach_speaker_labels(
-                structured_segments,
-                speaker_turns,
-                meeting_duration_seconds=preprocessing.duration_seconds,
-                participant_names=participant_names,
-            )
-            diarization_summary.update(attachment_summary)
-            self._last_diarization_summary = diarization_summary
+            if include_diarization:
+                speaker_turns, diarization_summary = self._diarize_audio(
+                    path,
+                    preprocessing=preprocessing,
+                    expected_speaker_count=len(participant_names) if participant_names else None,
+                )
+                structured_segments, attachment_summary = _attach_speaker_labels(
+                    structured_segments,
+                    speaker_turns,
+                    meeting_duration_seconds=preprocessing.duration_seconds,
+                    participant_names=participant_names,
+                )
+                diarization_summary.update(attachment_summary)
+                self._last_diarization_summary = diarization_summary
+            else:
+                self._last_diarization_summary = {
+                    "enabled": False,
+                    "status": "deferred",
+                    "speaker_count": 0,
+                    "turn_count": 0,
+                }
             self._last_stt_routing_summary = _summarize_stt_chunk_routing(preprocessing, structured_segments)
             _log_stt_chunk_routing_summary(path.name, self._last_stt_routing_summary)
-
             return " ".join(segments).strip(), structured_segments
         except Exception as exc:
             if not use_openai_fallback:
@@ -1408,6 +1452,35 @@ class WhisperSpeechToTextService(SpeechToTextService):
             return None
         return copy.deepcopy(self._last_stt_routing_summary)
 
+    def warm_up(self, *, preload_secondary_models: bool = False) -> None:
+        """Preload the most likely Whisper model(s) into the current process."""
+        warmup_models: list[str] = []
+        primary_model = self._resolve_available_model_name(self._select_warmup_model_name())
+        warmup_models.append(primary_model)
+
+        if preload_secondary_models:
+            for candidate in (self.light_model_name, self.medium_model_name, self.model_name):
+                resolved = self._resolve_available_model_name(candidate)
+                if resolved and resolved not in warmup_models:
+                    warmup_models.append(resolved)
+
+        for model_name in warmup_models:
+            try:
+                self._load_model(model_name, self.device_name, self.whisper_engine)
+            except Exception as exc:  # pragma: no cover - best effort warmup
+                logger.warning("Whisper warm-up failed for %s: %s", model_name, exc)
+                if preload_secondary_models:
+                    continue
+
+    def _select_warmup_model_name(self) -> str:
+        if self._is_windows_cpu_runtime():
+            return self.light_model_name if self.transcription_profile != "premium" else self.medium_model_name
+        if self.transcription_profile == "light":
+            return self.light_model_name
+        if self.transcription_profile == "balanced":
+            return self.medium_model_name
+        return self.model_name
+
     def _select_model_name(self, preprocessing: AudioPreprocessingResult) -> str:
         if self._is_windows_cpu_runtime():
             if self.transcription_profile == "light":
@@ -1415,9 +1488,9 @@ class WhisperSpeechToTextService(SpeechToTextService):
             if self.transcription_profile == "premium":
                 return self._resolve_available_model_name(self.medium_model_name)
             if (
-                preprocessing.duration_seconds < 12 * 60
+                not preprocessing.is_noisy
+                and preprocessing.duration_seconds < 15 * 60
                 and len(preprocessing.chunks) <= 4
-                and not preprocessing.is_noisy
             ):
                 return self._resolve_available_model_name(self.light_model_name)
             return self._resolve_available_model_name(self.medium_model_name)
@@ -1435,7 +1508,7 @@ class WhisperSpeechToTextService(SpeechToTextService):
             chunk_difficulty = self._score_chunk_difficulty(preprocessing, chunk)
             if self.transcription_profile == "light":
                 return self._resolve_available_model_name(self.light_model_name)
-            if chunk_duration <= 150.0 and chunk_difficulty <= 1 and not preprocessing.is_noisy:
+            if not preprocessing.is_noisy and chunk_duration <= 240.0 and chunk_difficulty <= 2:
                 return self._resolve_available_model_name(self.light_model_name)
             return self._resolve_available_model_name(self.medium_model_name)
         return self._select_model_name(preprocessing)
@@ -1445,13 +1518,24 @@ class WhisperSpeechToTextService(SpeechToTextService):
 
     @staticmethod
     def _should_use_parallel_transcription(preprocessing: AudioPreprocessingResult) -> bool:
-        if not preprocessing.chunking_enabled or len(preprocessing.chunks) <= 1:
+        chunks = getattr(preprocessing, "chunks", []) or []
+        chunking_enabled = bool(getattr(preprocessing, "chunking_enabled", len(chunks) > 1))
+        if not chunking_enabled or len(chunks) <= 1:
             return False
-        if preprocessing.duration_seconds >= 240.0:
+        if float(getattr(preprocessing, "duration_seconds", 0.0) or 0.0) >= 240.0:
             return True
-        return len(preprocessing.chunks) >= 3
+        return len(chunks) >= 3
 
-    def _resolve_parallel_worker_count(self, preprocessing: AudioPreprocessingResult) -> int:
+    def _resolve_parallel_worker_count(
+        self,
+        preprocessing: AudioPreprocessingResult,
+        n_workers: int | None = None,
+    ) -> int:
+        if n_workers is not None:
+            try:
+                return max(1, int(n_workers))
+            except (TypeError, ValueError):
+                logger.warning("Invalid WHISPER_PARALLEL_WORKERS override: %r", n_workers)
         try:
             cpu_count = os.cpu_count() or 2
         except Exception:
@@ -1459,10 +1543,10 @@ class WhisperSpeechToTextService(SpeechToTextService):
 
         if self._is_windows_cpu_runtime():
             return 1
-        if preprocessing.duration_seconds < 15 * 60:
+        if preprocessing.duration_seconds < PARALLEL_WORKER_PROMOTION_SECONDS:
             return 1
         if len(preprocessing.chunks) <= 3:
-            return 1
+            return 2 if self._should_use_parallel_transcription(preprocessing) else 1
         if preprocessing.duration_seconds < 30 * 60:
             return 2
         if preprocessing.duration_seconds >= 45 * 60:
@@ -1711,8 +1795,10 @@ class WhisperSpeechToTextService(SpeechToTextService):
     def _score_chunk_difficulty(self, preprocessing: AudioPreprocessingResult, chunk: Any) -> int:
         score = 0
         chunk_duration = max(0.0, float(chunk.end_seconds) - float(chunk.start_seconds))
-        core_start = chunk.core_start_seconds if chunk.core_start_seconds is not None else chunk.start_seconds
-        core_end = chunk.core_end_seconds if chunk.core_end_seconds is not None else chunk.end_seconds
+        core_start_value = getattr(chunk, "core_start_seconds", None)
+        core_end_value = getattr(chunk, "core_end_seconds", None)
+        core_start = core_start_value if core_start_value is not None else chunk.start_seconds
+        core_end = core_end_value if core_end_value is not None else chunk.end_seconds
         core_duration = max(0.0, float(core_end) - float(core_start))
         core_ratio = core_duration / chunk_duration if chunk_duration > 0 else 0.0
 

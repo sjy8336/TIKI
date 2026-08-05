@@ -1,10 +1,10 @@
 ﻿import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import MobileTab from "../components/MobileTab";
 import ToastPopup from "../components/toastpopup";
-import { clearAuthSession } from "../api/apiClient";
+import { clearAuthSession, getProject, getProjectIntegrations, getUploadAnalysis, listProjectMeetings, listUploads, updateProjectMeeting } from "../api/apiClient";
 
 /* ─── 데이터 ─────────────────────────────────────────── */
 const TX = [
@@ -202,8 +202,6 @@ function getStoredUserName() {
 function normalizeMemberName(member) {
   if (typeof member === "string") return member.trim();
   if (!member || typeof member !== "object") return "";
-  const inviteStatus = String(member.invite_status || member.inviteStatus || "").trim();
-  if (inviteStatus && inviteStatus !== "accepted") return "";
   return String(member.name || member.email || "").trim();
 }
 
@@ -268,6 +266,19 @@ function buildProjectAssigneeOptions({ projectId = "", state = {}, participants 
   return [...names];
 }
 
+function buildEditableAssigneeOptions(baseOptions = []) {
+  const names = new Set(["미정"]);
+  const add = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || ["담당자", "담당자 미지정", "회의록", "전체"].includes(normalized)) return;
+    names.add(normalized);
+  };
+
+  baseOptions.forEach(add);
+
+  return [...names];
+}
+
 function toAuditTimestamp(value) {
   const parsed = new Date(value || Date.now());
   const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
@@ -285,22 +296,29 @@ function buildStoredIntegrationLogs({ projectId = "", sourceTitle = "" } = {}) {
   return projects.flatMap(([currentProjectId, projectOverride]) => {
     const items = Array.isArray(projectOverride?.myActionItems) ? projectOverride.myActionItems : [];
     return items
-      .filter((item) => item?.integrationTool || item?.externalLink || item?.jiraLink)
+      .filter((item) => item?.integrationTool || item?.externalLink || item?.jiraLink || item?.integrationLinks)
       .filter((item) => {
         const projectMatches = !normalizedProjectId || String(item?.projectId || currentProjectId) === normalizedProjectId;
         const sourceMatches = !normalizedSource || String(item?.source || "").trim() === normalizedSource;
         return projectMatches && sourceMatches;
       })
-      .map((item, index) => {
-        const rawTool = String(item?.integrationTool || item?.integrationProvider || item?.externalLink || item?.jiraLink || "").toLowerCase();
-        const svcId = rawTool.includes("notion") ? "notion" : "jira";
-        return {
+      .flatMap((item, index) => {
+        const links = item?.integrationLinks && typeof item.integrationLinks === "object" ? item.integrationLinks : {};
+        const linkedSvcs = Object.entries(links)
+          .filter(([, url]) => Boolean(url))
+          .map(([svcId]) => String(svcId).toLowerCase())
+          .filter((svcId) => svcId === "jira" || svcId === "notion");
+        if (linkedSvcs.length === 0) {
+          const rawTool = String(item?.integrationTool || item?.integrationProvider || item?.externalLink || item?.jiraLink || "").toLowerCase();
+          linkedSvcs.push(rawTool.includes("notion") ? "notion" : "jira");
+        }
+        return linkedSvcs.map((svcId) => ({
           svcId,
           label: item?.title || item?.text || `대시보드 연동 업무 ${index + 1}`,
           time: toAuditTimestamp(item?.updatedAt || item?.updated_at),
           user: item?.assignee || "담당자",
           source: "dashboard",
-        };
+        }));
       });
   });
 }
@@ -688,7 +706,7 @@ function CollapsibleSectionHeader({ label, collapsed, onToggle, badge }) {
 }
 
 /* ─── 의제 달성률 카드 ──────────────────────────────── */
-function AgendaCompletionSection({ actions, onToggleAction }) {
+function AgendaCompletionSection({ actions, onToggleAction, onChangeActionAssignee = () => {}, assigneeOptions = [] }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const total = actions.length;
   const done = actions.filter((action) => action.status === "done").length;
@@ -785,14 +803,21 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
             {actions.map((action, idx) => {
               const isDone = action.status === "done";
               return (
-                <button
+                <div
                   key={`${action.text}-${idx}`}
-                  type="button"
                   onClick={() => onToggleAction(idx)}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left transition-all hover:-translate-y-0.5 cursor-pointer"
                   style={{
                     borderColor: isDone ? "rgba(16,185,129,0.3)" : "rgba(0,100,180,0.1)",
                     background: isDone ? "rgba(16,185,129,0.06)" : "#fff",
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onToggleAction(idx);
+                    }
                   }}
                 >
                   <span
@@ -814,17 +839,30 @@ function AgendaCompletionSection({ actions, onToggleAction }) {
                     <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
                       {normalizeDueLabel(action.due) || "미정"}
                     </span>
-                    <span
-                      className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                      style={{
-                        color: isDone ? "#10B981" : "#5A6F8A",
-                        background: isDone ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
-                      }}
+                    <div
+                      className="w-28"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
                     >
-                      {action.assignee}
-                    </span>
+                      <CustomDropdown
+                        value={action.assignee && action.assignee !== "미정" ? action.assignee : ""}
+                        onChange={(nextAssignee) => onChangeActionAssignee(idx, nextAssignee)}
+                        options={assigneeOptions}
+                        placeholder="미정"
+                        triggerStyle={{
+                          minHeight: 24,
+                          padding: "0.125rem 0.5rem",
+                          borderRadius: 999,
+                          borderColor: "transparent",
+                          background: isDone ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
+                          color: isDone ? "#10B981" : "#5A6F8A",
+                          fontSize: 12,
+                          fontWeight: 700,
+                        }}
+                      />
+                    </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -1200,6 +1238,7 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
   }, []);
   const issuedIssueKeySet = useMemo(() => {
     if (!selectedSvc) return new Set();
+    if (selectedSvc === "both") return new Set();
     const svc = services.find((item) => item.id === selectedSvc);
     return new Set(
       (svc?.tickets || [])
@@ -1332,25 +1371,47 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
       return;
     }
 
-    const svcName = services.find(s => s.id === selectedSvc)?.name || "";
-    if (issueMode === "merged") {
-      onIssued(svcName, [{ label: title, user: assignee || "미지정", due: mergedDue }]);
-    } else {
-      onIssued(
-        svcName,
-        selectedItemsList.map((item) => ({
+    const targetSvcIds = selectedSvc === "both"
+      ? ["jira", "notion"]
+      : [selectedSvc === "notion" ? "notion" : "jira"];
+    const svcNames = targetSvcIds.map((svcId) => services.find((s) => s.id === svcId)?.name || svcId);
+    const buildIssuedItems = (svcId) => {
+      const baseItems = issueMode === "merged"
+        ? [{ label: title, user: assignee || "미지정", due: mergedDue }]
+        : selectedItemsList.map((item) => ({
           label: item.text,
           user: item.assignee || "미지정",
           due: item.due || "미정",
-        }))
-      );
+        }));
+      return baseItems.map((item) => ({ ...item, svcId }));
+    };
+    const issuedPayload = targetSvcIds.flatMap((svcId) => buildIssuedItems(svcId));
+    if (issueMode === "merged") {
+      onIssued(svcNames, issuedPayload);
+    } else {
+      onIssued(svcNames, issuedPayload);
     }
     setIssuing(false);
     handleClose();
   };
 
   const canNext = selectedSvc && checkedItems.size > 0;
-  const selectedSvcObj = services.find(s => s.id === selectedSvc);
+  const selectedSvcObj = selectedSvc === "both"
+    ? { id: "both", name: "Jira + Notion", iconBg: "#7C3AED", iconLabel: "J+N" }
+    : services.find(s => s.id === selectedSvc);
+  const selectedSvcIds = selectedSvc === "both"
+    ? ["jira", "notion"]
+    : selectedSvc ? [selectedSvc] : [];
+  const toggleSvc = (svcId) => {
+    setSelectedSvc((prev) => {
+      const current = prev === "both" ? ["jira", "notion"] : prev ? [prev] : [];
+      const next = current.includes(svcId)
+        ? current.filter((id) => id !== svcId)
+        : [...current, svcId];
+      if (next.length === 2) return "both";
+      return next[0] || null;
+    });
+  };
   const selectedItemsList = [...checkedItems].map((i) => ({
     ...ACTION_ITEMS_FOR_ISSUE[i],
     due: getDueLabel(i),
@@ -1395,7 +1456,7 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
               onClick={handleIssue}
               disabled={issuing || !canIssue}
               className="text-sm font-bold px-5 py-2 rounded-xl text-white transition-all hover:-translate-y-0.5 disabled:opacity-70 disabled:cursor-not-allowed disabled:translate-y-0 flex items-center justify-center gap-2 cursor-pointer"
-              style={{ background: selectedSvc ? SVC_ISSUE_BTN[selectedSvc] : "#10B981", minWidth: 130 }}
+              style={{ background: selectedSvc === "both" ? "linear-gradient(135deg,#0099CC,#7C3AED)" : selectedSvc ? SVC_ISSUE_BTN[selectedSvc] : "#10B981", minWidth: 130 }}
             >
               {issuing ? (
                 <>
@@ -1427,14 +1488,16 @@ function IssueModal({ open, onClose, onIssued, services, isMobile, assigneeOptio
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2.5">어디에 등록할까요?</p>
             <div
               className="grid gap-2"
-              style={{ gridTemplateColumns: `repeat(${Math.max(1, Math.min(services.length, 2))}, minmax(0, 1fr))` }}
+              style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
             >
-              {services.map(svc => {
-                const isSelected = selectedSvc === svc.id;
+              {[
+                ...services,
+              ].map(svc => {
+                const isSelected = selectedSvcIds.includes(svc.id);
                 return (
                   <button
                     key={svc.id}
-                    onClick={() => setSelectedSvc(svc.id)}
+                    onClick={() => toggleSvc(svc.id)}
                     className="flex flex-col items-center gap-2 py-3 px-2 rounded-xl border transition-all hover:-translate-y-0.5 cursor-pointer"
                     style={{
                       borderColor: isSelected ? "#0099CC" : "rgba(0,100,180,0.12)",
@@ -2033,7 +2096,7 @@ function Divider({ label }) {
 }
 
 /* ─── AI Summary Panel ───────────────────────────────── */
-function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptVisible, onToggleTranscript, transcriptEnabled, isMobile, summaryCollapsed, onToggleSummary, actions, onToggleAction }) {
+function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptVisible, onToggleTranscript, transcriptEnabled, isMobile, summaryCollapsed, onToggleSummary, actions, onToggleAction, assigneeOptions = [] }) {
   const [decisions, setDecisions] = useState((summaryData.decisions || []).map((item) => normalizeFullDateLabel(item)));
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -2098,6 +2161,10 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
       }))
       .filter((a) => a.text);
   }, [actionsDraft]);
+  const editableAssigneeOptions = useMemo(
+    () => buildEditableAssigneeOptions(assigneeOptions, [...actionsDraft, ...(Array.isArray(actions) ? actions : [])]),
+    [actions, actionsDraft, assigneeOptions]
+  );
 
   const buildIssues = useCallback(() => {
     return issuesDraft
@@ -2412,14 +2479,16 @@ function SummaryPanel({ summaryData, onOpenRegen, onSaveSummaryEdit, transcriptV
                           <EditRemoveButton onClick={() => setActionsDraft((prev) => prev.filter((_, i) => i !== idx))} />
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          <input
+                          <CustomDropdown
                             value={item.assignee || ""}
-                            onChange={(e) =>
-                              setActionsDraft((prev) => prev.map((v, i) => (i === idx ? { ...v, assignee: e.target.value } : v)))
+                            onChange={(nextAssignee) =>
+                              setActionsDraft((prev) => prev.map((v, i) => (
+                                i === idx ? { ...v, assignee: nextAssignee === "미정" ? "" : nextAssignee } : v
+                              )))
                             }
-                            className={`${EDIT_INPUT_CLS} bg-white text-xs py-2`}
-                            style={{ fontFamily: "inherit" }}
-                            placeholder="담당자"
+                            options={editableAssigneeOptions}
+                            placeholder="담당자 선택"
+                            triggerStyle={{ background: "#fff", fontSize: 12, padding: "0.5rem 0.625rem", minHeight: "2rem" }}
                           />
                           <div className="relative" data-due-picker-root>
                             <button
@@ -2948,6 +3017,51 @@ function AudioPlayer({ curTime, playing, spdIdx, onSeek, onTogglePlay, onCycleSp
 }
 
 /* ─── 연동 컨트롤 타워 ───────────────────────────────── */
+// Replaces the old IntegrationControlTower's fake "업무 보내기"/simulated issue
+// count with the same real, project-level connection status already shown on
+// Dashboard.jsx/ProjectMeetings.jsx — sync itself is automatic (see
+// external_integration_service.sync_connected_meeting_resources), so there is
+// nothing to manually "send" here anymore.
+function RealIntegrationStatus({ connectedProviders, onManage }) {
+  const jiraConnected = Boolean(connectedProviders?.jira);
+  const notionConnected = Boolean(connectedProviders?.notion);
+  return (
+    <div
+      className="lg:w-auto flex-shrink-0 rounded-2xl px-4 py-4 flex flex-wrap items-center gap-3"
+      style={{ border: "1px solid rgba(0,100,180,0.12)", background: "rgba(0,153,204,0.03)" }}
+    >
+      <p className="text-xs font-semibold text-slate-400">연동 현황</p>
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full"
+        style={{
+          background: jiraConnected ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
+          color: jiraConnected ? "#10B981" : "#5A6F8A",
+        }}
+      >
+        Jira {jiraConnected ? "연동됨" : "미연동"}
+      </span>
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full"
+        style={{
+          background: notionConnected ? "rgba(16,185,129,0.1)" : "rgba(90,111,138,0.08)",
+          color: notionConnected ? "#10B981" : "#5A6F8A",
+        }}
+      >
+        Notion {notionConnected ? "연동됨" : "미연동"}
+      </span>
+      {!(jiraConnected && notionConnected) && (
+        <button
+          type="button"
+          onClick={onManage}
+          className="text-xs font-bold text-[#0099CC] hover:underline cursor-pointer"
+        >
+          프로젝트 설정에서 연동하기
+        </button>
+      )}
+    </div>
+  );
+}
+
 function IntegrationControlTower({ services, auditLog, onBadgeClick, onIssueOpen, isMobile }) {
   const generatedLogs = auditLog.filter(isGeneratedAuditLog);
   const generatedCountByService = generatedLogs.reduce((acc, log) => {
@@ -3047,6 +3161,8 @@ function IssueButton({ onClick, issuingGlobal = false }) {
 /* ─── Main App ───────────────────────────────────────── */
 export default function TikiSprint12() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [curTime, setCurTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [spdIdx, setSpdIdx] = useState(0);
@@ -3060,6 +3176,18 @@ export default function TikiSprint12() {
 
   const [services, setServices] = useState(INITIAL_INTEGRATION_SERVICES);
   const [auditLog, setAuditLog] = useState([]);
+
+  const [connectedProviders, setConnectedProviders] = useState({ jira: false, notion: false });
+  useEffect(() => {
+    const projectId = location?.state?.projectId || searchParams.get("projectId");
+    if (!projectId) return;
+    getProjectIntegrations(projectId)
+      .then((result) => setConnectedProviders({
+        jira: Boolean(result?.jira?.connected),
+        notion: Boolean(result?.notion?.connected),
+      }))
+      .catch(() => setConnectedProviders({ jira: false, notion: false }));
+  }, [location?.state, searchParams]);
   const mergedAuditLog = useMemo(() => {
     const state = location?.state || {};
     const storedLogs = buildStoredIntegrationLogs({
@@ -3085,16 +3213,190 @@ export default function TikiSprint12() {
     issues: SUMMARY_DATA.issues.map((i) => ({ ...i })),
     next_agenda: [...SUMMARY_DATA.next_agenda],
   }));
-  const issueAssigneeOptions = useMemo(() => {
-    const state = location?.state || {};
-    return buildProjectAssigneeOptions({
-      projectId: state.projectId,
-      state,
-      participants: state.meeting?.participants,
-      actions: Array.isArray(state.actions) ? state.actions : [],
-    });
-  }, [location?.state]);
 
+  // Real per-meeting data. Falls back to the placeholder TX/SUMMARY_DATA above
+  // (used previously for every meeting regardless of what was actually uploaded)
+  // until the matching upload's AI analysis loads.
+  const [txSource, setTxSource] = useState(TX);
+  const [meetingHeader, setMeetingHeader] = useState(null);
+  const [realDataStatus, setRealDataStatus] = useState("idle"); // idle | loading | loaded | missing
+  // Set when both Groq and OpenAI failed and the backend fell back to a
+  // rule-based heuristic summary (see LangChainAnalysisService.summarize_and_extract_tickets) —
+  // the content is a best-effort stand-in, not a real AI analysis, so it needs review.
+  const [analysisDegraded, setAnalysisDegraded] = useState(false);
+  // Whether the underlying source actually had audio (real speaker/timestamp
+  // dialogue) vs. a document/direct-write meeting with no such thing. Defaults
+  // to true only until the real fetch below resolves and overrides it — see
+  // `transcriptEnabled` further down, which used to guess this from
+  // navigation-state hints that are never actually populated on a normal
+  // click-through, silently defaulting to "audio" for every meeting.
+  const [sourceIsAudio, setSourceIsAudio] = useState(true);
+
+  useEffect(() => {
+    const state = location?.state || {};
+    // location.state only survives an in-app navigation (clicking through from
+    // the meeting list) — a refresh, direct URL visit, or reopened bookmark
+    // loses it entirely, which used to fall back straight to the placeholder
+    // content with no way to recover. Fall back to the URL's query params
+    // instead, and mirror state into the URL below so a refresh keeps working.
+    const meetingId = state.meetingId || searchParams.get("meetingId");
+    const projectId = state.projectId || searchParams.get("projectId");
+    if (!meetingId || !projectId) {
+      setRealDataStatus("missing");
+      return undefined;
+    }
+    if (state.meetingId && state.projectId && (searchParams.get("meetingId") !== state.meetingId || searchParams.get("projectId") !== state.projectId)) {
+      const next = new URLSearchParams(searchParams);
+      next.set("meetingId", state.meetingId);
+      next.set("projectId", state.projectId);
+      setSearchParams(next, { replace: true });
+    }
+
+    let cancelled = false;
+    setRealDataStatus("loading");
+
+    const normalizeAction = (item) => ({
+      text: String(item?.text || item?.title || item?.description || "").trim(),
+      assignee: item?.assignee || "미정",
+      due: item?.due || item?.due_at || "",
+      // Real task records use "수행완료" (see Dashboard.jsx/ProjectMeetings.jsx's
+      // status vocabulary), not "완료" — this only ever matched a status no
+      // real task actually has, so completed tasks always showed as unchecked
+      // here even though they were genuinely marked done elsewhere.
+      status: item?.status === "수행완료" || item?.status === "완료" || item?.status === "done" || item?.checked ? "done" : "todo",
+    });
+
+    (async () => {
+      try {
+        const uploads = await listUploads({ project_id: projectId });
+        const match = (Array.isArray(uploads) ? uploads : []).find(
+          (file) => String(file?.meeting_id || "") === String(meetingId)
+        );
+
+        if (!match) {
+          // Not every meeting comes from a file upload — one created via
+          // "회의록 직접 작성" has real summary/action_items straight on the
+          // Meeting record but no uploaded_file/analysis_result to look up here.
+          // Fall back to the meeting itself instead of declaring it "missing".
+          const meetings = await listProjectMeetings(projectId).catch(() => []);
+          const meeting = (Array.isArray(meetings) ? meetings : []).find(
+            (m) => String(m?.id || "") === String(meetingId)
+          );
+          if (!meeting) {
+            if (!cancelled) setRealDataStatus("missing");
+            return;
+          }
+          if (cancelled) return;
+          // No file was ever uploaded/transcribed for this meeting, so there is
+          // no real transcript — clear the placeholder script rather than show
+          // fake dialogue alongside the real summary/action items above.
+          setTxSource([]);
+          setSourceIsAudio(false);
+
+          const rawItems = Array.isArray(meeting.action_items) ? meeting.action_items : [];
+          // "회의록 직접 작성" stores the structured summary (keywords/decisions/
+          // issues/next agenda) in a hidden __tiki_meeting_meta marker item
+          // inside action_items, not as separate Meeting columns — pull it out
+          // here rather than showing it as a blank to-do row.
+          const metaItem = rawItems.find((item) => item?.__tiki_meta || item?.type === "__tiki_meeting_meta");
+          const visibleItems = rawItems.filter((item) => !(item?.__tiki_meta || item?.type === "__tiki_meeting_meta"));
+          const metaData = metaItem?.data || {};
+          const priorityToLevel = { 높음: "high", 보통: "medium", 낮음: "low" };
+
+          const normalizedVisibleItems = visibleItems.map(normalizeAction);
+          setSummaryData((prev) => ({
+            ...prev,
+            summary: metaData.summary || meeting.summary || prev.summary,
+            keywords: Array.isArray(metaData.keywords) && metaData.keywords.length
+              ? metaData.keywords.map((kw) => ({ text: kw, type: "cyan" }))
+              // Older manually-written meetings (before the meta marker existed)
+              // never got a keywords list, but the meeting's own tags are
+              // effectively the same thing — use those instead of showing blank.
+              : Array.isArray(meeting.tags) && meeting.tags.length
+                ? meeting.tags.map((tag) => ({ text: String(tag || "").replace(/^#/, ""), type: "cyan" })).filter((k) => k.text)
+                : [],
+            decisions: Array.isArray(metaData.decisions) && metaData.decisions.length
+              ? metaData.decisions.map((d) => (typeof d === "string" ? d : d?.text || "")).filter(Boolean)
+              : [],
+            issues: Array.isArray(metaData.issues) && metaData.issues.length
+              ? metaData.issues.map((i) => ({ level: priorityToLevel[i?.priority] || "medium", text: i?.text || "" })).filter((i) => i.text)
+              : [],
+            next_agenda: typeof metaData.nextAgenda === "string" && metaData.nextAgenda.trim()
+              ? metaData.nextAgenda.split("\n").map((line) => line.replace(/^-\s*/, "").trim()).filter(Boolean)
+              : [],
+            actions: normalizedVisibleItems,
+          }));
+          if (visibleItems.length > 0) {
+            setSummaryActions(normalizedVisibleItems);
+          }
+          setMeetingHeader({ title: meeting.title || "", date: meeting.date || "" });
+          setAnalysisDegraded(false);
+          setRealDataStatus("loaded");
+          return;
+        }
+
+        const analysis = await getUploadAnalysis(match.id);
+        if (cancelled || !analysis) return;
+
+        // Document uploads (docx/hwp/txt/pdf) go through the same pipeline as
+        // audio and get synthetic "script" rows built by splitting sentences —
+        // fabricated speaker labels and timestamps with no real dialogue behind
+        // them. Only actually-transcribed audio (extraction_method "whisper")
+        // should render as a speaker/timestamp script.
+        const isAudio = analysis.extraction_method === "whisper";
+        setSourceIsAudio(isAudio);
+        if (isAudio && Array.isArray(analysis.tx) && analysis.tx.length > 0) {
+          setTxSource(analysis.tx);
+        } else {
+          setTxSource([]);
+        }
+        setSummaryData((prev) => ({
+          ...prev,
+          summary: analysis.summary || prev.summary,
+          keywords: Array.isArray(analysis.keywords) && analysis.keywords.length ? analysis.keywords : prev.keywords,
+          decisions: Array.isArray(analysis.decisions) && analysis.decisions.length ? analysis.decisions : prev.decisions,
+          issues: Array.isArray(analysis.issues) && analysis.issues.length ? analysis.issues : prev.issues,
+          next_agenda: Array.isArray(analysis.next_agenda) && analysis.next_agenda.length ? analysis.next_agenda : prev.next_agenda,
+        }));
+        // analysis.action_items is a frozen snapshot taken at analysis time
+        // (AnalysisResult.action_items on the backend) — it never reflects a
+        // task being checked off later via Dashboard/ProjectMeetings.jsx, which
+        // only update the live Meeting record. Prefer the live meeting's
+        // action_items for status/checked state when available, so a task
+        // marked 수행완료 elsewhere actually shows as done here too.
+        const liveMeetings = await listProjectMeetings(projectId).catch(() => []);
+        const liveMeeting = (Array.isArray(liveMeetings) ? liveMeetings : []).find(
+          (m) => String(m?.id || "") === String(meetingId)
+        );
+        const liveActionItems = Array.isArray(liveMeeting?.action_items)
+          ? liveMeeting.action_items.filter((item) => !(item?.__tiki_meta || item?.type === "__tiki_meeting_meta"))
+          : [];
+        const actionItemsToShow = liveActionItems.length > 0 ? liveActionItems : analysis.action_items;
+        const normalizedActions = Array.isArray(actionItemsToShow) ? actionItemsToShow.map(normalizeAction) : [];
+        if (Array.isArray(actionItemsToShow) && actionItemsToShow.length > 0) {
+          setSummaryActions(normalizedActions);
+        }
+        setSummaryData((prev) => ({
+          ...prev,
+          actions: normalizedActions,
+        }));
+        setMeetingHeader({
+          title: analysis.meeting_title || state.meeting?.title || "",
+          date: state.meeting?.date || "",
+        });
+        if (!cancelled) setAnalysisDegraded(analysis?.extra_data?.analysis_provider === "heuristic");
+        if (!cancelled) setRealDataStatus("loaded");
+      } catch {
+        if (!cancelled) setRealDataStatus("missing");
+      } finally {
+        if (!cancelled) setTranscriptLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [location?.state]);
   const [modal, setModal] = useState(null);
   const [detailSvc, setDetailSvc] = useState(null);
   const [issueOpen, setIssueOpen] = useState(false);
@@ -3194,7 +3496,7 @@ export default function TikiSprint12() {
     return "audio";
   }, [location?.search, location?.state]);
 
-  const transcriptEnabled = uploadKind === "audio";
+  const transcriptEnabled = sourceIsAudio;
   const transcriptVisibleResolved = transcriptEnabled && transcriptVisible;
 
   const stateLabels = {
@@ -3296,15 +3598,18 @@ export default function TikiSprint12() {
       setCollapsedSet(new Set());
       setAllCollapsed(false);
     } else {
-      setCollapsedSet(new Set(TX.map((_, i) => i)));
+      setCollapsedSet(new Set(txSource.map((_, i) => i)));
       setAllCollapsed(true);
     }
-  }, [allCollapsed]);
+  }, [allCollapsed, txSource]);
 
   const handleIssued = useCallback((svcName, issuedItems = []) => {
-    const svcId = INITIAL_INTEGRATION_SERVICES.find(s => s.name === svcName)?.id || "jira";
+    const svcIds = Array.isArray(svcName)
+      ? svcName.map((name) => INITIAL_INTEGRATION_SERVICES.find(s => s.name === name)?.id || String(name).toLowerCase()).filter((id) => id === "jira" || id === "notion")
+      : [INITIAL_INTEGRATION_SERVICES.find(s => s.name === svcName)?.id || "jira"];
     const logs = (Array.isArray(issuedItems) ? issuedItems : [{ label: issuedItems }])
       .map((item) => ({
+        svcId: String(item?.svcId || svcIds[0] || "jira").toLowerCase(),
         label: String(item?.label || item || "연동 업무").trim(),
         user: String(item?.user || "담당자").trim() || "담당자",
         due: String(item?.due || "").trim(),
@@ -3313,11 +3618,11 @@ export default function TikiSprint12() {
 
     setServices(prev =>
       prev.map(svc => {
-        if (svc.id !== svcId) return svc;
-        let updated = false;
+        if (!svcIds.includes(svc.id)) return svc;
+        let updatedCount = logs.filter((item) => item.svcId === svc.id).length;
         const tickets = svc.tickets.map(t => {
-          if (!updated && t.status === "todo") {
-            updated = true;
+          if (updatedCount > 0 && t.status === "todo") {
+            updatedCount -= 1;
             return { ...t, status: "done" };
           }
           return t;
@@ -3328,7 +3633,7 @@ export default function TikiSprint12() {
 
     const now = new Date();
     const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-    setAuditLog(prev => [...prev, ...logs.map((item) => ({ svcId, label: item.label, time: timeStr, user: item.user }))]);
+    setAuditLog(prev => [...prev, ...logs.map((item) => ({ svcId: item.svcId, label: item.label, time: timeStr, user: item.user }))]);
 
     const state = location?.state || {};
     const projectId = String(state.projectId || "").trim();
@@ -3339,8 +3644,14 @@ export default function TikiSprint12() {
       const prevItems = Array.isArray(prevProject.myActionItems) ? prevProject.myActionItems : [];
       const nextItems = [...prevItems];
       logs.forEach((item, index) => {
-        const id = `${sourceTitle}-${svcId}-${item.label}-${index}`;
+        const svcId = item.svcId === "notion" ? "notion" : "jira";
+        const id = `${sourceTitle}-action-${item.label}-${index}`;
+        const existingIndex = nextItems.findIndex((existing) => String(existing?.id || "") === id);
+        const existing = existingIndex >= 0 ? nextItems[existingIndex] : {};
+        const existingLinks = existing?.integrationLinks && typeof existing.integrationLinks === "object" ? existing.integrationLinks : {};
+        const externalLink = buildExternalLink(svcId, item.label);
         const persisted = {
+          ...existing,
           id,
           text: item.label,
           title: item.label,
@@ -3354,10 +3665,13 @@ export default function TikiSprint12() {
           projectId,
           projectName: state.projectName || state.project?.name || "",
           integrationTool: svcId === "notion" ? "Notion" : "Jira",
-          externalLink: buildExternalLink(svcId, item.label),
+          integrationLinks: {
+            ...existingLinks,
+            [svcId]: externalLink,
+          },
+          externalLink,
           updatedAt: new Date().toISOString(),
         };
-        const existingIndex = nextItems.findIndex((existing) => String(existing?.id || "") === id);
         if (existingIndex >= 0) nextItems[existingIndex] = { ...nextItems[existingIndex], ...persisted };
         else nextItems.unshift(persisted);
       });
@@ -3365,29 +3679,68 @@ export default function TikiSprint12() {
       writeProjectOverrides(overrides);
     }
 
-    showToast(svcName === "Jira" ? "Jira에 연동되었습니다." : "Notion에 연동되었습니다.");
+    showToast(svcIds.length > 1 ? "Jira와 Notion에 연동되었습니다." : svcIds[0] === "jira" ? "Jira에 연동되었습니다." : "Notion에 연동되었습니다.");
   }, [location?.state, showToast, summaryData.summary]);
 
-  const txData = TX
+  const txData = txSource
     .map((d, i) => ({ ...d, idx: i }))
     .filter(d =>
       (!bmFilter || bookmarks.has(d.idx)) &&
-      (!searchQ || d.txt.includes(searchQ) || d.spk.includes(searchQ))
+      (!searchQ || String(d.txt || "").includes(searchQ) || String(d.spk || "").includes(searchQ))
     );
   const visibleTx = txData;
   const visible = visibleTx.slice(0, shownCount);
   const remaining = visibleTx.length - shownCount;
 
-  const activeIdx = TX.reduce((acc, item, i) => {
-    const nxt = i + 1 < TX.length ? TX[i + 1].ts : 99999;
+  const activeIdx = txSource.reduce((acc, item, i) => {
+    const nxt = i + 1 < txSource.length ? txSource[i + 1].ts : 99999;
     if (curTime >= item.ts && curTime < nxt) return i;
     return acc;
   }, -1);
 
-  const acceptedParticipants = useMemo(() => {
+  const cachedParticipants = useMemo(() => {
     const state = location?.state || {};
     return buildAcceptedProjectParticipants({ projectId: state.projectId, state });
   }, [location?.state]);
+
+  // The cached version above reads from a localStorage project catalog that
+  // multiple pages write to — if this page loads before the fuller project
+  // list page ever re-populates that cache, it stays stuck showing just the
+  // owner's name. Fetch the real project directly instead so this doesn't
+  // depend on which page happened to load first.
+  const [liveParticipants, setLiveParticipants] = useState(null);
+  useEffect(() => {
+    const projectId = location?.state?.projectId || searchParams.get("projectId");
+    if (!projectId) return;
+    let cancelled = false;
+    getProject(projectId)
+      .then((project) => {
+        if (cancelled || !project) return;
+        const names = new Set();
+        const add = (value) => {
+          const normalized = String(value || "").trim();
+          if (normalized) names.add(normalized);
+        };
+        add(project.team_lead);
+        add(getStoredUserName());
+        (Array.isArray(project.members) ? project.members : []).forEach((member) => {
+          add(member?.name || member?.email);
+        });
+        setLiveParticipants([...names]);
+      })
+      .catch(() => {
+        // Keep whatever the cached fallback resolved to.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location?.state, searchParams]);
+
+  const acceptedParticipants = liveParticipants && liveParticipants.length > 0 ? liveParticipants : cachedParticipants;
+  const actionAssigneeOptions = useMemo(
+    () => buildEditableAssigneeOptions(acceptedParticipants),
+    [acceptedParticipants]
+  );
   const visibleParticipants = acceptedParticipants.slice(0, 4);
   const hiddenCount = Math.max(acceptedParticipants.length - visibleParticipants.length, 0);
 
@@ -3395,6 +3748,44 @@ export default function TikiSprint12() {
     const latest = services.find(s => s.id === svc.id) || svc;
     setDetailSvc(latest);
   }, [services]);
+
+  const handleChangeActionAssignee = useCallback((index, nextAssignee) => {
+    const normalizedAssignee = String(nextAssignee || "").trim();
+    const assignee = normalizedAssignee && normalizedAssignee !== "미정" ? normalizedAssignee : "미정";
+    const nextActions = summaryActions.map((action, i) => (
+      i === index ? { ...action, assignee } : action
+    ));
+
+    setSummaryActions(nextActions);
+    setSummaryData((prev) => ({
+      ...prev,
+      actions: prev.actions.map((action, i) => (
+        i === index ? { ...action, assignee } : action
+      )),
+    }));
+
+    const projectId = location?.state?.projectId || searchParams.get("projectId");
+    const meetingId = location?.state?.meetingId || searchParams.get("meetingId");
+    if (!projectId || !meetingId) return;
+
+    updateProjectMeeting(projectId, meetingId, { action_items: nextActions })
+      .then((updatedMeeting) => {
+        const updatedActions = Array.isArray(updatedMeeting?.action_items)
+          ? updatedMeeting.action_items.filter((item) => !(item?.__tiki_meta || item?.type === "__tiki_meeting_meta"))
+          : null;
+        if (updatedActions) {
+          setSummaryActions(updatedActions.map((item) => ({
+            text: String(item?.text || item?.title || item?.description || "").trim(),
+            assignee: item?.assignee || "미정",
+            due: item?.due || item?.due_at || "",
+            status: item?.status === "수행완료" || item?.status === "완료" || item?.status === "done" || item?.checked ? "done" : "todo",
+          })));
+        }
+      })
+      .catch(() => {
+        showToast("담당자 저장에 실패했습니다. 다시 시도해 주세요.", "error");
+      });
+  }, [location?.state, searchParams, showToast, summaryActions]);
 
   const handleToggleAction = useCallback((index) => {
     setSummaryActions((prev) =>
@@ -3418,6 +3809,40 @@ export default function TikiSprint12() {
       }),
     }));
   }, []);
+
+  if (realDataStatus === "idle" || realDataStatus === "loading") {
+    return (
+      <div
+        className="min-h-screen flex flex-col"
+        style={{
+          background: "#F8FAFF",
+          fontFamily: '"Pretendard Variable","Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+          color: "#0D1B2A",
+        }}
+      >
+        <Header
+          isMobile={isMobile}
+          isLoggedIn={isAuthenticated}
+          phase="IDLE"
+          stateLabels={stateLabels}
+          user={sessionUser}
+          onLogout={() => {
+            clearAuthSession();
+            showToast("로그아웃 되었습니다.");
+          }}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 text-slate-400">
+            <div
+              className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200"
+              style={{ borderTopColor: "#0099CC" }}
+            />
+            <p className="text-sm font-semibold">회의록을 불러오는 중입니다...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -3444,15 +3869,21 @@ export default function TikiSprint12() {
         <div className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
             <div className="flex-1 min-w-0">
+              {realDataStatus === "missing" && (
+                <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700">
+                  이 회의의 분석 데이터를 찾을 수 없어 예시 데이터를 표시하고 있습니다.
+                </div>
+              )}
+              {realDataStatus === "loaded" && analysisDegraded && (
+                <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700">
+                  AI 분석이 일시적으로 실패해 간이 자동 요약으로 대체되었습니다. 내용을 꼭 검토해 주세요.
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-slate-400">2026.06.14</span>
-                <span className="text-slate-300">·</span>
-                <span className="text-xs font-semibold text-slate-400">오후 2:00 – 3:15</span>
-                <span className="text-slate-300">·</span>
-                <span className="text-xs font-semibold text-cyan-500">75분</span>
+                <span className="text-xs font-semibold text-slate-400">{meetingHeader?.date || "2026.06.14"}</span>
               </div>
               <h1 className="text-lg md:text-xl font-bold text-slate-900 leading-snug mb-4">
-                Sprint 12 킥오프 — AI 회의록 시스템 개발 현황 공유
+                {meetingHeader?.title || "Sprint 12 킥오프 — AI 회의록 시스템 개발 현황 공유"}
               </h1>
               <div className="flex items-center gap-2.5">
                 <div className="flex -space-x-2">
@@ -3479,19 +3910,24 @@ export default function TikiSprint12() {
               </div>
             </div>
 
-            <IntegrationControlTower
-              services={services}
-              auditLog={mergedAuditLog}
-              onBadgeClick={handleBadgeClick}
-              onIssueOpen={() => setIssueOpen(true)}
-              isMobile={isMobile}
+            <RealIntegrationStatus
+              connectedProviders={connectedProviders}
+              onManage={() => {
+                const projectId = location?.state?.projectId || searchParams.get("projectId");
+                navigate(`/configuration?projectId=${projectId}&tab=integration`);
+              }}
             />
           </div>
         </div>
       </div>
 
       <div className="px-4 md:px-8 lg:px-12 pt-4 max-w-screen-xl mx-auto">
-        <AgendaCompletionSection actions={summaryActions} onToggleAction={handleToggleAction} />
+        <AgendaCompletionSection
+          actions={summaryActions}
+          onToggleAction={handleToggleAction}
+          onChangeActionAssignee={handleChangeActionAssignee}
+          assigneeOptions={actionAssigneeOptions}
+        />
       </div>
 
       <div
@@ -3515,6 +3951,7 @@ export default function TikiSprint12() {
               onToggleSummary={() => setSummaryCollapsed(prev => !prev)}
               transcriptVisible={transcriptVisibleResolved}
               transcriptEnabled={transcriptEnabled}
+              assigneeOptions={actionAssigneeOptions}
               onToggleTranscript={() => {
                 if (!transcriptEnabled) return;
                 setTranscriptVisible(v => !v);
@@ -3609,15 +4046,17 @@ export default function TikiSprint12() {
         </div>
       </div>
 
-      <AudioPlayer
-        curTime={curTime}
-        playing={playing}
-        spdIdx={spdIdx}
-        onSeek={v => setCurTime(v)}
-        onTogglePlay={() => setPlaying(p => !p)}
-        onCycleSpeed={() => setSpdIdx(i => (i + 1) % SPEEDS.length)}
-        bottomOffset={isMobile ? "calc(74px + env(safe-area-inset-bottom, 0px))" : 0}
-      />
+      {txSource.length > 0 && (
+        <AudioPlayer
+          curTime={curTime}
+          playing={playing}
+          spdIdx={spdIdx}
+          onSeek={v => setCurTime(v)}
+          onTogglePlay={() => setPlaying(p => !p)}
+          onCycleSpeed={() => setSpdIdx(i => (i + 1) % SPEEDS.length)}
+          bottomOffset={isMobile ? "calc(74px + env(safe-area-inset-bottom, 0px))" : 0}
+        />
+      )}
 
       {isMobile && <MobileTab active={activeTab} onChange={setActiveTab} />}
 
@@ -3634,7 +4073,7 @@ export default function TikiSprint12() {
         onIssued={handleIssued}
         services={services}
         isMobile={isMobile}
-        assigneeOptions={issueAssigneeOptions}
+        assigneeOptions={actionAssigneeOptions}
       />
 
       <Modal open={modal === "participants"} onClose={() => setModal(null)} title="회의 참여자">

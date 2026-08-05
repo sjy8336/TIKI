@@ -1577,9 +1577,11 @@ FINAL_DECISION_MARKERS: tuple[str, ...] = (
     "결정",
     "확정",
     "합의",
+    "하기로",
     "동의",
     "선정",
     "채택",
+    "분류했다",
     "마무리",
 )
 
@@ -3394,7 +3396,10 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
         return _parse_due_date_text(sentence)
 
     def _build_decisions(self, sentences: list[str]) -> list[str]:
-        picked = self._pick_sentence_list(sentences, DECISION_PATTERNS, MAX_DECISIONS)
+        # Filtering happens below, so do not truncate candidates first. Long but
+        # non-final statements previously occupied the candidate limit and pushed
+        # valid concise decisions out of the result.
+        picked = self._pick_sentence_list(sentences, DECISION_PATTERNS, len(sentences))
         decisions: list[str] = []
         seen: set[str] = set()
         for sentence in picked:
@@ -3415,6 +3420,8 @@ class HeuristicLLMAnalysisService(LLMAnalysisService):
                 continue
             seen.add(signature)
             decisions.append(text)
+            if len(decisions) >= MAX_DECISIONS:
+                break
         return decisions
 
     def _build_issues(self, sentences: list[str]) -> list[dict[str, Any]]:
@@ -4879,7 +4886,8 @@ class OpenAIAnalysisService(LLMAnalysisService):
                 "- issues는 반드시 [현상: ~ / 영향: ~] 형식으로 작성하라. 모호한 표현은 피하고, 관찰된 리스크와 그 영향만 적어라.\n"
                 "- next_agenda에는 문서에서 남겨둔 검토 항목, 미정 사항, 다음 단계만 넣어라.\n"
                 "- 반복 문구는 제거하고, 같은 뜻의 문장은 하나로 합쳐라.\n"
-                "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
+                "- 담당자는 participants/admins 목록 안의 이름만 사용하라. 문서의 표, 행, 문장, 괄호, 이름+업무 패턴에 참여자 이름이 보이면 해당 참여자로 적극 매칭하라.\n"
+                "- 담당자 단서가 전혀 없을 때만 null로 두고, 마감일은 명시되지 않으면 null로 둬라.\n"
                 "- 전원은 팀 전체가 함께 처리하는 공통 작업이 명시된 경우에만 사용하고, 책임 주체가 불명확하면 null로 두어라.\n"
                 "- 이름, 날짜, 숫자는 문서에 실제로 나온 값만 사용하라.\n"
                 "- 애매하면 action_items를 비워도 된다. 억지로 채우지 마라.\n"
@@ -4897,7 +4905,8 @@ class OpenAIAnalysisService(LLMAnalysisService):
                 "- decisions, action_items, issues, next_agenda는 파일별 중복을 제거하고 전체 회의 기준으로 합쳐라.\n"
                 "- next_agenda와 issues는 반복 표현을 특히 주의해서 제거하라.\n"
                 "- issues는 반드시 [현상: ~ / 영향: ~] 형식으로 작성하라. 관찰된 리스크와 영향만 남겨라.\n"
-                "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
+                "- 담당자는 participants/admins 목록 안의 이름만 사용하라. 발화자, 지시 대상, 이름+업무 패턴에 참여자 이름이 보이면 해당 참여자로 적극 매칭하라.\n"
+                "- 담당자 단서가 전혀 없을 때만 null로 두고, 마감일은 명시되지 않으면 null로 둬라.\n"
                 "- 전원은 공통 작업이 명시된 경우에만 사용하고, 책임 주체가 불명확하면 null로 두어라.\n"
                 "- 이름, 날짜, 숫자는 실제 언급된 값만 사용하라.\n"
                 "- 억지로 채우지 말고, 불명확하면 action_items를 비워도 된다.\n"
@@ -4929,7 +4938,8 @@ class OpenAIAnalysisService(LLMAnalysisService):
                 "- issues는 '리스크 관리 리스크'처럼 같은 단어를 반복하지 말고, 짧은 카드 문장 하나로 정리하라.\n"
                 "- 우선순위는 low, medium, high, urgent 중 하나만 사용하라.\n"
                 "- urgent는 명시적 긴급성, 장애, 즉시 대응, 마감 임박이 있을 때만 써라.\n"
-                "- 담당자와 마감일이 명시되지 않으면 null로 둬라. 추측하지 마라.\n"
+                "- 담당자는 participants/admins 목록 안의 이름만 사용하라. 발화자, 지시 대상, 이름+업무 패턴에 참여자 이름이 보이면 해당 참여자로 적극 매칭하라.\n"
+                "- 담당자 단서가 전혀 없을 때만 null로 두고, 마감일은 명시되지 않으면 null로 둬라.\n"
                 "- 전원은 팀 전체가 함께 처리하는 공통 작업이 명시된 경우에만 사용하고, 책임 주체가 불명확하면 null로 두어라.\n"
                 "- 이름, 날짜, 숫자는 회의에서 실제 언급된 값만 사용하라.\n"
                 "- 애매하면 action_items를 비워도 된다. 억지로 채우지 마라.\n"
@@ -4981,6 +4991,28 @@ class OpenAIAnalysisService(LLMAnalysisService):
         return {"value": str(usage)}
 
 
+def _parse_llm_json_response(text: str) -> dict[str, Any]:
+    """Parse a chat-completion response as JSON, tolerating common formatting noise.
+
+    Unlike OpenAIAnalysisService (which uses the Responses API with a strict
+    json_schema format), LangChainAnalysisService sends plain chat messages with
+    no structured-output enforcement — models (especially Groq/Llama) routinely
+    wrap the answer in ```json fences or add a leading/trailing sentence, which
+    makes a bare json.loads() fail with "Expecting value: line 1 column 1" even
+    though the payload is otherwise fine.
+    """
+    candidate = text.strip()
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", candidate, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+    else:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = candidate[start : end + 1]
+    return json.loads(candidate)
+
+
 class LangChainAnalysisService(LLMAnalysisService):
     """LangChain-backed meeting analysis that keeps the same JSON contract."""
 
@@ -4992,10 +5024,16 @@ class LangChainAnalysisService(LLMAnalysisService):
         model_name: str | None = None,
         prompt_version: str = "langchain-v1",
         fallback_model_name: str | None = None,
+        preferred_provider: str | None = None,
     ) -> None:
         self.model_name = model_name or DEFAULT_MODEL_NAME
         self.prompt_version = prompt_version
         self.fallback_model_name = fallback_model_name or settings.groq_model
+        # Which provider to try first in _invoke_chain. None means "auto" (OpenAI
+        # first if configured, Groq as fallback) — set explicitly to "groq" when the
+        # caller configured LLM_ANALYSIS_PROVIDER=groq, so that setting is actually
+        # honored instead of always trying OpenAI first regardless.
+        self.preferred_provider = preferred_provider
 
     @staticmethod
     @lru_cache(maxsize=1)
@@ -5013,7 +5051,12 @@ class LangChainAnalysisService(LLMAnalysisService):
         kwargs: dict[str, Any] = {
             "model": model_name,
             "temperature": 0,
-            "max_retries": 3,
+            "max_retries": 2,
+            # Without this, a slow/unreachable provider (e.g. a stale/rate-limited
+            # OpenAI key) can hang for many minutes with no error — the upload just
+            # sits at "AI 분석 중" forever. Bound each attempt so a broken provider
+            # fails fast enough to fall back to the next one within a reasonable time.
+            "timeout": 45,
             "api_key": api_key,
             "use_responses_api": False,
         }
@@ -5079,7 +5122,9 @@ class LangChainAnalysisService(LLMAnalysisService):
     ) -> tuple[str, str, str]:
         resolved_model_name = model_name or self.model_name
 
-        if settings.openai_api_key:
+        def _try_openai() -> tuple[str, str, str] | None:
+            if not settings.openai_api_key:
+                return None
             try:
                 return self._invoke_with_provider(
                     transcript=transcript,
@@ -5089,11 +5134,12 @@ class LangChainAnalysisService(LLMAnalysisService):
                     provider_name="openai",
                 )
             except Exception as exc:
-                logger.warning("OpenAI LangChain request failed; trying Groq fallback: %s", exc)
-        elif settings.groq_api_key:
-            logger.info("OpenAI API key is missing, using Groq fallback directly.")
+                logger.warning("OpenAI LangChain request failed: %s", exc)
+                return None
 
-        if settings.groq_api_key:
+        def _try_groq() -> tuple[str, str, str] | None:
+            if not settings.groq_api_key:
+                return None
             try:
                 return self._invoke_with_provider(
                     transcript=transcript,
@@ -5104,7 +5150,19 @@ class LangChainAnalysisService(LLMAnalysisService):
                     provider_name="groq",
                 )
             except Exception as exc:
-                logger.warning("Groq LangChain request failed; falling back to heuristic service: %s", exc)
+                logger.warning("Groq LangChain request failed: %s", exc)
+                return None
+
+        # Respect an explicitly configured provider (LLM_ANALYSIS_PROVIDER=groq) by
+        # trying it first — previously this always tried OpenAI first regardless of
+        # that setting, so a slow/broken OpenAI key silently delayed every single
+        # analysis (and, before a timeout was added above, could hang indefinitely)
+        # before ever reaching Groq.
+        providers = [_try_groq, _try_openai] if self.preferred_provider == "groq" else [_try_openai, _try_groq]
+        for attempt in providers:
+            result = attempt()
+            if result is not None:
+                return result
 
         raise RuntimeError("No LLM provider available")
 
@@ -5133,7 +5191,7 @@ class LangChainAnalysisService(LLMAnalysisService):
             resolved_model_name = _resolve_model_name_for_tier(model_tier, fallback=self.model_name)
             name_candidates = _collect_assignee_name_candidates(transcript, context)
             response_text, provider_used, provider_model_name = self._invoke_chain(normalized, context, model_name=resolved_model_name)
-            payload = json.loads(response_text)
+            payload = _parse_llm_json_response(response_text)
 
             normalized_summary = _normalize_summary_card_value(payload.get("summary", ""))
             normalized_action_items = _normalize_action_items_value(
@@ -5374,6 +5432,7 @@ def build_llm_analysis_service() -> LLMAnalysisService:
             return LangChainAnalysisService(
                 model_name=settings.groq_model,
                 fallback_model_name=settings.groq_model,
+                preferred_provider="groq",
             )
         logger.warning("Groq provider was requested explicitly, but required dependencies or API key are missing.")
         return HeuristicLLMAnalysisService()
